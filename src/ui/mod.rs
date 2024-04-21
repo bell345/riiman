@@ -4,8 +4,8 @@ use poll_promise::Promise;
 use tracing::info;
 
 use crate::data::Vault;
-use crate::state::AppState;
-use crate::tasks::{TaskError, TaskState};
+use crate::state::{AppState, AppStateRef};
+use crate::tasks::{Task, TaskError, TaskState};
 use crate::tasks::TaskResult::VaultLoaded;
 use crate::ui::modals::error::ErrorDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
@@ -14,11 +14,29 @@ mod modals;
 
 #[derive(Default)]
 pub(crate) struct App {
-    state: AppState,
+    state: AppStateRef,
     tasks: TaskState,
 
     error_dialog: ErrorDialog,
     new_vault_dialog: NewVaultDialog,
+}
+
+impl App {
+    fn add_task(&mut self, task: Task) {
+        self.tasks.add_task(task);
+    }
+
+    fn add_task_with_state(&mut self, task_factory: impl Fn(AppStateRef) -> Task) {
+        self.tasks.add_task(task_factory(self.state.clone()));
+    }
+
+    fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
+        self.state.blocking_read()
+    }
+
+    fn state_mut(&self) -> tokio::sync::RwLockWriteGuard<AppState> {
+        self.state.blocking_write()
+    }
 }
 
 impl eframe::App for App {
@@ -26,14 +44,14 @@ impl eframe::App for App {
         self.error_dialog.update(ctx);
 
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
-            self.tasks.add_task(Promise::spawn_async(
-                crate::tasks::save_new_vault(
-                    Vault::new(new_vault_name))))
+            self.add_task(Promise::spawn_async(crate::tasks::io::save_new_vault(
+                Vault::new(new_vault_name),
+            )));
         }
 
         for result in self.tasks.iter_ready() {
             match result {
-                Ok(VaultLoaded(vault)) => self.state.load_vault(*vault),
+                Ok(VaultLoaded(vault)) => self.state_mut().load_vault(*vault),
                 Err(TaskError::Error(e)) => self.error_dialog.open(format!("{e:#}")),
                 _ => {}
             }
@@ -41,49 +59,59 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button(
-                    "File",
-                    |ui| {
-                        if ui.button("New vault").clicked() {
-                            info!("New vault clicked!");
+                ui.menu_button("Vault", |ui| {
+                    if ui.button("New").clicked() {
+                        info!("New vault clicked!");
 
-                            self.new_vault_dialog.open();
+                        self.new_vault_dialog.open();
 
-                            ui.close_menu();
-                        }
-                        if ui.button("Open vault").clicked() {
-                            info!("Open vault clicked!");
+                        ui.close_menu();
+                    }
+                    if ui.button("Open").clicked() {
+                        info!("Open vault clicked!");
 
-                            self.tasks.add_task(Promise::spawn_async(
-                                crate::tasks::choose_and_load_vault()));
+                        self.add_task(Promise::spawn_async(crate::tasks::io::choose_and_load_vault()));
 
-                            ui.close_menu();
-                        }
+                        ui.close_menu();
+                    }
 
-                        ui.separator();
+                    if self.state.blocking_read().get_current_vault().is_some()
+                        && ui.button("Save").clicked()
+                    {
+                        info!("Save vault clicked!");
 
-                        if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    },
-                );
+                        self.add_task_with_state(|state| {
+                            Promise::spawn_async(crate::tasks::io::save_current_vault(state))
+                        });
+
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
                 ui.add_space(16.0);
             });
         });
 
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("{} {} ({}) compiled {}",
-                                 crate::built_info::PKG_NAME,
-                                 crate::built_info::PKG_VERSION,
-                                 crate::built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("?"),
-                                 crate::built_info::built_time()
+                ui.label(format!(
+                    "{} {} ({}) compiled {}",
+                    crate::built_info::PKG_NAME,
+                    crate::built_info::PKG_VERSION,
+                    crate::built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("?"),
+                    crate::built_info::built_time()
                 ));
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(current_vault) = &self.state.current_vault {
+            if let Some(current_vault) = &self.state().current_vault {
                 ui.label(format!("Current vault: {current_vault}"));
             }
             egui::ScrollArea::both().show(ui, |ui| {

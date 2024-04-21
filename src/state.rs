@@ -16,4 +16,12 @@ impl AppState {
         self.vaults.insert(vault.name.clone(), vault);
         self.current_vault = Some(name);
     }
+
+    pub fn get_current_vault(&self) -> Option<dashmap::mapref::one::Ref<String, Vault>> {
+        let name = self.current_vault.as_ref()?;
+        let vault = self.vaults.get(name)?;
+        Some(vault)
+    }
 }
+
+pub type AppStateRef = Arc<tokio::sync::RwLock<AppState>>;
