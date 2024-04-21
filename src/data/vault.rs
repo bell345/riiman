@@ -21,13 +21,13 @@ impl Vault {
             ..Default::default()
         }
     }
-   
+
     pub fn with_file_path(mut self, path: &Path) -> Self {
         self.set_file_path(path);
         self
     }
 
     pub fn set_file_path(&mut self, path: &Path) {
-        self.file_path = Some(path.clone().into());
+        self.file_path = Some(path.into());
     }
 }

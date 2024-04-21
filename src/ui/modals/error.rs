@@ -12,7 +12,7 @@ impl ErrorDialog {
 
         modal.show(|ui| {
             modal.title(ui, "Error");
-            modal.body(ui, format!("An error has occurred:\n{}", self.message));
+            modal.body(ui, format!("An error has occurred {}", self.message));
             modal.buttons(ui, |ui| {
                 modal.button(ui, "OK");
             });

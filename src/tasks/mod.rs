@@ -1,3 +1,4 @@
+use anyhow::Context;
 use poll_promise::Promise;
 
 use crate::data::Vault;
@@ -52,17 +53,23 @@ pub async fn choose_and_load_vault() -> TaskReturn {
         .add_filter("riiman vault file", &["riiman"]);
 
     let fp = dialog.pick_file().await.ok_or(TaskError::UserCancelled)?;
+    let vault: Vault;
 
     #[cfg(target_arch = "wasm32")]
-        let vault = {
+    {
         let contents = fp.read().await;
-        serde_json::from_slice::<Vault>(&contents)?
+        vault = serde_json::from_slice::<Vault>(&contents)
+            .context("while reading from vault file")?;
     };
     #[cfg(not(target_arch = "wasm32"))]
-        let vault = {
+    {
         let path = fp.path();
-        let contents = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str::<Vault>(contents.as_str())?
+
+        let contents = tokio::fs::read_to_string(path).await
+            .with_context(|| format!("while reading from vault file at {}", path.display()))?;
+
+        vault = serde_json::from_str::<Vault>(contents.as_str())
+            .with_context(|| format!("while deserialising vault file at {}", path.display()))?
             .with_file_path(path)
     };
 
@@ -84,8 +91,11 @@ pub async fn save_vault(vault: &mut Vault) -> TaskReturn {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    vault.set_file_path(fp.path());
-                    tokio::fs::write(fp.path(), data).await?;
+                    let path = fp.path();
+                    vault.set_file_path(path);
+
+                    tokio::fs::write(fp.path(), data).await
+                        .with_context(|| format!("while writing to vault file at {}", path.display()))?;
                 }
             }
         }

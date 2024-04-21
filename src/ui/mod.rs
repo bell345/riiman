@@ -19,21 +19,22 @@ pub(crate) struct App {
 
     error_dialog: ErrorDialog,
     new_vault_dialog: NewVaultDialog,
-
-    vault_load_promise: Option<Promise<Option<String>>>,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        self.error_dialog.update(ctx);
+
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
-            let vault = Vault::new(new_vault_name);
-            self.tasks.add_task(Promise::spawn_async(crate::tasks::save_new_vault(vault)))
+            self.tasks.add_task(Promise::spawn_async(
+                crate::tasks::save_new_vault(
+                    Vault::new(new_vault_name))))
         }
 
         for result in self.tasks.iter_ready() {
             match result {
                 Ok(VaultLoaded(vault)) => self.state.load_vault(*vault),
-                Err(TaskError::Error(e)) => self.error_dialog.open(e.to_string()),
+                Err(TaskError::Error(e)) => self.error_dialog.open(format!("{e:#}")),
                 _ => {}
             }
         }
@@ -53,7 +54,8 @@ impl eframe::App for App {
                         if ui.button("Open vault").clicked() {
                             info!("Open vault clicked!");
 
-                            self.tasks.add_task(Promise::spawn_async(crate::tasks::choose_and_load_vault()));
+                            self.tasks.add_task(Promise::spawn_async(
+                                crate::tasks::choose_and_load_vault()));
 
                             ui.close_menu();
                         }
