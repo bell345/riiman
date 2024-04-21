@@ -10,8 +10,12 @@ mod built_info {
 }
 
 mod ui;
+mod data;
+mod state;
+mod tasks;
 
-fn main() -> Result<(), impl std::error::Error> {
+#[tokio::main]
+async fn main() -> Result<(), impl std::error::Error> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
