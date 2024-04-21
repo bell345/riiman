@@ -14,6 +14,7 @@ mod data;
 mod state;
 mod tasks;
 mod ui;
+mod fields;
 
 fn main() -> Result<(), impl std::error::Error> {
     tracing_subscriber::fmt()
@@ -35,5 +36,5 @@ fn main() -> Result<(), impl std::error::Error> {
         })
     });
 
-    ui::App::default().run()
+    ui::App::new().run()
 }

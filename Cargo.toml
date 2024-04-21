@@ -10,7 +10,7 @@ build = "build.rs"
 
 [dependencies]
 eframe = { version = "0.27.2" }
-egui_extras = { version = "0.27.2", features = ["all_loaders"] }
+egui_extras = { version = "0.27.2", features = ["all_loaders", "default"] }
 egui-modal = "0.3.6"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
@@ -23,6 +23,8 @@ tokio = { version = "1.37", features = ["full"] }
 rfd = "0.14.1"
 dashmap = "5.5"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
+paste = "1.0"
+mime_guess = "2.0"
 
 [build-dependencies]
 built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }

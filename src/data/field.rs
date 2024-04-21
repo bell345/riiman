@@ -1,24 +1,37 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FieldDefinition {
-    id: Uuid,
-    name: Box<str>,
-    field_type: FieldType,
+    pub id: Uuid,
+    pub name: String,
+    pub field_type: FieldType,
     parents: Vec<Uuid>,
     children: Vec<Uuid>,
-    fields: Vec<FieldPair>,
+    fields: HashMap<Uuid, FieldValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldPair(Uuid, FieldValue);
+impl FieldDefinition {
+    pub fn new(id: Uuid, name: String, field_type: FieldType) -> Self {
+        Self {
+            id,
+            name,
+            field_type,
+            ..Default::default()
+        }
+    }
+}
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum FieldType {
+    #[default]
     Tag,
     Boolean,
-    Number,
+    Int,
+    UInt,
+    Float,
     String,
     ItemRef,
     Array,
@@ -29,7 +42,9 @@ pub enum FieldType {
 pub enum FieldValue {
     Tag,
     Boolean(bool),
-    Number(f64),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
     String(String),
     ItemRef(String),
     Array(u64),

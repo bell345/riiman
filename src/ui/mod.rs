@@ -1,11 +1,10 @@
-use eframe::{egui, Frame};
-use eframe::egui::Context;
+use eframe::egui;
 use poll_promise::Promise;
 use tracing::info;
 
 use crate::data::Vault;
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::{Task, TaskError, TaskState};
+use crate::tasks::{ProgressSender, ProgressState, TaskError, TaskReturn, TaskState};
 use crate::tasks::TaskResult::VaultLoaded;
 use crate::ui::modals::error::ErrorDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
@@ -17,17 +16,27 @@ pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
 
+    thumbnail_height: u32,
+
     error_dialog: ErrorDialog,
     new_vault_dialog: NewVaultDialog,
 }
 
 impl App {
-    fn add_task(&mut self, task: Task) {
-        self.tasks.add_task(task);
+    pub fn new() -> Self {
+        Self {
+            thumbnail_height: 128,
+            ..Default::default()
+        }
     }
 
-    fn add_task_with_state(&mut self, task_factory: impl Fn(AppStateRef) -> Task) {
-        self.tasks.add_task(task_factory(self.state.clone()));
+    fn add_task(
+        &mut self,
+        name: &'static str,
+        task_factory: impl FnOnce(AppStateRef, ProgressSender) -> Promise<TaskReturn>,
+    ) {
+        self.tasks
+            .add_task_with_progress(name.to_string(), |tx| task_factory(self.state.clone(), tx));
     }
 
     fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
@@ -40,13 +49,15 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.error_dialog.update(ctx);
 
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
-            self.add_task(Promise::spawn_async(crate::tasks::io::save_new_vault(
-                Vault::new(new_vault_name),
-            )));
+            self.add_task("Create vault", move |_, p| {
+                Promise::spawn_async(crate::tasks::vault::save_new_vault(Vault::new(
+                    new_vault_name,
+                ), p))
+            });
         }
 
         for result in self.tasks.iter_ready() {
@@ -70,7 +81,9 @@ impl eframe::App for App {
                     if ui.button("Open").clicked() {
                         info!("Open vault clicked!");
 
-                        self.add_task(Promise::spawn_async(crate::tasks::io::choose_and_load_vault()));
+                        self.add_task("Load vault", |_, p| {
+                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(p))
+                        });
 
                         ui.close_menu();
                     }
@@ -80,8 +93,8 @@ impl eframe::App for App {
                     {
                         info!("Save vault clicked!");
 
-                        self.add_task_with_state(|state| {
-                            Promise::spawn_async(crate::tasks::io::save_current_vault(state))
+                        self.add_task("Save vault", |state, p| {
+                            Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
                         });
 
                         ui.close_menu();
@@ -107,6 +120,21 @@ impl eframe::App for App {
                     crate::built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("?"),
                     crate::built_info::built_time()
                 ));
+                
+                let progresses = self.tasks.iter_progress();
+                match &progresses[..] {
+                    [] => {},
+                    [(name, ProgressState::NotStarted), ..] |
+                    [(name, ProgressState::Indeterminate), ..] => {
+                        ui.add(egui::ProgressBar::new(0.0).text(name).animate(true));
+                    },
+                    [(name, ProgressState::Determinate(progress)), ..] => {
+                        ui.add(egui::ProgressBar::new(*progress).text(name).show_percentage());
+                    },
+                    [(name, ProgressState::Completed), ..] => {
+                        ui.add(egui::ProgressBar::new(1.0).text(name));
+                    },
+                };
             });
         });
 
@@ -114,9 +142,17 @@ impl eframe::App for App {
             if let Some(current_vault) = &self.state().current_vault {
                 ui.label(format!("Current vault: {current_vault}"));
             }
-            egui::ScrollArea::both().show(ui, |ui| {
+
+            ui.add(egui::widgets::Slider::new(
+                &mut self.thumbnail_height,
+                24..=1024,
+            ));
+
+            /*egui::ScrollArea::both().show(ui, |ui| {
                 ui.image(egui::include_image!("../../res/ferris.svg"));
-            })
+            })*/
+
+            egui::ScrollArea::vertical()
         });
     }
 }

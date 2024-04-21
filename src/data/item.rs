@@ -1,9 +1,12 @@
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use super::field::FieldPair;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::data::FieldValue;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Item {
-    path: Box<str>,
-    fields: Vec<FieldPair>,
+    path: String,
+    fields: HashMap<Uuid, FieldValue>,
 }
