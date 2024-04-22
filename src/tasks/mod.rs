@@ -1,19 +1,25 @@
+use std::path::Path;
+
 use poll_promise::Promise;
 
 use crate::data::Vault;
 
-mod import;
+pub(crate) mod import;
 pub(crate) mod vault;
 
 #[derive(Debug)]
 pub enum TaskResult {
     None,
     VaultLoaded(Box<Vault>),
+    ImportComplete { path: Box<Path>, results: Vec<SingleImportResult> }
 }
+
+pub type SingleImportResult = anyhow::Result<Box<Path>>;
 
 #[derive(Debug)]
 pub enum TaskError {
     UserCancelled,
+    WasmNotImplemented,
     Error(anyhow::Error),
 }
 

@@ -22,6 +22,16 @@ impl FieldDefinition {
             ..Default::default()
         }
     }
+
+    pub fn new_child(id: Uuid, name: String, field_type: FieldType, parent_id: Uuid) -> Self {
+        Self {
+            id,
+            name,
+            field_type,
+            parents: vec![parent_id],
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]

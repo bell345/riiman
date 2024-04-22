@@ -25,6 +25,7 @@ dashmap = "5.5"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 paste = "1.0"
 mime_guess = "2.0"
+rand = "0.8"
 
 [build-dependencies]
 built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }

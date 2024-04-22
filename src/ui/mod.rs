@@ -1,12 +1,14 @@
 use eframe::egui;
+use egui_modal::{Icon, Modal};
 use poll_promise::Promise;
 use tracing::info;
+use uuid::Uuid;
 
 use crate::data::Vault;
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::{ProgressSender, ProgressState, TaskError, TaskReturn, TaskState};
-use crate::tasks::TaskResult::VaultLoaded;
-use crate::ui::modals::error::ErrorDialog;
+use crate::tasks::TaskResult::{ImportComplete, VaultLoaded};
+use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
 
 mod modals;
@@ -18,7 +20,7 @@ pub(crate) struct App {
 
     thumbnail_height: u32,
 
-    error_dialog: ErrorDialog,
+    msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
 }
 
@@ -39,6 +41,17 @@ impl App {
             .add_task_with_progress(name.to_string(), |tx| task_factory(self.state.clone(), tx));
     }
 
+    fn error(&mut self, message: String) {
+        let dialog = MessageDialog::error(message);
+        self.msg_dialogs.push(dialog);
+    }
+
+    fn success(&mut self, title: String, message: String) {
+        let dialog = MessageDialog::success(message)
+            .with_title(title);
+        self.msg_dialogs.push(dialog);
+    }
+
     fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
         self.state.blocking_read()
     }
@@ -50,7 +63,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.error_dialog.update(ctx);
+        self.msg_dialogs.retain_mut(|dialog| dialog.update(ctx).is_open());
 
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
             self.add_task("Create vault", move |_, p| {
@@ -63,7 +76,14 @@ impl eframe::App for App {
         for result in self.tasks.iter_ready() {
             match result {
                 Ok(VaultLoaded(vault)) => self.state_mut().load_vault(*vault),
-                Err(TaskError::Error(e)) => self.error_dialog.open(format!("{e:#}")),
+                Ok(ImportComplete { path, results }) => {
+                    let total = results.len();
+                    let success = results.iter().filter(|r| r.is_ok()).count();
+                    let body = format!("Import of {} complete. {success}/{total} images imported successfully.", path.display());
+                    self.success("Import complete".to_string(), body);
+                }
+                Err(TaskError::WasmNotImplemented) => self.error("Not implemented in WASM".to_string()),
+                Err(TaskError::Error(e)) => self.error(format!("{e:#}")),
                 _ => {}
             }
         }
@@ -107,6 +127,20 @@ impl eframe::App for App {
                     }
                 });
 
+                if self.state().get_current_vault().is_some() {
+                    ui.menu_button("Import", |ui| {
+                        if ui.button("Import all").clicked() {
+                            info!("Import all clicked!");
+
+                            self.add_task("Import to vault", |state, p| {
+                                Promise::spawn_async(crate::tasks::import::import_images_recursively(state, p))
+                            });
+
+                            ui.close_menu();
+                        }
+                    });
+                }
+
                 ui.add_space(16.0);
             });
         });
@@ -120,20 +154,20 @@ impl eframe::App for App {
                     crate::built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("?"),
                     crate::built_info::built_time()
                 ));
-                
+
                 let progresses = self.tasks.iter_progress();
                 match &progresses[..] {
-                    [] => {},
+                    [] => {}
                     [(name, ProgressState::NotStarted), ..] |
                     [(name, ProgressState::Indeterminate), ..] => {
                         ui.add(egui::ProgressBar::new(0.0).text(name).animate(true));
-                    },
+                    }
                     [(name, ProgressState::Determinate(progress)), ..] => {
                         ui.add(egui::ProgressBar::new(*progress).text(name).show_percentage());
-                    },
+                    }
                     [(name, ProgressState::Completed), ..] => {
                         ui.add(egui::ProgressBar::new(1.0).text(name));
-                    },
+                    }
                 };
             });
         });
