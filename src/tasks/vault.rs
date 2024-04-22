@@ -21,7 +21,7 @@ pub async fn choose_and_load_vault(progress: ProgressSender) -> TaskReturn {
     {
         let path = fp.path();
         progress.send(ProgressState::Determinate(0.5)).expect("progress rx exists");
-        
+
         let contents = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("while reading from vault file at {}", path.display()))?;
@@ -36,9 +36,9 @@ pub async fn choose_and_load_vault(progress: ProgressSender) -> TaskReturn {
 
 pub async fn save_vault(vault: &Vault, progress: ProgressSender) -> TaskReturn {
     let data = serde_json::to_vec(vault)?;
-    
+
     progress.send(ProgressState::Determinate(0.5)).expect("progress rx exists");
-    
+
     match &vault.file_path {
         Some(path) => tokio::fs::write(path, data).await?,
         None => {
