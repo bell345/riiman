@@ -2,9 +2,9 @@ use anyhow::Context;
 
 use crate::data::Vault;
 use crate::state::AppStateRef;
-use crate::tasks::{ProgressSender, ProgressState, TaskError, TaskResult, TaskReturn};
+use crate::tasks::{ProgressSenderRef, ProgressState, TaskError, TaskResult, TaskReturn};
 
-pub async fn choose_and_load_vault(progress: ProgressSender) -> TaskReturn {
+pub async fn choose_and_load_vault(progress: ProgressSenderRef) -> TaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
     let fp = dialog.pick_file().await.ok_or(TaskError::UserCancelled)?;
@@ -13,14 +13,16 @@ pub async fn choose_and_load_vault(progress: ProgressSender) -> TaskReturn {
     #[cfg(target_arch = "wasm32")]
     {
         let contents = fp.read().await;
-        progress.send(ProgressState::Determinate(0.5)).expect("progress rx exists");
+        progress
+            .send(ProgressState::Determinate(0.5))
+            .expect("progress rx exists");
         vault =
             serde_json::from_slice::<Vault>(&contents).context("while reading from vault file")?;
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let path = fp.path();
-        progress.send(ProgressState::Determinate(0.5)).expect("progress rx exists");
+        progress.send(ProgressState::Determinate(0.5));
 
         let contents = tokio::fs::read_to_string(path)
             .await
@@ -34,10 +36,10 @@ pub async fn choose_and_load_vault(progress: ProgressSender) -> TaskReturn {
     Ok(TaskResult::VaultLoaded(vault.into()))
 }
 
-pub async fn save_vault(vault: &Vault, progress: ProgressSender) -> TaskReturn {
+pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> TaskReturn {
     let data = serde_json::to_vec(vault)?;
 
-    progress.send(ProgressState::Determinate(0.5)).expect("progress rx exists");
+    progress.send(ProgressState::Determinate(0.5));
 
     match &vault.file_path {
         Some(path) => tokio::fs::write(path, data).await?,
@@ -63,7 +65,7 @@ pub async fn save_vault(vault: &Vault, progress: ProgressSender) -> TaskReturn {
     Ok(TaskResult::None)
 }
 
-pub async fn save_new_vault(mut vault: Vault, progress: ProgressSender) -> TaskReturn {
+pub async fn save_new_vault(mut vault: Vault, progress: ProgressSenderRef) -> TaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
     let fp = dialog.save_file().await.ok_or(TaskError::UserCancelled)?;
@@ -75,7 +77,7 @@ pub async fn save_new_vault(mut vault: Vault, progress: ProgressSender) -> TaskR
     Ok(TaskResult::VaultLoaded(vault.into()))
 }
 
-pub async fn save_current_vault(state: AppStateRef, progress: ProgressSender) -> TaskReturn {
+pub async fn save_current_vault(state: AppStateRef, progress: ProgressSenderRef) -> TaskReturn {
     save_vault(
         state
             .read()
@@ -83,7 +85,7 @@ pub async fn save_current_vault(state: AppStateRef, progress: ProgressSender) ->
             .get_current_vault()
             .context("No current vault exists")?
             .value(),
-        progress
+        progress,
     )
     .await
 }

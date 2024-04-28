@@ -1,22 +1,14 @@
 #[macro_export]
 macro_rules! field_def {
-    { $name:ident , $type:ident , $id:literal } => {
+    { $name:ident } => {
         paste::paste! {
-            FieldDefinition::new(
-                [<$name:upper>],
-                stringify!($name).into(),
-                FieldType::$type
-            )
+            FieldDefinition::known([<$name:upper>])
         }
     };
-    { $name:ident , $type:ident , $id:literal , $parent:ident } => {
+    { $name:ident , $parent:ident } => {
         paste::paste! {
-            FieldDefinition::new_child(
-                [<$name:upper>],
-                stringify!($name).into(),
-                FieldType::$type,
-                [<$parent:upper>]
-            )
+            FieldDefinition::known([<$name:upper>])
+                .with_parent([<$name:upper>].id)
         }
     }
 }
@@ -25,7 +17,7 @@ macro_rules! field_def {
 macro_rules! field_defs {
     { $( #[id( $ns_id:literal )] $ns_name:ident { $( #[id( $id:literal )] $name:ident : $type:ident ),* } ),* } => {
         #[allow(unused_imports)]
-        use $crate::data::{FieldDefinition, FieldType};
+        use $crate::data::{FieldDefinition, FieldType, KnownField};
         use std::sync::OnceLock;
         #[allow(unused_imports)]
         use uuid::{uuid, Uuid};
@@ -34,27 +26,28 @@ macro_rules! field_defs {
             $(
                 pub mod $ns_name {
                     #[allow(unused_imports)]
-                    use $crate::data::{FieldDefinition, FieldType};
+                    use $crate::data::{FieldDefinition, FieldType, KnownField};
+                    use $crate::data::kind;
                     use std::sync::OnceLock;
                     #[allow(unused_imports)]
                     use uuid::{uuid, Uuid};
 
-                    pub const NAMESPACE: Uuid = uuid!($ns_id);
+                    pub const NAMESPACE: KnownField<kind::Dictionary> = KnownField::<kind::Dictionary>::new(
+                        uuid!($ns_id), stringify!($ns_name)
+                    );
                     $(
-                        pub const [<$name:upper>]: Uuid = uuid!($id);
+                        pub const [<$name:upper>]: KnownField<kind::$type> = KnownField::<kind::$type>::new(
+                            uuid!($id), stringify!($name)
+                        );
                     )*
 
                     #[allow(dead_code)]
                     pub fn defs() -> Vec<&'static FieldDefinition> {
                         static DEFS: OnceLock<Vec<FieldDefinition>> = OnceLock::new();
                         DEFS.get_or_init(|| vec![
-                            FieldDefinition::new(
-                                NAMESPACE,
-                                stringify!($ns_name).into(),
-                                FieldType::Dictionary
-                            ),
+                            FieldDefinition::known(NAMESPACE),
                             $(
-                                field_def!{ $name , $type , $id , NAMESPACE },
+                                field_def!{ $name , NAMESPACE },
                             )*
                         ]).iter().collect()
                     }
@@ -84,6 +77,6 @@ field_defs! {
     #[id("59589bd3-f9b9-49c1-9969-1d3714fa68db")]
     general {
         #[id("cd1bbe33-c7b0-49a8-a3c4-901ca3ea01fd")]
-        media_type: String
+        media_type: Str
     }
 }

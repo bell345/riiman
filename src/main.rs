@@ -10,11 +10,27 @@ mod built_info {
     }
 }
 
+struct MagickContext;
+
+impl MagickContext {
+    pub fn new() -> MagickContext {
+        magick_rust::magick_wand_genesis();
+        MagickContext
+    }
+}
+
+impl Drop for MagickContext {
+    fn drop(&mut self) {
+        magick_rust::magick_wand_terminus();
+    }
+}
+
 mod data;
 mod state;
 mod tasks;
 mod ui;
 mod fields;
+mod errors;
 
 fn main() -> Result<(), impl std::error::Error> {
     tracing_subscriber::fmt()
@@ -25,6 +41,7 @@ fn main() -> Result<(), impl std::error::Error> {
     let build_time = built_time();
     println!("This program was built at {build_time}");
 
+    let _magick_context = MagickContext::new();
     let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
 
     let _enter = runtime.enter();

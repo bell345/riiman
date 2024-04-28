@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -7,14 +9,23 @@ use uuid::Uuid;
 pub struct FieldDefinition {
     pub id: Uuid,
     pub name: String,
-    pub field_type: FieldType,
+    pub field_type: kind::KindType,
     parents: Vec<Uuid>,
     children: Vec<Uuid>,
     fields: HashMap<Uuid, FieldValue>,
 }
 
 impl FieldDefinition {
-    pub fn new(id: Uuid, name: String, field_type: FieldType) -> Self {
+    pub fn known<T: kind::TagKind>(known_field: KnownField<T>) -> Self {
+        Self {
+            id: known_field.id,
+            name: known_field.name.to_string(),
+            field_type: T::get_type(),
+            ..Default::default()
+        }
+    }
+
+    pub fn new(id: Uuid, name: String, field_type: kind::KindType) -> Self {
         Self {
             id,
             name,
@@ -23,40 +34,151 @@ impl FieldDefinition {
         }
     }
 
-    pub fn new_child(id: Uuid, name: String, field_type: FieldType, parent_id: Uuid) -> Self {
-        Self {
-            id,
-            name,
-            field_type,
-            parents: vec![parent_id],
-            ..Default::default()
+    pub fn with_parent(mut self, parent_id: Uuid) -> Self {
+        self.parents.push(parent_id);
+        self
+    }
+}
+
+macro_rules! impl_kind {
+    { $name:ident } => {
+        #[derive(Default, std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub struct $name ;
+
+        impl TagKind for $name {
+            fn get_type() -> KindType {
+                KindType::$name
+            }
+        }
+
+        impl TryFrom<Value> for $name {
+            type Error = $crate::errors::AppError;
+
+            fn try_from(value: Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$name => Ok(Self),
+                    _ => Err($crate::errors::AppError::WrongFieldType {
+                        expected: $name ::get_type(),
+                        got: value
+                    })
+                }
+            }
+        }
+
+        impl From< $name > for Value {
+            fn from(_value: $name) -> Self {
+                Value::$name
+            }
+        }
+    };
+    { $name:ident , $type:ty } => {
+        #[derive(Default, std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub struct $name ( $type );
+
+        impl TagKind for $name {
+            fn get_type() -> KindType {
+                KindType::$name
+            }
+        }
+
+        impl FieldKind< $type > for $name {}
+
+        impl TryFrom<Value> for $name {
+            type Error = $crate::errors::AppError;
+
+            fn try_from(value: Value) -> Result<Self, Self::Error> {
+                match value {
+                    Value::$name (x) => Ok(Self(x.clone())),
+                    _ => Err($crate::errors::AppError::WrongFieldType {
+                        expected: $name ::get_type(),
+                        got: value
+                    })
+                }
+            }
+        }
+
+        impl From< $name > for Value {
+            fn from(value: $name) -> Self {
+                Value::$name (value.0)
+            }
+        }
+
+        impl From< $name > for $type {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl From< $type > for $name {
+            fn from(value: $type) -> Self {
+                $name (value)
+            }
         }
     }
 }
 
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum FieldType {
-    #[default]
-    Tag,
-    Boolean,
-    Int,
-    UInt,
-    Float,
-    String,
-    ItemRef,
-    Array,
-    Dictionary,
+macro_rules! define_kinds {
+    { $( $name:ident $( ( $type:ty ) )? ),* } => {
+
+        #[derive(std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub enum KindType {
+            $( $name , )*
+        }
+
+        #[derive(std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub enum Value {
+            $( $name $( ( $type ) )? , )*
+        }
+
+        $(
+            impl_kind!( $name $( , $type )? );
+        )*
+    };
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FieldValue {
-    Tag,
-    Boolean(bool),
-    Int(i64),
-    UInt(u64),
-    Float(f64),
-    String(String),
-    ItemRef(String),
-    Array(u64),
-    Dictionary,
+pub mod kind {
+    pub trait TagKind:
+        std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
+    {
+        fn get_type() -> KindType;
+    }
+
+    pub trait FieldKind<T>: TagKind + From<T> + Into<T> {}
+
+    define_kinds! {
+        Tag,
+        Boolean(bool),
+        Int(i64),
+        UInt(u64),
+        Str(String),
+        ItemRef(String),
+        List(u64),
+        Dictionary,
+        DateTime(chrono::DateTime<chrono::Utc>)
+    }
+
+    impl Default for KindType {
+        fn default() -> Self {
+            Self::Tag
+        }
+    }
+}
+
+pub type FieldValue = kind::Value;
+pub type FieldType = kind::KindType;
+
+pub struct KnownField<T: kind::TagKind> {
+    pub id: Uuid,
+    pub name: &'static str,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: kind::TagKind> KnownField<T> {
+    pub const fn new(id: Uuid, name: &'static str) -> KnownField<T> {
+        KnownField {
+            id,
+            name,
+            _phantom: PhantomData,
+        }
+    }
 }

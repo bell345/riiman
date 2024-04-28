@@ -1,11 +1,12 @@
+pub use field::kind;
+pub use field::kind::FieldKind as FieldValueKind;
+pub use field::kind::TagKind as FieldKind;
+pub use field::FieldDefinition;
+pub use field::FieldType;
+pub use field::FieldValue;
+pub use field::KnownField;
+pub use vault::Vault;
+
 mod field;
 mod item;
 mod vault;
-
-pub type Vault = vault::Vault;
-
-pub type FieldDefinition = field::FieldDefinition;
-pub type FieldType = field::FieldType;
-pub type FieldValue = field::FieldValue;
-
-pub type Item = item::Item;

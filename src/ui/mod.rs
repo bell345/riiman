@@ -1,13 +1,11 @@
 use eframe::egui;
-use egui_modal::{Icon, Modal};
 use poll_promise::Promise;
 use tracing::info;
-use uuid::Uuid;
 
 use crate::data::Vault;
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::{ProgressSender, ProgressState, TaskError, TaskReturn, TaskState};
 use crate::tasks::TaskResult::{ImportComplete, VaultLoaded};
+use crate::tasks::{ProgressSenderRef, ProgressState, TaskError, TaskReturn, TaskState};
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
 
@@ -35,10 +33,10 @@ impl App {
     fn add_task(
         &mut self,
         name: &'static str,
-        task_factory: impl FnOnce(AppStateRef, ProgressSender) -> Promise<TaskReturn>,
+        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<TaskReturn>,
     ) {
         self.tasks
-            .add_task_with_progress(name.to_string(), |tx| task_factory(self.state.clone(), tx));
+            .add_task_with_progress(name, |tx| task_factory(self.state.clone(), tx));
     }
 
     fn error(&mut self, message: String) {
@@ -47,8 +45,7 @@ impl App {
     }
 
     fn success(&mut self, title: String, message: String) {
-        let dialog = MessageDialog::success(message)
-            .with_title(title);
+        let dialog = MessageDialog::success(message).with_title(title);
         self.msg_dialogs.push(dialog);
     }
 
@@ -63,13 +60,15 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.msg_dialogs.retain_mut(|dialog| dialog.update(ctx).is_open());
+        self.msg_dialogs
+            .retain_mut(|dialog| dialog.update(ctx).is_open());
 
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
             self.add_task("Create vault", move |_, p| {
-                Promise::spawn_async(crate::tasks::vault::save_new_vault(Vault::new(
-                    new_vault_name,
-                ), p))
+                Promise::spawn_async(crate::tasks::vault::save_new_vault(
+                    Vault::new(new_vault_name),
+                    p,
+                ))
             });
         }
 
@@ -79,10 +78,15 @@ impl eframe::App for App {
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
-                    let body = format!("Import of {} complete. {success}/{total} images imported successfully.", path.display());
+                    let body = format!(
+                        "Import of {} complete. {success}/{total} images imported successfully.",
+                        path.display()
+                    );
                     self.success("Import complete".to_string(), body);
                 }
-                Err(TaskError::WasmNotImplemented) => self.error("Not implemented in WASM".to_string()),
+                Err(TaskError::WasmNotImplemented) => {
+                    self.error("Not implemented in WASM".to_string())
+                }
                 Err(TaskError::Error(e)) => self.error(format!("{e:#}")),
                 _ => {}
             }
@@ -133,7 +137,9 @@ impl eframe::App for App {
                             info!("Import all clicked!");
 
                             self.add_task("Import to vault", |state, p| {
-                                Promise::spawn_async(crate::tasks::import::import_images_recursively(state, p))
+                                Promise::spawn_async(
+                                    crate::tasks::import::import_images_recursively(state, p),
+                                )
                             });
 
                             ui.close_menu();
@@ -158,12 +164,16 @@ impl eframe::App for App {
                 let progresses = self.tasks.iter_progress();
                 match &progresses[..] {
                     [] => {}
-                    [(name, ProgressState::NotStarted), ..] |
-                    [(name, ProgressState::Indeterminate), ..] => {
+                    [(name, ProgressState::NotStarted), ..]
+                    | [(name, ProgressState::Indeterminate), ..] => {
                         ui.add(egui::ProgressBar::new(0.0).text(name).animate(true));
                     }
                     [(name, ProgressState::Determinate(progress)), ..] => {
-                        ui.add(egui::ProgressBar::new(*progress).text(name).show_percentage());
+                        ui.add(
+                            egui::ProgressBar::new(*progress)
+                                .text(name)
+                                .show_percentage(),
+                        );
                     }
                     [(name, ProgressState::Completed), ..] => {
                         ui.add(egui::ProgressBar::new(1.0).text(name));
