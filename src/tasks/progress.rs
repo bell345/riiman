@@ -24,17 +24,26 @@ pub struct ProgressSenderAsync {
 }
 
 fn compute_progress(sub_tasks: &DashMap<String, SubTaskProgress>) -> ProgressState {
-    ProgressState::Determinate(
-        sub_tasks
-            .iter()
-            .map(|sub_task| match sub_task.state {
-                ProgressState::NotStarted => 0.0,
-                ProgressState::Indeterminate => 0.0,
-                ProgressState::Determinate(x) => sub_task.weight * x,
-                ProgressState::Completed => sub_task.weight,
-            })
-            .sum(),
-    )
+    let mut progress_msg = None;
+    let progress_value = sub_tasks
+        .iter()
+        .map(|sub_task| match &sub_task.state {
+            ProgressState::NotStarted => 0.0,
+            ProgressState::Indeterminate => 0.0,
+            ProgressState::Determinate(x) => sub_task.weight * x,
+            ProgressState::DeterminateWithMessage(x, msg) => {
+                progress_msg = Some(msg.clone());
+                sub_task.weight * x
+            }
+            ProgressState::Completed => sub_task.weight,
+        })
+        .sum();
+
+    if let Some(msg) = progress_msg {
+        ProgressState::DeterminateWithMessage(progress_value, msg)
+    } else {
+        ProgressState::Determinate(progress_value)
+    }
 }
 
 impl ProgressSenderAsync {

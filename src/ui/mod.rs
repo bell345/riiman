@@ -32,6 +32,10 @@ pub(crate) struct App {
 impl App {
     pub fn new() -> Self {
         Self {
+            thumbnail_params: ThumbnailGridParams {
+                max_row_height: 120.0,
+                container_width: 0.0
+            },
             ..Default::default()
         }
     }
@@ -87,7 +91,9 @@ impl eframe::App for App {
 
         for result in self.tasks.iter_ready() {
             match result {
-                Ok(VaultLoaded(vault)) => self.state_mut().load_vault(*vault),
+                Ok(VaultLoaded(vault)) => {
+                    self.state_mut().load_vault(*vault);
+                },
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -104,6 +110,7 @@ impl eframe::App for App {
                 Err(TaskError::Error(e)) => self.error(format!("{e:#}")),
                 _ => {}
             }
+            ctx.request_repaint();
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -185,8 +192,13 @@ impl eframe::App for App {
                     [(name, ProgressState::Determinate(progress)), ..] => {
                         ui.add(
                             egui::ProgressBar::new(*progress)
-                                .text(name)
-                                .show_percentage(),
+                                .text(format!("{}% {name}", (progress * 100.0).floor() as u32))
+                        );
+                    }
+                    [(name, ProgressState::DeterminateWithMessage(progress, msg)), ..] => {
+                        ui.add(
+                            egui::ProgressBar::new(*progress)
+                                .text(format!("{}% {name}: {msg}", (progress * 100.0).floor() as u32))
                         );
                     }
                     [(name, ProgressState::Completed), ..] => {
@@ -215,7 +227,7 @@ impl eframe::App for App {
             {
                 let params = self.thumbnail_params.clone();
                 self.thumbnail_grid.is_loading = true;
-                
+
                 if let Ok(ThumbnailGrid(info)) = self.run_task(
                     |state, p| crate::tasks::compute::compute_thumbnails_grid(params, state, p)) {
                     self.thumbnail_grid = info;
@@ -228,6 +240,9 @@ impl eframe::App for App {
                     if self.thumbnail_grid.thumbnails.is_empty() {
                         return;
                     }
+                    
+                    const PADDING: f32 = 8.0;
+                    const ROUNDING: f32 = 4.0;
 
                     let abs_min = ui.min_rect().min.to_vec2();
                     let abs_vp = vp.translate(abs_min);
@@ -256,11 +271,11 @@ impl eframe::App for App {
                             );
                             ui.painter_at(abs_bounds)
                                 .add(egui::epaint::RectShape::filled(
-                                    abs_bounds,
-                                    egui::epaint::Rounding::ZERO,
+                                    abs_bounds.shrink(PADDING),
+                                    egui::epaint::Rounding::from(ROUNDING),
                                     colour,
                                 ));
-                            ui.put(abs_bounds, text);
+                            ui.put(abs_bounds.shrink(PADDING), text);
                         }
                     }
                 });

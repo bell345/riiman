@@ -111,10 +111,18 @@ pub async fn import_images_recursively(
     while let Some(res) = join_set.join_next().await {
         let task_res = res
             .with_context(|| format!("awaiting import within directory {}", root_dir.display()))?;
+
+        let p = results.len() as f32 / total as f32;
+        if let Ok(path) = &task_res {
+            import_progress.send(ProgressState::DeterminateWithMessage(
+                p,
+                path.to_str().unwrap_or("").to_string(),
+            ));
+        } else {
+            import_progress.send(ProgressState::Determinate(p));
+        }
+
         results.push(task_res);
-        import_progress.send(ProgressState::Determinate(
-            results.len() as f32 / total as f32,
-        ))
     }
 
     save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;

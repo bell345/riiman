@@ -35,11 +35,12 @@ pub enum TaskError {
     Error(anyhow::Error),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum ProgressState {
     #[default]
     NotStarted,
     Determinate(f32),
+    DeterminateWithMessage(f32, String),
     Indeterminate,
     Completed,
 }
@@ -112,7 +113,7 @@ impl TaskState {
         for task in self.running_tasks.iter() {
             if task.progress_rx.is_some() {
                 let rx = task.progress_rx.as_ref().unwrap();
-                progresses.push((task.name.clone(), *rx.borrow()));
+                progresses.push((task.name.clone(), rx.borrow().clone()));
             }
         }
         progresses
