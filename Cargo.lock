@@ -2736,6 +2736,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_seeder"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf2890aaef0aa82719a50e808de264f9484b74b442e1a3a0e5ee38243ac40bdb"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
 name = "raw-window-handle"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2868,6 +2877,7 @@ dependencies = [
  "paste",
  "poll-promise",
  "rand",
+ "rand_seeder",
  "rfd",
  "serde",
  "serde_json",

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::data::field::KnownField;
 use crate::data::{FieldKind, FieldValue, FieldValueKind};
+use crate::fields;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Item {
@@ -19,6 +21,10 @@ impl Item {
             path,
             fields: HashMap::new(),
         }
+    }
+
+    pub fn path(&self) -> &str {
+        self.path.as_str()
     }
 
     pub fn set_known_field<T: FieldKind>(&mut self, field: KnownField<T>, value: T) {
@@ -68,5 +74,15 @@ impl Item {
             .fields
             .entry(field.id)
             .or_insert_with(|| <T as Default>::default().into()) = T::from(value).into();
+    }
+
+    pub fn get_image_size(&self) -> anyhow::Result<Option<egui::Vec2>> {
+        let Some(width) = self.get_known_field_value(fields::image::WIDTH)? else {
+            return Ok(None);
+        };
+        let Some(height) = self.get_known_field_value(fields::image::HEIGHT)? else {
+            return Ok(None);
+        };
+        return Ok(Some(egui::Vec2::new(width as f32, height as f32)));
     }
 }

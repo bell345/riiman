@@ -6,8 +6,8 @@ use crate::data::Vault;
 
 #[derive(Default)]
 pub(crate) struct AppState {
-    vaults: Arc<DashMap<String, Vault>>,
-    pub current_vault: Option<String>,
+    vaults: DashMap<String, Vault>,
+    current_vault: Option<String>,
 }
 
 impl AppState {

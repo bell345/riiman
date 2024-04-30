@@ -76,4 +76,12 @@ impl Vault {
             .entry(rel_path.clone())
             .or_insert_with(|| Item::new(rel_path)))
     }
+
+    pub fn len_items(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn iter_items(&self) -> dashmap::iter::Iter<String, Item> {
+        self.items.iter()
+    }
 }

@@ -1,11 +1,17 @@
 use eframe::egui;
+use eframe::egui::Color32;
 use poll_promise::Promise;
+use rand::Rng;
+use rand_seeder::{Seeder, SipRng};
 use tracing::info;
 
 use crate::data::Vault;
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::TaskResult::{ImportComplete, VaultLoaded};
-use crate::tasks::{ProgressSenderRef, ProgressState, TaskError, TaskReturn, TaskState};
+use crate::tasks::TaskResult::{ImportComplete, ThumbnailGrid, VaultLoaded};
+use crate::tasks::{
+    DummyProgressSender, ProgressSenderRef, ProgressState, TaskError, TaskReturn, TaskState,
+    ThumbnailGridInfo, ThumbnailGridParams,
+};
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
 
@@ -16,7 +22,8 @@ pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
 
-    thumbnail_height: u32,
+    thumbnail_params: ThumbnailGridParams,
+    thumbnail_grid: ThumbnailGridInfo,
 
     msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
@@ -25,7 +32,6 @@ pub(crate) struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            thumbnail_height: 128,
             ..Default::default()
         }
     }
@@ -37,6 +43,13 @@ impl App {
     ) {
         self.tasks
             .add_task_with_progress(name, |tx| task_factory(self.state.clone(), tx));
+    }
+
+    fn run_task(
+        &self,
+        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> TaskReturn,
+    ) -> TaskReturn {
+        task_factory(self.state.clone(), DummyProgressSender::new())
     }
 
     fn error(&mut self, message: String) {
@@ -84,6 +97,7 @@ impl eframe::App for App {
                     );
                     self.success("Import complete".to_string(), body);
                 }
+                Ok(ThumbnailGrid(info)) => self.thumbnail_grid = info,
                 Err(TaskError::WasmNotImplemented) => {
                     self.error("Not implemented in WASM".to_string())
                 }
@@ -183,20 +197,73 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(current_vault) = &self.state().current_vault {
-                ui.label(format!("Current vault: {current_vault}"));
-            }
+            let state = self.state.blocking_read();
+            let Some(current_vault) = state.get_current_vault() else {
+                return;
+            };
 
+            ui.label(format!("Current vault: {}", current_vault.name));
+
+            self.thumbnail_params.container_width = ui.available_width();
             ui.add(egui::widgets::Slider::new(
-                &mut self.thumbnail_height,
-                24..=1024,
+                &mut self.thumbnail_params.max_row_height,
+                24.0..=1024.0,
             ));
 
-            /*egui::ScrollArea::both().show(ui, |ui| {
-                ui.image(egui::include_image!("../../res/ferris.svg"));
-            })*/
+            if !self.thumbnail_grid.is_loading
+                && self.thumbnail_params != self.thumbnail_grid.params
+            {
+                let params = self.thumbnail_params.clone();
+                self.thumbnail_grid.is_loading = true;
+                
+                if let Ok(ThumbnailGrid(info)) = self.run_task(
+                    |state, p| crate::tasks::compute::compute_thumbnails_grid(params, state, p)) {
+                    self.thumbnail_grid = info;
+                }
+            }
 
             egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show_viewport(ui, |ui, vp| {
+                    if self.thumbnail_grid.thumbnails.is_empty() {
+                        return;
+                    }
+
+                    let abs_min = ui.min_rect().min.to_vec2();
+                    let abs_vp = vp.translate(abs_min);
+                    let max_y = self.thumbnail_grid.thumbnails.last().unwrap().bounds.max.y;
+                    ui.set_width(ui.available_width());
+                    ui.set_height(max_y);
+                    ui.set_clip_rect(abs_vp);
+
+                    for item in self.thumbnail_grid.thumbnails.iter() {
+                        let abs_bounds = item.bounds.translate(abs_min);
+                        let text = egui::Label::new(format!(
+                            "{}\nui_min: {:?}\nvp: {:?}\nabs_vp: {:?}\nbounds: {:?}\nabs_bound: {:?}",
+                            item.path.as_str(),
+                            abs_min.y,
+                            vp.min.y..vp.max.y,
+                            abs_vp.min.y..abs_vp.max.y,
+                            item.bounds.min.y..item.bounds.max.y,
+                            abs_bounds.min.y..item.bounds.max.y
+                        ));
+                        if vp.intersects(item.bounds) {
+                            let mut rng: SipRng = Seeder::from(&item.path).make_rng();
+                            let colour = Color32::from_rgb(
+                                rng.gen::<u8>(),
+                                rng.gen::<u8>(),
+                                rng.gen::<u8>(),
+                            );
+                            ui.painter_at(abs_bounds)
+                                .add(egui::epaint::RectShape::filled(
+                                    abs_bounds,
+                                    egui::epaint::Rounding::ZERO,
+                                    colour,
+                                ));
+                            ui.put(abs_bounds, text);
+                        }
+                    }
+                });
         });
     }
 }
