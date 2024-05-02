@@ -9,7 +9,7 @@ build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eframe = { version = "0.27.2" }
+eframe = { version = "0.27.2", features = ["persistence"] }
 egui_extras = { version = "0.27.2", features = ["all_loaders", "default"] }
 egui-modal = "0.3.6"
 tracing = "0.1.40"
@@ -31,6 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0.59"
 rand_seeder = "0.2.3"
 regex = "1.10"
+serde_regex = "1.1"
 
 [build-dependencies]
 built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }

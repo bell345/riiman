@@ -145,12 +145,12 @@ macro_rules! impl_kind {
 macro_rules! define_kinds {
     { $( $name:ident $( ( $type:ty ) )? ),* } => {
 
-        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         pub enum KindType {
             $( $name , )*
         }
 
-        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         pub enum Value {
             $( $name $( ( $type ) )? , )*
         }

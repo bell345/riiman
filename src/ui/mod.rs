@@ -14,7 +14,7 @@ use crate::tasks::compute::compute_thumbnails_grid;
 use crate::tasks::sort::{
     get_filtered_and_sorted_items, FilterExpression, SortDirection, SortExpression,
 };
-use crate::tasks::AsyncTaskResult::{ImportComplete, VaultLoaded};
+use crate::tasks::AsyncTaskResult::{ImportComplete, VaultLoaded, VaultSaved};
 use crate::tasks::{
     AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError, TaskState, ThumbnailGridInfo,
     ThumbnailGridParams,
@@ -53,6 +53,7 @@ pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
 
+    vault_loading: bool,
     thumbnail_params: ThumbnailGridParams,
     thumbnail_grid: Option<ThumbnailGridInfo>,
 
@@ -63,6 +64,18 @@ pub(crate) struct App {
 
     msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct AppStorage {
+    current_vault_file_path: Option<String>,
+    thumbnail_row_height: f32,
+    sorts: Vec<SortExpression>,
+    filter: FilterExpression,
+}
+
+impl AppStorage {
+    const KEY: &'static str = "AppStorage";
 }
 
 impl App {
@@ -104,6 +117,39 @@ impl App {
     fn state_mut(&self) -> tokio::sync::RwLockWriteGuard<AppState> {
         self.state.blocking_write()
     }
+
+    fn load_persistent_state(&mut self, storage: Option<&dyn eframe::Storage>) -> Option<()> {
+        let stored_state: AppStorage =
+            serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
+
+        if let Some(path) = stored_state.current_vault_file_path {
+            self.vault_loading = true;
+            self.add_task("Load vault", move |s, p| {
+                Promise::spawn_async(crate::tasks::vault::load_vault_from_path(path, s, p))
+            });
+        }
+
+        self.thumbnail_params.max_row_height = stored_state.thumbnail_row_height;
+        self.filter = stored_state.filter;
+        self.sorts = stored_state.sorts;
+        Some(())
+    }
+
+    fn setup(&mut self, _ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) {
+        self.load_persistent_state(storage);
+    }
+
+    fn get_current_vault_file_path(&self) -> Option<String> {
+        Some(
+            self.state
+                .blocking_read()
+                .get_current_vault()?
+                .file_path
+                .as_ref()?
+                .to_str()?
+                .to_string(),
+        )
+    }
 }
 
 impl eframe::App for App {
@@ -112,8 +158,10 @@ impl eframe::App for App {
             .retain_mut(|dialog| dialog.update(ctx).is_open());
 
         if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
-            self.add_task("Create vault", move |_, p| {
+            self.vault_loading = true;
+            self.add_task("Create vault", move |s, p| {
                 Promise::spawn_async(crate::tasks::vault::save_new_vault(
+                    s,
                     Vault::new(new_vault_name),
                     p,
                 ))
@@ -122,9 +170,11 @@ impl eframe::App for App {
 
         for result in self.tasks.iter_ready() {
             match result {
-                Ok(VaultLoaded(vault)) => {
-                    self.state_mut().load_vault(*vault);
+                Ok(VaultLoaded(name)) => {
+                    self.vault_loading = false;
+                    self.state.blocking_write().set_current_vault_name(name)
                 }
+                Ok(VaultSaved(_)) => self.vault_loading = false,
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -146,28 +196,38 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Vault", |ui| {
-                    if ui.button("New").clicked() {
+                    if ui
+                        .add_enabled(!self.vault_loading, egui::Button::new("New"))
+                        .clicked()
+                    {
                         info!("New vault clicked!");
 
                         self.new_vault_dialog.open();
 
                         ui.close_menu();
                     }
-                    if ui.button("Open").clicked() {
+                    if ui
+                        .add_enabled(!self.vault_loading, egui::Button::new("Open"))
+                        .clicked()
+                    {
                         info!("Open vault clicked!");
 
-                        self.add_task("Load vault", |_, p| {
-                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(p))
+                        self.vault_loading = true;
+                        self.add_task("Load vault", |s, p| {
+                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p))
                         });
 
                         ui.close_menu();
                     }
 
                     if self.state.blocking_read().get_current_vault().is_some()
-                        && ui.button("Save").clicked()
+                        && ui
+                            .add_enabled(!self.vault_loading, egui::Button::new("Save"))
+                            .clicked()
                     {
                         info!("Save vault clicked!");
 
+                        self.vault_loading = true;
                         self.add_task("Save vault", |state, p| {
                             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
                         });
@@ -342,10 +402,24 @@ impl eframe::App for App {
                 });
         });
     }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let stored_state = AppStorage {
+            current_vault_file_path: self.get_current_vault_file_path(),
+            thumbnail_row_height: self.thumbnail_params.max_row_height,
+            sorts: self.sorts.clone(),
+            filter: self.filter.clone(),
+        };
+
+        storage.set_string(
+            AppStorage::KEY,
+            serde_json::to_string(&stored_state).expect("state to serialise properly"),
+        );
+    }
 }
 
 impl App {
-    pub(crate) fn run(self) -> Result<(), eframe::Error> {
+    pub(crate) fn run(mut self) -> Result<(), eframe::Error> {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
             ..Default::default()
@@ -356,6 +430,7 @@ impl App {
             options,
             Box::new(|cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
+                self.setup(&cc.egui_ctx, cc.storage);
                 Box::new(self)
             }),
         )

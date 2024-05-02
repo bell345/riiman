@@ -11,7 +11,6 @@ mod progress;
 pub(crate) mod sort;
 pub(crate) mod vault;
 
-pub use progress::DummyProgressSender;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
@@ -19,7 +18,8 @@ pub use progress::ProgressSenderRef;
 #[derive(Debug)]
 pub enum AsyncTaskResult {
     None,
-    VaultLoaded(Box<Vault>),
+    VaultLoaded(String),
+    VaultSaved(String),
     ImportComplete {
         path: Box<Path>,
         results: Vec<SingleImportResult>,

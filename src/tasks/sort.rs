@@ -5,18 +5,29 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use crate::data::kind::{KindType, Value};
+use crate::data::kind::KindType;
 use crate::data::{kind, FieldDefinition, FieldValue, FieldValueKind, Item, Vault};
 use crate::errors::AppError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerdeRegex(#[serde(with = "serde_regex")] regex::Regex);
+
+impl Deref for SerdeRegex {
+    type Target = regex::Regex;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ValueMatchExpression {
     Equals(FieldValue),
     NotEquals(FieldValue),
     IsOneOf(HashSet<FieldValue>),
     LessThan(FieldValue),
     GreaterThan(FieldValue),
-    Regex(regex::Regex),
+    Regex(SerdeRegex),
 }
 
 impl PartialEq for ValueMatchExpression {
@@ -35,7 +46,7 @@ impl PartialEq for ValueMatchExpression {
 
 impl Eq for ValueMatchExpression {}
 
-#[derive(Debug, Default, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FilterExpression {
     #[default]
     None,
@@ -48,13 +59,13 @@ pub enum FilterExpression {
     And(Box<FilterExpression>, Box<FilterExpression>),
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SortDirection {
     Ascending,
     Descending,
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SortExpression {
     Path(SortDirection),
     Field(Uuid, SortDirection),

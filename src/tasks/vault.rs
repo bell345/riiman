@@ -1,14 +1,18 @@
 use anyhow::Context;
+use std::path::Path;
 
 use crate::data::Vault;
+use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError};
 
-pub async fn choose_and_load_vault(progress: ProgressSenderRef) -> AsyncTaskReturn {
+pub async fn choose_and_load_vault(
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
     let fp = dialog.pick_file().await.ok_or(TaskError::UserCancelled)?;
-    let vault: Vault;
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -16,26 +20,49 @@ pub async fn choose_and_load_vault(progress: ProgressSenderRef) -> AsyncTaskRetu
         progress
             .send(ProgressState::Determinate(0.5))
             .expect("progress rx exists");
-        vault = serde_json::from_slice::<Vault>(&contents)
+        let vault = serde_json::from_slice::<Vault>(&contents)
             .context("while reading from vault file")?
             .with_standard_defs();
-    };
+
+        let name = vault.name.clone();
+        state.write().await.load_vault(vault);
+
+        Ok(AsyncTaskResult::VaultLoaded(name))
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let path = fp.path();
-        progress.send(ProgressState::Determinate(0.5));
+        load_vault_from_path(
+            fp.path()
+                .to_str()
+                .ok_or(AppError::InvalidUnicode)?
+                .to_string(),
+            state,
+            progress,
+        )
+        .await
+    }
+}
 
-        let contents = tokio::fs::read_to_string(path)
-            .await
-            .with_context(|| format!("while reading from vault file at {}", path.display()))?;
+pub async fn load_vault_from_path(
+    path: String,
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    progress.send(ProgressState::Determinate(0.5));
 
-        vault = serde_json::from_str::<Vault>(contents.as_str())
-            .with_context(|| format!("while deserialising vault file at {}", path.display()))?
-            .with_file_path(path)
-            .with_standard_defs()
-    };
+    let contents = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("while reading from vault file at {}", path))?;
 
-    Ok(AsyncTaskResult::VaultLoaded(vault.into()))
+    let vault = serde_json::from_str::<Vault>(contents.as_str())
+        .with_context(|| format!("while deserialising vault file at {}", path))?
+        .with_file_path(Path::new(&path))
+        .with_standard_defs();
+
+    let name = vault.name.clone();
+    state.write().await.load_vault(vault);
+
+    Ok(AsyncTaskResult::VaultLoaded(name))
 }
 
 pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> AsyncTaskReturn {
@@ -64,10 +91,15 @@ pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> AsyncTask
             }
         }
     }
-    Ok(AsyncTaskResult::None)
+
+    Ok(AsyncTaskResult::VaultSaved(vault.name.clone()))
 }
 
-pub async fn save_new_vault(mut vault: Vault, progress: ProgressSenderRef) -> AsyncTaskReturn {
+pub async fn save_new_vault(
+    state: AppStateRef,
+    mut vault: Vault,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
     let fp = dialog.save_file().await.ok_or(TaskError::UserCancelled)?;
@@ -76,7 +108,10 @@ pub async fn save_new_vault(mut vault: Vault, progress: ProgressSenderRef) -> As
 
     save_vault(&vault, progress).await?;
 
-    Ok(AsyncTaskResult::VaultLoaded(vault.into()))
+    let name = vault.name.clone();
+    state.write().await.load_vault(vault);
+
+    Ok(AsyncTaskResult::VaultLoaded(name))
 }
 
 pub async fn save_current_vault(
@@ -84,12 +119,11 @@ pub async fn save_current_vault(
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     save_vault(
-        state
+        &*state
             .read()
             .await
             .get_current_vault()
-            .context("No current vault exists")?
-            .value(),
+            .ok_or(AppError::NoCurrentVault)?,
         progress,
     )
     .await
