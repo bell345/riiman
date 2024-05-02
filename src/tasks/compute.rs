@@ -1,7 +1,6 @@
-use crate::errors::AppError;
-use crate::state::AppStateRef;
-use crate::tasks::{ProgressSenderRef, ProgressState, TaskResult, TaskReturn};
+use crate::data::Item;
 use eframe::egui;
+use std::ops::Deref;
 
 #[derive(Debug)]
 pub struct ThumbnailPosition {
@@ -24,24 +23,15 @@ pub struct ThumbnailGridInfo {
 
 pub fn compute_thumbnails_grid(
     params: ThumbnailGridParams,
-    state: AppStateRef,
-    progress: ProgressSenderRef,
-) -> TaskReturn {
+    items: &[impl Deref<Target = Item>],
+) -> anyhow::Result<ThumbnailGridInfo> {
     let row_width = params.container_width.floor();
     let row_height = params.max_row_height.floor();
     let mut curr_pos = egui::Pos2::new(0.0, 0.0);
     let mut curr_row = vec![];
     let mut thumbnails = vec![];
 
-    progress.send(ProgressState::Indeterminate);
-    let state = state.blocking_read();
-    let current_vault = state.get_current_vault().ok_or(AppError::NoCurrentVault)?;
-
-    let n_items = current_vault.len_items();
-    progress.send(ProgressState::Determinate(0.0));
-    for (i, item) in current_vault.iter_items().enumerate() {
-        progress.send(ProgressState::Determinate(i as f32 / n_items as f32));
-
+    for item in items {
         let Some(size) = item.get_image_size()? else {
             continue;
         };
@@ -69,9 +59,9 @@ pub fn compute_thumbnails_grid(
         }
     }
 
-    Ok(TaskResult::ThumbnailGrid(ThumbnailGridInfo {
+    Ok(ThumbnailGridInfo {
         is_loading: false,
         params,
         thumbnails,
-    }))
+    })
 }

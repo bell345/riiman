@@ -2,14 +2,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use magick_rust::MagickWand;
-use tokio::fs::DirEntry;
 use tokio::task::JoinSet;
 
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::tasks::vault::save_vault;
-use crate::tasks::{ProgressSenderRef, ProgressState, SingleImportResult, TaskResult, TaskReturn};
+use crate::tasks::{
+    AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
+};
 
 async fn import_single_image(state: AppStateRef, item: tokio::fs::DirEntry) -> SingleImportResult {
     let path: Box<Path> = item.path().into();
@@ -53,7 +54,7 @@ async fn import_single_image(state: AppStateRef, item: tokio::fs::DirEntry) -> S
 pub async fn import_images_recursively(
     state: AppStateRef,
     progress: ProgressSenderRef,
-) -> TaskReturn {
+) -> AsyncTaskReturn {
     #[cfg(target_arch = "wasm32")]
     {
         use crate::tasks::TaskError::WasmNotImplemented;
@@ -73,7 +74,7 @@ pub async fn import_images_recursively(
     let scan_progress = progress.sub_task("Scan", 0.05);
     scan_progress.send(ProgressState::Indeterminate);
 
-    let mut entries: Vec<DirEntry> = vec![];
+    let mut entries: Vec<tokio::fs::DirEntry> = vec![];
     let mut dir_queue: Vec<PathBuf> = vec![root_dir.into()];
 
     while let Some(dir_path) = dir_queue.pop() {
@@ -91,7 +92,7 @@ pub async fn import_images_recursively(
                 ft = item.metadata().await?.file_type();
             }
             if ft.is_dir() {
-                dir_queue.push(item.path().into());
+                dir_queue.push(item.path());
             } else if ft.is_file() {
                 entries.push(item);
             }
@@ -127,7 +128,7 @@ pub async fn import_images_recursively(
 
     save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;
 
-    Ok(TaskResult::ImportComplete {
+    Ok(AsyncTaskResult::ImportComplete {
         path: root_dir.into(),
         results,
     })

@@ -8,14 +8,24 @@ macro_rules! field_def {
     { $name:ident , $parent:ident } => {
         paste::paste! {
             FieldDefinition::known([<$name:upper>])
-                .with_parent([<$name:upper>].id)
+                .with_parent($parent.id)
         }
     }
 }
 
 #[macro_export]
 macro_rules! field_defs {
-    { $( #[id( $ns_id:literal )] $ns_name:ident { $( #[id( $id:literal )] $name:ident : $type:ident ),* } ),* } => {
+    {
+        $(
+            #[id( $ns_id:literal )]
+            $ns_name:ident {
+                $(
+                    #[id( $id:literal )]
+                    $name:ident : $type:ident
+                ),*
+            }
+        ),*
+    } => {
         #[allow(unused_imports)]
         use $crate::data::{FieldDefinition, FieldType, KnownField};
         use std::sync::OnceLock;
@@ -32,13 +42,15 @@ macro_rules! field_defs {
                     #[allow(unused_imports)]
                     use uuid::{uuid, Uuid};
 
-                    pub const NAMESPACE: KnownField<kind::Dictionary> = KnownField::<kind::Dictionary>::new(
-                        uuid!($ns_id), stringify!($ns_name)
-                    );
-                    $(
-                        pub const [<$name:upper>]: KnownField<kind::$type> = KnownField::<kind::$type>::new(
-                            uuid!($id), stringify!($name)
+                    pub const NAMESPACE: KnownField<kind::Dictionary> =
+                        KnownField::<kind::Dictionary>::new(
+                            uuid!($ns_id), stringify!($ns_name)
                         );
+                    $(
+                        pub const [<$name:upper>]: KnownField<kind::$type> =
+                            KnownField::<kind::$type>::new(
+                                uuid!($id), stringify!($name)
+                            );
                     )*
 
                     #[allow(dead_code)]

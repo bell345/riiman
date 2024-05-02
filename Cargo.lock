@@ -2878,6 +2878,7 @@ dependencies = [
  "poll-promise",
  "rand",
  "rand_seeder",
+ "regex",
  "rfd",
  "serde",
  "serde_json",

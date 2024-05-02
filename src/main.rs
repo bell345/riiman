@@ -26,11 +26,11 @@ impl Drop for MagickContext {
 }
 
 mod data;
+mod errors;
+mod fields;
 mod state;
 mod tasks;
 mod ui;
-mod fields;
-mod errors;
 
 fn main() -> Result<(), impl std::error::Error> {
     tracing_subscriber::fmt()

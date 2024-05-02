@@ -5,6 +5,7 @@ pub use field::FieldDefinition;
 pub use field::FieldType;
 pub use field::FieldValue;
 pub use field::KnownField;
+pub use item::Item;
 pub use vault::Vault;
 
 mod field;

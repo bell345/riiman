@@ -8,6 +8,7 @@ pub use crate::tasks::compute::ThumbnailGridParams;
 pub(crate) mod compute;
 pub(crate) mod import;
 mod progress;
+pub(crate) mod sort;
 pub(crate) mod vault;
 
 pub use progress::DummyProgressSender;
@@ -16,14 +17,13 @@ use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
 
 #[derive(Debug)]
-pub enum TaskResult {
+pub enum AsyncTaskResult {
     None,
     VaultLoaded(Box<Vault>),
     ImportComplete {
         path: Box<Path>,
         results: Vec<SingleImportResult>,
     },
-    ThumbnailGrid(ThumbnailGridInfo),
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
@@ -51,18 +51,19 @@ impl<T: Into<anyhow::Error>> From<T> for TaskError {
     }
 }
 
-pub type TaskReturn = Result<TaskResult, TaskError>;
+pub type TaskResult<T> = Result<T, TaskError>;
+pub type AsyncTaskReturn = Result<AsyncTaskResult, TaskError>;
 
 struct Task {
     name: String,
-    promise: Promise<TaskReturn>,
+    promise: Promise<AsyncTaskReturn>,
     progress_rx: Option<ProgressReceiver>,
 }
 
 impl Task {
     pub fn with_progress(
         name: &str,
-        factory: impl FnOnce(ProgressSenderRef) -> Promise<TaskReturn>,
+        factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) -> Task {
         let (tx, rx) = tokio::sync::watch::channel(ProgressState::NotStarted);
         Task {
@@ -72,7 +73,7 @@ impl Task {
         }
     }
 
-    pub fn try_take_result(self) -> Result<TaskReturn, Task> {
+    pub fn try_take_result(self) -> Result<AsyncTaskReturn, Task> {
         match self.promise.try_take() {
             Ok(result) => Ok(result),
             Err(promise) => Err(Self { promise, ..self }),
@@ -89,12 +90,12 @@ impl TaskState {
     pub fn add_task_with_progress(
         &mut self,
         name: &str,
-        factory: impl FnOnce(ProgressSenderRef) -> Promise<TaskReturn>,
+        factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
         self.running_tasks.push(Task::with_progress(name, factory));
     }
 
-    pub fn iter_ready(&mut self) -> Vec<TaskReturn> {
+    pub fn iter_ready(&mut self) -> Vec<AsyncTaskReturn> {
         let mut results = vec![];
         let mut still_running_tasks = vec![];
         for task in self.running_tasks.drain(..) {

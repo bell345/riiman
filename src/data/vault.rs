@@ -1,5 +1,7 @@
+use std::ops::Deref;
 use std::path::Path;
 
+use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -43,7 +45,21 @@ impl Vault {
         self
     }
 
+    pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
+        self.definitions.get(def_id)
+    }
+
     pub fn set_definition(&self, definition: FieldDefinition) {
+        for parent_id in definition.iter_parent_ids() {
+            if let Some(mut parent_ref) = self.definitions.get_mut(&parent_id) {
+                parent_ref.add_child(definition.id);
+            }
+        }
+        for child_id in definition.iter_child_ids() {
+            if let Some(mut child_ref) = self.definitions.get_mut(&child_id) {
+                child_ref.add_parent(definition.id);
+            }
+        }
         self.definitions.insert(definition.id, definition);
     }
 
@@ -64,7 +80,10 @@ impl Vault {
         Ok(rel_path.to_str().ok_or(AppError::InvalidUnicode)?)
     }
 
-    pub fn get_item(&self, path: &Path) -> anyhow::Result<Option<Ref<String, Item>>> {
+    pub fn get_item<'a>(
+        &'a self,
+        path: &Path,
+    ) -> anyhow::Result<Option<impl Deref<Target = Item> + 'a>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self.items.get(rel_path))
     }
@@ -81,7 +100,7 @@ impl Vault {
         self.items.len()
     }
 
-    pub fn iter_items(&self) -> dashmap::iter::Iter<String, Item> {
+    pub fn iter_items(&self) -> impl Iterator<Item = RefMulti<'_, String, Item>> {
         self.items.iter()
     }
 }

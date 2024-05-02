@@ -3,19 +3,50 @@ use eframe::egui::Color32;
 use poll_promise::Promise;
 use rand::Rng;
 use rand_seeder::{Seeder, SipRng};
+use std::ops::Deref;
+use std::path::Path;
 use tracing::info;
 
-use crate::data::Vault;
+use crate::data::{Item, Vault};
+use crate::fields;
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::TaskResult::{ImportComplete, ThumbnailGrid, VaultLoaded};
+use crate::tasks::compute::compute_thumbnails_grid;
+use crate::tasks::sort::{
+    get_filtered_and_sorted_items, FilterExpression, SortDirection, SortExpression,
+};
+use crate::tasks::AsyncTaskResult::{ImportComplete, VaultLoaded};
 use crate::tasks::{
-    DummyProgressSender, ProgressSenderRef, ProgressState, TaskError, TaskReturn, TaskState,
-    ThumbnailGridInfo, ThumbnailGridParams,
+    AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError, TaskState, ThumbnailGridInfo,
+    ThumbnailGridParams,
 };
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
 
 mod modals;
+
+#[derive(Debug, PartialEq, Eq)]
+struct ItemCacheParams {
+    vault_name: String,
+    sorts: Vec<SortExpression>,
+    filter: FilterExpression,
+}
+
+struct ItemCache {
+    item_paths: Vec<String>,
+    params: ItemCacheParams,
+}
+
+impl ItemCache {
+    pub fn resolve_refs<'a, 'b: 'a>(
+        &'a self,
+        vault: &'b Vault,
+    ) -> Vec<impl Deref<Target = Item> + 'a> {
+        self.item_paths
+            .iter()
+            .filter_map(|p| vault.get_item(Path::new(p)).expect("valid path"))
+            .collect()
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct App {
@@ -23,7 +54,12 @@ pub(crate) struct App {
     tasks: TaskState,
 
     thumbnail_params: ThumbnailGridParams,
-    thumbnail_grid: ThumbnailGridInfo,
+    thumbnail_grid: Option<ThumbnailGridInfo>,
+
+    sorts: Vec<SortExpression>,
+    filter: FilterExpression,
+
+    item_list_cache: Option<ItemCache>,
 
     msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
@@ -34,8 +70,10 @@ impl App {
         Self {
             thumbnail_params: ThumbnailGridParams {
                 max_row_height: 120.0,
-                container_width: 0.0
+                container_width: 0.0,
             },
+            filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
+            sorts: vec![SortExpression::Path(SortDirection::Ascending)],
             ..Default::default()
         }
     }
@@ -43,17 +81,10 @@ impl App {
     fn add_task(
         &mut self,
         name: &'static str,
-        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<TaskReturn>,
+        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
         self.tasks
             .add_task_with_progress(name, |tx| task_factory(self.state.clone(), tx));
-    }
-
-    fn run_task(
-        &self,
-        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> TaskReturn,
-    ) -> TaskReturn {
-        task_factory(self.state.clone(), DummyProgressSender::new())
     }
 
     fn error(&mut self, message: String) {
@@ -93,7 +124,7 @@ impl eframe::App for App {
             match result {
                 Ok(VaultLoaded(vault)) => {
                     self.state_mut().load_vault(*vault);
-                },
+                }
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -103,7 +134,6 @@ impl eframe::App for App {
                     );
                     self.success("Import complete".to_string(), body);
                 }
-                Ok(ThumbnailGrid(info)) => self.thumbnail_grid = info,
                 Err(TaskError::WasmNotImplemented) => {
                     self.error("Not implemented in WASM".to_string())
                 }
@@ -192,14 +222,14 @@ impl eframe::App for App {
                     [(name, ProgressState::Determinate(progress)), ..] => {
                         ui.add(
                             egui::ProgressBar::new(*progress)
-                                .text(format!("{}% {name}", (progress * 100.0).floor() as u32))
+                                .text(format!("{}% {name}", (progress * 100.0).floor() as u32)),
                         );
                     }
                     [(name, ProgressState::DeterminateWithMessage(progress, msg)), ..] => {
-                        ui.add(
-                            egui::ProgressBar::new(*progress)
-                                .text(format!("{}% {name}: {msg}", (progress * 100.0).floor() as u32))
-                        );
+                        ui.add(egui::ProgressBar::new(*progress).text(format!(
+                            "{}% {name}: {msg}",
+                            (progress * 100.0).floor() as u32
+                        )));
                     }
                     [(name, ProgressState::Completed), ..] => {
                         ui.add(egui::ProgressBar::new(1.0).text(name));
@@ -216,52 +246,83 @@ impl eframe::App for App {
 
             ui.label(format!("Current vault: {}", current_vault.name));
 
+            let item_cache_params = ItemCacheParams {
+                vault_name: current_vault.name.to_string(),
+                filter: self.filter.clone(),
+                sorts: self.sorts.to_vec(),
+            };
+            if self.item_list_cache.is_none()
+                || self.item_list_cache.as_ref().unwrap().params != item_cache_params
+            {
+                let mut err = None;
+                match get_filtered_and_sorted_items(&current_vault, &self.filter, &self.sorts) {
+                    Ok(items) => {
+                        self.item_list_cache = Some(ItemCache {
+                            params: item_cache_params,
+                            item_paths: items.into_iter().map(|i| i.path().to_string()).collect(),
+                        })
+                    }
+                    Err(e) => err = Some(format!("{e:#}")),
+                };
+
+                if let Some(e) = err {
+                    drop(current_vault);
+                    drop(state);
+                    self.error(e);
+                    return;
+                }
+            }
+
             self.thumbnail_params.container_width = ui.available_width();
             ui.add(egui::widgets::Slider::new(
                 &mut self.thumbnail_params.max_row_height,
                 24.0..=1024.0,
             ));
 
-            if !self.thumbnail_grid.is_loading
-                && self.thumbnail_params != self.thumbnail_grid.params
+            if self.thumbnail_grid.is_none()
+                || self.thumbnail_params != self.thumbnail_grid.as_ref().unwrap().params
             {
                 let params = self.thumbnail_params.clone();
-                self.thumbnail_grid.is_loading = true;
 
-                if let Ok(ThumbnailGrid(info)) = self.run_task(
-                    |state, p| crate::tasks::compute::compute_thumbnails_grid(params, state, p)) {
-                    self.thumbnail_grid = info;
+                if let Some(items) = &self.item_list_cache {
+                    let mut err = None;
+                    match compute_thumbnails_grid(params, &items.resolve_refs(&current_vault)) {
+                        Ok(info) => self.thumbnail_grid = Some(info),
+                        Err(e) => err = Some(format!("{e:#}")),
+                    };
+
+                    if let Some(e) = err {
+                        drop(current_vault);
+                        drop(state);
+                        self.error(e);
+                        return;
+                    }
                 }
             }
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show_viewport(ui, |ui, vp| {
-                    if self.thumbnail_grid.thumbnails.is_empty() {
+                    let Some(grid) = self.thumbnail_grid.as_ref() else {
+                        return;
+                    };
+                    if grid.thumbnails.is_empty() {
                         return;
                     }
-                    
+
                     const PADDING: f32 = 8.0;
                     const ROUNDING: f32 = 4.0;
 
                     let abs_min = ui.min_rect().min.to_vec2();
                     let abs_vp = vp.translate(abs_min);
-                    let max_y = self.thumbnail_grid.thumbnails.last().unwrap().bounds.max.y;
+                    let max_y = grid.thumbnails.last().unwrap().bounds.max.y;
                     ui.set_width(ui.available_width());
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
 
-                    for item in self.thumbnail_grid.thumbnails.iter() {
+                    for item in grid.thumbnails.iter() {
                         let abs_bounds = item.bounds.translate(abs_min);
-                        let text = egui::Label::new(format!(
-                            "{}\nui_min: {:?}\nvp: {:?}\nabs_vp: {:?}\nbounds: {:?}\nabs_bound: {:?}",
-                            item.path.as_str(),
-                            abs_min.y,
-                            vp.min.y..vp.max.y,
-                            abs_vp.min.y..abs_vp.max.y,
-                            item.bounds.min.y..item.bounds.max.y,
-                            abs_bounds.min.y..item.bounds.max.y
-                        ));
+                        let text = egui::Label::new(item.path.clone());
                         if vp.intersects(item.bounds) {
                             let mut rng: SipRng = Seeder::from(&item.path).make_rng();
                             let colour = Color32::from_rgb(
@@ -284,7 +345,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    pub(crate) fn run(&mut self) -> Result<(), eframe::Error> {
+    pub(crate) fn run(self) -> Result<(), eframe::Error> {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
             ..Default::default()
@@ -295,7 +356,7 @@ impl App {
             options,
             Box::new(|cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
-                Box::<App>::default()
+                Box::new(self)
             }),
         )
     }

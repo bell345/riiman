@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,8 +11,8 @@ pub struct FieldDefinition {
     pub id: Uuid,
     pub name: String,
     pub field_type: kind::KindType,
-    parents: Vec<Uuid>,
-    children: Vec<Uuid>,
+    parents: HashSet<Uuid>,
+    children: HashSet<Uuid>,
     fields: HashMap<Uuid, FieldValue>,
 }
 
@@ -35,8 +36,24 @@ impl FieldDefinition {
     }
 
     pub fn with_parent(mut self, parent_id: Uuid) -> Self {
-        self.parents.push(parent_id);
+        self.add_parent(parent_id);
         self
+    }
+
+    pub fn iter_parent_ids(&self) -> impl Iterator<Item = impl Deref<Target = Uuid> + '_> {
+        self.parents.iter()
+    }
+
+    pub fn iter_child_ids(&self) -> impl Iterator<Item = impl Deref<Target = Uuid> + '_> {
+        self.children.iter()
+    }
+
+    pub fn add_parent(&mut self, parent_id: Uuid) {
+        self.parents.insert(parent_id);
+    }
+
+    pub fn add_child(&mut self, child_id: Uuid) {
+        self.children.insert(child_id);
     }
 }
 
@@ -114,18 +131,26 @@ macro_rules! impl_kind {
                 $name (value)
             }
         }
+
+        impl std::ops::Deref for $name {
+            type Target = $type;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
     }
 }
 
 macro_rules! define_kinds {
     { $( $name:ident $( ( $type:ty ) )? ),* } => {
 
-        #[derive(std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         pub enum KindType {
             $( $name , )*
         }
 
-        #[derive(std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
+        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         pub enum Value {
             $( $name $( ( $type ) )? , )*
         }
@@ -137,13 +162,15 @@ macro_rules! define_kinds {
 }
 
 pub mod kind {
+    use std::ops::Deref;
+
     pub trait TagKind:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
     {
         fn get_type() -> KindType;
     }
 
-    pub trait FieldKind<T>: TagKind + From<T> + Into<T> {}
+    pub trait FieldKind<T>: TagKind + From<T> + Into<T> + Deref<Target = T> {}
 
     define_kinds! {
         Tag,
@@ -155,6 +182,16 @@ pub mod kind {
         List(u64),
         Dictionary,
         DateTime(chrono::DateTime<chrono::Utc>)
+    }
+
+    impl Value {
+        pub fn as_str(&self) -> Option<&str> {
+            match self {
+                Value::Str(x) => Some(x.as_str()),
+                Value::ItemRef(x) => Some(x.as_str()),
+                _ => None,
+            }
+        }
     }
 
     impl Default for KindType {
