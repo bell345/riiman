@@ -1,16 +1,18 @@
+use eframe::egui::ColorImage;
 use poll_promise::Promise;
 use std::path::Path;
 
-use crate::data::Vault;
 pub use crate::tasks::compute::ThumbnailGridInfo;
 pub use crate::tasks::compute::ThumbnailGridParams;
 
 pub(crate) mod compute;
+pub(crate) mod image;
 pub(crate) mod import;
 mod progress;
 pub(crate) mod sort;
 pub(crate) mod vault;
 
+use crate::tasks::image::ThumbnailParams;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
@@ -23,6 +25,10 @@ pub enum AsyncTaskResult {
     ImportComplete {
         path: Box<Path>,
         results: Vec<SingleImportResult>,
+    },
+    ThumbnailLoaded {
+        params: ThumbnailParams,
+        image: ColorImage,
     },
 }
 

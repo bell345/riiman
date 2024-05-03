@@ -67,7 +67,7 @@ impl Vault {
         self.file_path = Some(path.into());
     }
 
-    fn resolve_rel_path<'a>(&self, path: &'a Path) -> anyhow::Result<&'a str> {
+    pub fn resolve_rel_path<'a>(&self, path: &'a Path) -> anyhow::Result<&'a str> {
         let rel_path = match (path.is_relative(), self.file_path.as_ref()) {
             (true, Some(_)) => path,
             (false, Some(vault_path)) => {
@@ -78,6 +78,22 @@ impl Vault {
         };
 
         Ok(rel_path.to_str().ok_or(AppError::InvalidUnicode)?)
+    }
+
+    pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<String> {
+        let abs_path = match (path.is_absolute(), self.file_path.as_ref()) {
+            (true, _) => path.to_owned(),
+            (_, Some(vault_path)) => {
+                let root_dir = vault_path.parent().ok_or(AppError::VaultNoParent)?;
+                root_dir.join(path)
+            }
+            (_, None) => path.to_owned(),
+        };
+
+        Ok(abs_path
+            .to_str()
+            .ok_or(AppError::InvalidUnicode)?
+            .to_string())
     }
 
     pub fn get_item<'a>(
