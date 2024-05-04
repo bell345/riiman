@@ -1,10 +1,13 @@
 use crate::data::Item;
+use crate::fields;
+use chrono::{DateTime, Utc};
 use eframe::egui;
 use std::ops::Deref;
 
 #[derive(Debug)]
 pub struct ThumbnailPosition {
     pub path: String,
+    pub last_modified: Option<DateTime<Utc>>,
     pub bounds: egui::Rect,
 }
 
@@ -40,6 +43,7 @@ pub fn compute_thumbnails_grid(
         let bounds = egui::Rect::from_min_size(curr_pos, new_size);
         curr_row.push(ThumbnailPosition {
             path: item.path().to_string(),
+            last_modified: item.get_known_field_value(fields::general::LAST_MODIFIED)?,
             bounds,
         });
         curr_pos.x += new_size.x;

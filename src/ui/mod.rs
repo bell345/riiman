@@ -1,15 +1,17 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use eframe::egui;
 use poll_promise::Promise;
+use std::cell::RefCell;
 use std::ops::{Add, Deref};
 use std::path::Path;
-use tracing::info;
+use std::sync::Mutex;
+use tracing::{info, warn};
 
 use crate::data::{Item, Vault};
 use crate::fields;
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::compute::compute_thumbnails_grid;
-use crate::tasks::image::{load_image_thumbnail, ThumbnailParams};
+use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
 use crate::tasks::sort::{
     get_filtered_and_sorted_items, FilterExpression, SortDirection, SortExpression,
 };
@@ -49,11 +51,84 @@ impl ItemCache {
 
 const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
+const THUMBNAIL_LQ_LOAD_INTERVAL_MS: i64 = 10;
+const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
+const THUMBNAIL_VISIBLE_THRESHOLD: f32 = 20.0;
+const THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS: i64 = 1500;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum ThumbnailCacheItem {
     Loading,
     Loaded(egui::TextureHandle),
+}
+
+struct ThumbnailCache {
+    cache: moka::sync::Cache<ThumbnailParams, ThumbnailCacheItem>,
+    pending_inserts: Mutex<Vec<ThumbnailParams>>,
+
+    is_loading: RefCell<bool>,
+    next_load_utc: RefCell<Option<DateTime<Utc>>>,
+
+    load_interval: TimeDelta,
+    is_concurrent: bool,
+}
+
+impl ThumbnailCache {
+    pub fn new(load_interval: TimeDelta, is_concurrent: bool) -> Self {
+        Self {
+            cache: moka::sync::CacheBuilder::new(THUMBNAIL_CACHE_SIZE)
+                .weigher(|_, v| match v {
+                    ThumbnailCacheItem::Loading => 0,
+                    ThumbnailCacheItem::Loaded(hndl) => {
+                        hndl.byte_size().try_into().unwrap_or(u32::MAX)
+                    }
+                })
+                .build(),
+            pending_inserts: Default::default(),
+            is_loading: Default::default(),
+            next_load_utc: Default::default(),
+            load_interval,
+            is_concurrent,
+        }
+    }
+
+    pub fn read(&self, params: &ThumbnailParams) -> ThumbnailCacheItem {
+        self.cache.get_with(params.clone(), || {
+            self.pending_inserts.lock().unwrap().push(params.clone());
+            ThumbnailCacheItem::Loading
+        })
+    }
+
+    pub fn commit(&self, params: ThumbnailParams, item: ThumbnailCacheItem) {
+        self.cache.insert(params, item);
+        *self.is_loading.borrow_mut() = false;
+    }
+
+    pub fn drain_requests(&mut self) -> Vec<ThumbnailParams> {
+        let mut requests = vec![];
+        for params in self.pending_inserts.lock().unwrap().drain(..) {
+            let conc_blocked = !self.is_concurrent && *self.is_loading.borrow();
+            let time_blocked = self.next_load_utc.borrow().unwrap_or(Utc::now()) > Utc::now();
+
+            if conc_blocked || time_blocked {
+                self.cache.invalidate(&params);
+                continue;
+            }
+
+            *self.is_loading.borrow_mut() = true;
+            *self.next_load_utc.borrow_mut() = Some(Utc::now().add(self.load_interval));
+
+            requests.push(params);
+        }
+
+        requests
+    }
+}
+
+impl Default for ThumbnailCache {
+    fn default() -> Self {
+        Self::new(TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS), false)
+    }
 }
 
 #[derive(Default)]
@@ -64,18 +139,19 @@ pub(crate) struct App {
     vault_loading: bool,
     thumbnail_params: ThumbnailGridParams,
     thumbnail_grid: Option<ThumbnailGridInfo>,
+    thumbnail_grid_first_visible: Option<String>,
+    thumbnail_grid_scroll_cooldown: Option<DateTime<Utc>>,
+    thumbnail_grid_set_scroll: bool,
 
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
 
     item_list_cache: Option<ItemCache>,
-    thumbnail_cache: Option<moka::sync::Cache<ThumbnailParams, ThumbnailCacheItem>>,
+    lq_thumbnail_cache: ThumbnailCache,
+    thumbnail_cache: ThumbnailCache,
 
     msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
-
-    is_loading_thumbnail: bool,
-    ready_to_load_thumbnail_utc: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -99,15 +175,13 @@ impl App {
             },
             filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
             sorts: vec![SortExpression::Path(SortDirection::Ascending)],
-            thumbnail_cache: Some(
-                moka::sync::CacheBuilder::new(THUMBNAIL_CACHE_SIZE)
-                    .weigher(|_, v| match v {
-                        ThumbnailCacheItem::Loading => 0,
-                        ThumbnailCacheItem::Loaded(hndl) => {
-                            hndl.byte_size().try_into().unwrap_or(u32::MAX)
-                        }
-                    })
-                    .build(),
+            thumbnail_cache: ThumbnailCache::new(
+                TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
+                false,
+            ),
+            lq_thumbnail_cache: ThumbnailCache::new(
+                TimeDelta::milliseconds(THUMBNAIL_LQ_LOAD_INTERVAL_MS),
+                true,
             ),
             ..Default::default()
         }
@@ -136,10 +210,6 @@ impl App {
         self.state.blocking_read()
     }
 
-    fn state_mut(&self) -> tokio::sync::RwLockWriteGuard<AppState> {
-        self.state.blocking_write()
-    }
-
     fn load_persistent_state(&mut self, storage: Option<&dyn eframe::Storage>) -> Option<()> {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
@@ -157,7 +227,8 @@ impl App {
         Some(())
     }
 
-    fn setup(&mut self, _ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) {
+    fn setup(&mut self, ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) {
+        ctx.style_mut(|style| style.animation_time = 0.0);
         self.load_persistent_state(storage);
     }
 
@@ -207,12 +278,13 @@ impl eframe::App for App {
                     self.success("Import complete".to_string(), body);
                 }
                 Ok(ThumbnailLoaded { params, image }) => {
-                    self.is_loading_thumbnail = false;
                     let hndl = ctx.load_texture(params.tex_name(), image, Default::default());
+                    if params.height == THUMBNAIL_LOW_QUALITY_HEIGHT {
+                        self.lq_thumbnail_cache
+                            .commit(params.clone(), ThumbnailCacheItem::Loaded(hndl.clone()));
+                    }
                     self.thumbnail_cache
-                        .as_ref()
-                        .unwrap()
-                        .insert(params, ThumbnailCacheItem::Loaded(hndl));
+                        .commit(params, ThumbnailCacheItem::Loaded(hndl));
                 }
                 Err(TaskError::WasmNotImplemented) => {
                     self.error("Not implemented in WASM".to_string())
@@ -333,7 +405,6 @@ impl eframe::App for App {
             let Some(current_vault) = state.get_current_vault() else {
                 return;
             };
-            let curr_vault_path = current_vault.file_path.as_ref().map(|p| p.to_owned());
 
             ui.label(format!("Current vault: {}", current_vault.name));
 
@@ -375,6 +446,8 @@ impl eframe::App for App {
             if self.thumbnail_grid.is_none()
                 || self.thumbnail_params != self.thumbnail_grid.as_ref().unwrap().params
             {
+                self.thumbnail_grid_set_scroll = true;
+                ctx.request_repaint();
                 let params = self.thumbnail_params.clone();
 
                 if let Some(items) = &self.item_list_cache {
@@ -413,27 +486,57 @@ impl eframe::App for App {
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
 
-                    let mut thumbs_to_load = vec![];
+                    let mut next_first_visible: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
                         let abs_bounds = item.bounds.translate(abs_min);
                         let text = egui::Label::new(item.path.clone());
+
+                        // scroll to item if resize event has occurred
+                        if self.thumbnail_grid_set_scroll
+                            && &item.path
+                                == self
+                                    .thumbnail_grid_first_visible
+                                    .as_ref()
+                                    .unwrap_or(&"".to_string())
+                        {
+                            info!("do scroll to {} at {:?}", &item.path, &abs_bounds);
+                            ui.scroll_to_rect(abs_bounds, Some(egui::Align::Min));
+                            self.thumbnail_grid_set_scroll = false;
+                            self.thumbnail_grid_scroll_cooldown = Some(Utc::now().add(
+                                TimeDelta::milliseconds(THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS),
+                            ));
+                        }
+                        // mark current item as item to scroll to when resize occurs
+                        else if self.thumbnail_grid_scroll_cooldown.unwrap_or(Utc::now())
+                            <= Utc::now()
+                            && item.bounds.max.y > (vp.min.y + THUMBNAIL_VISIBLE_THRESHOLD)
+                            && next_first_visible.is_none()
+                        {
+                            info!("next first visible: {}", &item.path);
+                            next_first_visible = Some(item.path.clone());
+                        }
+
                         if vp.intersects(item.bounds) {
-                            if curr_vault_path.is_none() {
-                                continue;
+                            let path: Box<Path> = Path::new(item.path.as_str()).into();
+                            let height = self.thumbnail_params.max_row_height as usize;
+
+                            let mut thumb = ThumbnailCacheItem::Loading;
+                            if height > THUMBNAIL_LOW_QUALITY_HEIGHT {
+                                thumb = self.thumbnail_cache.read(&ThumbnailParams {
+                                    path: path.clone(),
+                                    last_modified: item.last_modified,
+                                    height,
+                                });
+                            }
+                            if thumb == ThumbnailCacheItem::Loading {
+                                thumb = self.lq_thumbnail_cache.read(&ThumbnailParams {
+                                    path: path.clone(),
+                                    last_modified: item.last_modified,
+                                    height: THUMBNAIL_LOW_QUALITY_HEIGHT,
+                                });
                             }
 
-                            let params = ThumbnailParams {
-                                path: Path::new(item.path.as_str()).into(),
-                                height: self.thumbnail_params.max_row_height as usize,
-                            };
-                            let thumb = self.thumbnail_cache.as_ref().unwrap().get_with(
-                                params.clone(),
-                                || {
-                                    thumbs_to_load.push(params);
-                                    ThumbnailCacheItem::Loading
-                                },
-                            );
                             match thumb {
                                 ThumbnailCacheItem::Loading => {
                                     ui.put(abs_bounds.shrink(PADDING), text);
@@ -451,20 +554,18 @@ impl eframe::App for App {
                         }
                     }
 
-                    for params in thumbs_to_load {
-                        if !self.is_loading_thumbnail
-                            && self.ready_to_load_thumbnail_utc.unwrap_or(Utc::now()) <= Utc::now()
-                        {
-                            self.is_loading_thumbnail = true;
-                            self.add_task("Load thumbnail", move |s, p| {
-                                Promise::spawn_async(load_image_thumbnail(s, p, params))
-                            });
-                            self.ready_to_load_thumbnail_utc = Some(
-                                Utc::now().add(TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS)),
-                            );
-                        } else {
-                            self.thumbnail_cache.as_ref().unwrap().invalidate(&params);
-                        }
+                    self.thumbnail_grid_first_visible = next_first_visible;
+
+                    for params in self.lq_thumbnail_cache.drain_requests() {
+                        self.add_task("Load thumbnail", move |s, p| {
+                            Promise::spawn_async(load_image_thumbnail_with_fs(s, p, params))
+                        });
+                    }
+
+                    for params in self.thumbnail_cache.drain_requests() {
+                        self.add_task("Load thumbnail", move |s, p| {
+                            Promise::spawn_async(load_image_thumbnail(s, p, params))
+                        });
                     }
                 });
         });

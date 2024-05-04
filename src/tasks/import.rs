@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
 use tokio::task::JoinSet;
 
@@ -12,11 +13,8 @@ use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
 };
 
-async fn import_single_image(state: AppStateRef, item: tokio::fs::DirEntry) -> SingleImportResult {
-    let path: Box<Path> = item.path().into();
-
-    /*info!("fake loading path {}", path.display());
-    tokio::time::sleep(Duration::from_millis((random::<f64>() * 5000.0) as u64)).await;*/
+async fn import_single_image(state: AppStateRef, entry: tokio::fs::DirEntry) -> SingleImportResult {
+    let path: Box<Path> = entry.path().into();
 
     let state_ref = state.read().await;
     let vault = state_ref
@@ -42,8 +40,16 @@ async fn import_single_image(state: AppStateRef, item: tokio::fs::DirEntry) -> S
     }
     item.set_known_field_value(fields::general::MEDIA_TYPE, mime_type);
 
+    let file_modified: DateTime<Utc> = entry.metadata().await?.modified()?.into();
+    if let Some(item_modified) = item.get_known_field_value(fields::general::LAST_MODIFIED)? {
+        if file_modified <= item_modified {
+            return Ok(path);
+        }
+    }
+    item.set_known_field_value(fields::general::LAST_MODIFIED, file_modified);
+
     let wand = MagickWand::new();
-    wand.read_image(path.to_str().ok_or(AppError::InvalidUnicode)?)?;
+    wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)?;
 
     item.set_known_field_value(fields::image::HEIGHT, wand.get_image_height() as u64);
     item.set_known_field_value(fields::image::WIDTH, wand.get_image_width() as u64);

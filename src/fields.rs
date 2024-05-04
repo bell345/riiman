@@ -89,6 +89,8 @@ field_defs! {
     #[id("59589bd3-f9b9-49c1-9969-1d3714fa68db")]
     general {
         #[id("cd1bbe33-c7b0-49a8-a3c4-901ca3ea01fd")]
-        media_type: Str
+        media_type: Str,
+        #[id("2ee79ce5-9ddc-4115-8f95-e7c028cf495f")]
+        last_modified: DateTime
     }
 }
