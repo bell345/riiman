@@ -374,6 +374,7 @@ impl eframe::App for App {
                     crate::built_info::built_time()
                 ));
 
+                ctx.request_repaint();
                 let progresses = self.tasks.iter_progress();
                 match &progresses[..] {
                     [] => {}
@@ -486,6 +487,11 @@ impl eframe::App for App {
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
 
+                    let first_visible = self
+                        .thumbnail_grid_first_visible
+                        .as_ref()
+                        .unwrap_or(&"".to_string())
+                        .clone();
                     let mut next_first_visible: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
@@ -493,13 +499,7 @@ impl eframe::App for App {
                         let text = egui::Label::new(item.path.clone());
 
                         // scroll to item if resize event has occurred
-                        if self.thumbnail_grid_set_scroll
-                            && &item.path
-                                == self
-                                    .thumbnail_grid_first_visible
-                                    .as_ref()
-                                    .unwrap_or(&"".to_string())
-                        {
+                        if self.thumbnail_grid_set_scroll && item.path == first_visible {
                             info!("do scroll to {} at {:?}", &item.path, &abs_bounds);
                             ui.scroll_to_rect(abs_bounds, Some(egui::Align::Min));
                             self.thumbnail_grid_set_scroll = false;
@@ -513,7 +513,6 @@ impl eframe::App for App {
                             && item.bounds.max.y > (vp.min.y + THUMBNAIL_VISIBLE_THRESHOLD)
                             && next_first_visible.is_none()
                         {
-                            info!("next first visible: {}", &item.path);
                             next_first_visible = Some(item.path.clone());
                         }
 
@@ -554,7 +553,9 @@ impl eframe::App for App {
                         }
                     }
 
-                    self.thumbnail_grid_first_visible = next_first_visible;
+                    if next_first_visible.is_some() {
+                        self.thumbnail_grid_first_visible = next_first_visible;
+                    }
 
                     for params in self.lq_thumbnail_cache.drain_requests() {
                         self.add_task("Load thumbnail", move |s, p| {

@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use magick_rust::MagickWand;
 use tokio::task::JoinSet;
+use tracing::info;
 
 use crate::errors::AppError;
 use crate::fields;
@@ -13,7 +14,11 @@ use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
 };
 
-async fn import_single_image(state: AppStateRef, entry: tokio::fs::DirEntry) -> SingleImportResult {
+async fn import_single_image(
+    state: AppStateRef,
+    entry: tokio::fs::DirEntry,
+    metadata: std::fs::Metadata,
+) -> SingleImportResult {
     let path: Box<Path> = entry.path().into();
 
     let state_ref = state.read().await;
@@ -40,19 +45,23 @@ async fn import_single_image(state: AppStateRef, entry: tokio::fs::DirEntry) -> 
     }
     item.set_known_field_value(fields::general::MEDIA_TYPE, mime_type);
 
-    let file_modified: DateTime<Utc> = entry.metadata().await?.modified()?.into();
+    let file_modified = metadata.modified().map(|m| m.into()).unwrap_or(Utc::now());
+
     if let Some(item_modified) = item.get_known_field_value(fields::general::LAST_MODIFIED)? {
         if file_modified <= item_modified {
             return Ok(path);
         }
     }
+
     item.set_known_field_value(fields::general::LAST_MODIFIED, file_modified);
 
     let wand = MagickWand::new();
     wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)?;
 
-    item.set_known_field_value(fields::image::HEIGHT, wand.get_image_height() as u64);
-    item.set_known_field_value(fields::image::WIDTH, wand.get_image_width() as u64);
+    let width = wand.get_image_width() as u64;
+    let height = wand.get_image_height() as u64;
+    item.set_known_field_value(fields::image::HEIGHT, height);
+    item.set_known_field_value(fields::image::WIDTH, width);
 
     Ok(path)
 }
@@ -80,7 +89,7 @@ pub async fn import_images_recursively(
     let scan_progress = progress.sub_task("Scan", 0.05);
     scan_progress.send(ProgressState::Indeterminate);
 
-    let mut entries: Vec<tokio::fs::DirEntry> = vec![];
+    let mut entries: Vec<(tokio::fs::DirEntry, std::fs::Metadata)> = vec![];
     let mut dir_queue: Vec<PathBuf> = vec![root_dir.into()];
 
     while let Some(dir_path) = dir_queue.pop() {
@@ -93,23 +102,24 @@ pub async fn import_images_recursively(
             .await
             .with_context(|| format!("iterating in directory {}", root_dir.display()))?
         {
-            let mut ft = item.file_type().await?;
-            if ft.is_symlink() {
-                ft = item.metadata().await?.file_type();
-            }
-            if ft.is_dir() {
+            let metadata = item
+                .metadata()
+                .await
+                .with_context(|| format!("getting metadata for file {}", item.path().display()))?;
+            if metadata.is_dir() {
                 dir_queue.push(item.path());
-            } else if ft.is_file() {
-                entries.push(item);
+            } else if metadata.is_file() {
+                entries.push((item, metadata));
             }
         }
     }
 
     scan_progress.send(ProgressState::Completed);
+    info!("completed scan: {} items", entries.len());
 
     let mut join_set = JoinSet::new();
-    for entry in entries {
-        join_set.spawn(import_single_image(state.clone(), entry));
+    for (entry, metadata) in entries {
+        join_set.spawn(import_single_image(state.clone(), entry, metadata));
     }
 
     let import_progress = progress.sub_task("Import", 0.90);
@@ -121,11 +131,11 @@ pub async fn import_images_recursively(
 
         let p = results.len() as f32 / total as f32;
         if let Ok(path) = &task_res {
-            import_progress.send(ProgressState::DeterminateWithMessage(
-                p,
-                path.to_str().unwrap_or("").to_string(),
-            ));
+            let msg = path.to_str().unwrap_or("").to_string();
+            info!("sending msg: {msg}");
+            import_progress.send(ProgressState::DeterminateWithMessage(p, msg));
         } else {
+            info!("unknown result: {task_res:?}");
             import_progress.send(ProgressState::Determinate(p));
         }
 
