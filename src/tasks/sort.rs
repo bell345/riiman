@@ -1,6 +1,7 @@
+use derive_more::{Display, Not};
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::ops::Deref;
+use std::ops::{Deref, Not};
 use std::path::Path;
 
 use uuid::Uuid;
@@ -59,16 +60,55 @@ pub enum FilterExpression {
     And(Box<FilterExpression>, Box<FilterExpression>),
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Default, Display, Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize,
+)]
 pub enum SortDirection {
+    #[default]
     Ascending,
     Descending,
+}
+
+impl SortDirection {
+    pub(crate) fn to_icon(self) -> &'static str {
+        match self {
+            SortDirection::Ascending => "\u{23f6}",
+            SortDirection::Descending => "\u{23f7}",
+        }
+    }
+}
+
+impl Not for SortDirection {
+    type Output = SortDirection;
+
+    fn not(self) -> Self::Output {
+        match self {
+            SortDirection::Ascending => SortDirection::Descending,
+            SortDirection::Descending => SortDirection::Ascending,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SortExpression {
     Path(SortDirection),
     Field(Uuid, SortDirection),
+}
+
+#[derive(Default, Debug, Display, Eq, PartialEq)]
+pub enum SortType {
+    #[default]
+    Path,
+    Field,
+}
+
+impl From<SortExpression> for SortType {
+    fn from(value: SortExpression) -> Self {
+        match value {
+            SortExpression::Path(_) => SortType::Path,
+            SortExpression::Field(_, _) => SortType::Field,
+        }
+    }
 }
 
 fn evaluate_match_expression_string(

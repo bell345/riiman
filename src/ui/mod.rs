@@ -1,53 +1,35 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use eframe::egui;
+use eframe::emath::{vec2, Align2};
 use poll_promise::Promise;
-use std::cell::RefCell;
-use std::ops::{Add, Deref};
-use std::path::Path;
-use std::sync::Mutex;
-use tracing::{info, warn};
 
-use crate::data::{Item, Vault};
+use std::ops::Add;
+use std::path::Path;
+use std::sync::Arc;
+use tracing::info;
+use uuid::Uuid;
+
+use crate::data::Vault;
 use crate::fields;
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::compute::compute_thumbnails_grid;
 use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
 use crate::tasks::sort::{
-    get_filtered_and_sorted_items, FilterExpression, SortDirection, SortExpression,
+    get_filtered_and_sorted_items, FilterExpression, SortDirection, SortExpression, SortType,
 };
 use crate::tasks::AsyncTaskResult::{ImportComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
 use crate::tasks::{
     AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError, TaskState, ThumbnailGridInfo,
     ThumbnailGridParams,
 };
+use crate::ui::item_cache::{ItemCache, ItemCacheParams};
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
+use crate::ui::thumb_cache::{ThumbnailCache, ThumbnailCacheItem};
 
+mod item_cache;
 mod modals;
-
-#[derive(Debug, PartialEq, Eq)]
-struct ItemCacheParams {
-    vault_name: String,
-    sorts: Vec<SortExpression>,
-    filter: FilterExpression,
-}
-
-struct ItemCache {
-    item_paths: Vec<String>,
-    params: ItemCacheParams,
-}
-
-impl ItemCache {
-    pub fn resolve_refs<'a, 'b: 'a>(
-        &'a self,
-        vault: &'b Vault,
-    ) -> Vec<impl Deref<Target = Item> + 'a> {
-        self.item_paths
-            .iter()
-            .filter_map(|p| vault.get_item(Path::new(p)).expect("valid path"))
-            .collect()
-    }
-}
+mod thumb_cache;
 
 const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
@@ -56,81 +38,6 @@ const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const THUMBNAIL_VISIBLE_THRESHOLD: f32 = 20.0;
 const THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS: i64 = 1500;
 
-#[derive(Clone, PartialEq, Eq)]
-enum ThumbnailCacheItem {
-    Loading,
-    Loaded(egui::TextureHandle),
-}
-
-struct ThumbnailCache {
-    cache: moka::sync::Cache<ThumbnailParams, ThumbnailCacheItem>,
-    pending_inserts: Mutex<Vec<ThumbnailParams>>,
-
-    is_loading: RefCell<bool>,
-    next_load_utc: RefCell<Option<DateTime<Utc>>>,
-
-    load_interval: TimeDelta,
-    is_concurrent: bool,
-}
-
-impl ThumbnailCache {
-    pub fn new(load_interval: TimeDelta, is_concurrent: bool) -> Self {
-        Self {
-            cache: moka::sync::CacheBuilder::new(THUMBNAIL_CACHE_SIZE)
-                .weigher(|_, v| match v {
-                    ThumbnailCacheItem::Loading => 0,
-                    ThumbnailCacheItem::Loaded(hndl) => {
-                        hndl.byte_size().try_into().unwrap_or(u32::MAX)
-                    }
-                })
-                .build(),
-            pending_inserts: Default::default(),
-            is_loading: Default::default(),
-            next_load_utc: Default::default(),
-            load_interval,
-            is_concurrent,
-        }
-    }
-
-    pub fn read(&self, params: &ThumbnailParams) -> ThumbnailCacheItem {
-        self.cache.get_with(params.clone(), || {
-            self.pending_inserts.lock().unwrap().push(params.clone());
-            ThumbnailCacheItem::Loading
-        })
-    }
-
-    pub fn commit(&self, params: ThumbnailParams, item: ThumbnailCacheItem) {
-        self.cache.insert(params, item);
-        *self.is_loading.borrow_mut() = false;
-    }
-
-    pub fn drain_requests(&mut self) -> Vec<ThumbnailParams> {
-        let mut requests = vec![];
-        for params in self.pending_inserts.lock().unwrap().drain(..) {
-            let conc_blocked = !self.is_concurrent && *self.is_loading.borrow();
-            let time_blocked = self.next_load_utc.borrow().unwrap_or(Utc::now()) > Utc::now();
-
-            if conc_blocked || time_blocked {
-                self.cache.invalidate(&params);
-                continue;
-            }
-
-            *self.is_loading.borrow_mut() = true;
-            *self.next_load_utc.borrow_mut() = Some(Utc::now().add(self.load_interval));
-
-            requests.push(params);
-        }
-
-        requests
-    }
-}
-
-impl Default for ThumbnailCache {
-    fn default() -> Self {
-        Self::new(TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS), false)
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct App {
     state: AppStateRef,
@@ -138,7 +45,7 @@ pub(crate) struct App {
 
     vault_loading: bool,
     thumbnail_params: ThumbnailGridParams,
-    thumbnail_grid: Option<ThumbnailGridInfo>,
+    thumbnail_grid: ThumbnailGridInfo,
     thumbnail_grid_first_visible: Option<String>,
     thumbnail_grid_scroll_cooldown: Option<DateTime<Utc>>,
     thumbnail_grid_set_scroll: bool,
@@ -146,12 +53,17 @@ pub(crate) struct App {
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
 
-    item_list_cache: Option<ItemCache>,
+    item_list_cache: ItemCache,
     lq_thumbnail_cache: ThumbnailCache,
     thumbnail_cache: ThumbnailCache,
 
     msg_dialogs: Vec<MessageDialog>,
     new_vault_dialog: NewVaultDialog,
+
+    sort_type: SortType,
+    sort_field_id: Option<Uuid>,
+    sort_direction: SortDirection,
+    search_text: String,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -176,10 +88,12 @@ impl App {
             filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
             sorts: vec![SortExpression::Path(SortDirection::Ascending)],
             thumbnail_cache: ThumbnailCache::new(
+                THUMBNAIL_CACHE_SIZE,
                 TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
                 false,
             ),
             lq_thumbnail_cache: ThumbnailCache::new(
+                THUMBNAIL_CACHE_SIZE,
                 TimeDelta::milliseconds(THUMBNAIL_LQ_LOAD_INTERVAL_MS),
                 true,
             ),
@@ -364,6 +278,116 @@ impl eframe::App for App {
             });
         });
 
+        egui::TopBottomPanel::top("search_panel")
+            .max_height(24.0)
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::widgets::Slider::new(
+                            &mut self.thumbnail_params.max_row_height,
+                            128.0..=1024.0,
+                        )
+                        .show_value(false),
+                    );
+                    // square four corners
+                    ui.label("\u{26f6}");
+
+                    ui.add_space(16.0);
+
+                    if ui
+                        .add(egui::Button::new(self.sort_direction.to_icon()).frame(false))
+                        .clicked()
+                    {
+                        self.sort_direction = !self.sort_direction;
+                    }
+
+                    if self.sort_type == SortType::Field {
+                        ui.label("Field goes here");
+                    }
+
+                    egui::ComboBox::from_label("Sort by")
+                        .selected_text(self.sort_type.to_string())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.sort_type,
+                                SortType::Path,
+                                SortType::Path.to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut self.sort_type,
+                                SortType::Field,
+                                SortType::Field.to_string(),
+                            );
+
+                            ui.style_mut().visuals.widgets.inactive.rounding.ne = 0.0;
+                            ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
+                        });
+
+                    self.sorts = match self.sort_type {
+                        SortType::Path => vec![SortExpression::Path(self.sort_direction)],
+                        SortType::Field => vec![],
+                    };
+
+                    let mut layouter =
+                        |ui: &egui::Ui, text: &str, _wrap_width: f32| -> Arc<egui::Galley> {
+                            let mut job = egui::text::LayoutJob::default();
+                            let style = ui.style();
+
+                            job.append(
+                                text,
+                                16.0,
+                                egui::TextFormat::simple(
+                                    egui::TextStyle::Body.resolve(style),
+                                    style.visuals.text_color(),
+                                ),
+                            );
+
+                            ui.fonts(|f| f.layout_job(job))
+                        };
+
+                    let output = ui.add(
+                        egui::TextEdit::singleline(&mut self.search_text)
+                            .desired_width(f32::INFINITY)
+                            .layouter(&mut layouter),
+                    );
+
+                    let style = ui.style();
+                    let painter = ui.painter_at(output.rect);
+
+                    let icon_width = painter
+                        .text(
+                            output.rect.min.add(vec2(
+                                style.spacing.button_padding.x,
+                                output.rect.size().y / 2.0,
+                            )),
+                            Align2::LEFT_CENTER,
+                            "\u{1f50d}",
+                            egui::TextStyle::Button.resolve(style),
+                            style.visuals.strong_text_color(),
+                        )
+                        .width();
+
+                    if self.search_text.is_empty() {
+                        painter.text(
+                            output.rect.min.add(vec2(
+                                style.spacing.button_padding.x
+                                    + icon_width
+                                    + style.spacing.button_padding.x,
+                                output.rect.size().y / 2.0,
+                            )),
+                            Align2::LEFT_CENTER,
+                            "Search...",
+                            egui::TextStyle::Body.resolve(style),
+                            style.visuals.weak_text_color(),
+                        );
+                    }
+
+                    ui.text_edit_singleline(&mut self.search_text);
+
+                    self.filter = FilterExpression::TextSearch(self.search_text.clone());
+                });
+            });
+
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!(
@@ -407,56 +431,41 @@ impl eframe::App for App {
                 return;
             };
 
+            let mut err = None;
+
             ui.label(format!("Current vault: {}", current_vault.name));
 
             let item_cache_params = ItemCacheParams {
                 vault_name: current_vault.name.to_string(),
                 filter: self.filter.clone(),
-                sorts: self.sorts.to_vec(),
+                sorts: self.sorts.clone(),
             };
-            if self.item_list_cache.is_none()
-                || self.item_list_cache.as_ref().unwrap().params != item_cache_params
-            {
-                let mut err = None;
+
+            let new_item_list = self.item_list_cache.params != item_cache_params;
+            if new_item_list {
                 match get_filtered_and_sorted_items(&current_vault, &self.filter, &self.sorts) {
                     Ok(items) => {
-                        self.item_list_cache = Some(ItemCache {
-                            params: item_cache_params,
-                            item_paths: items.into_iter().map(|i| i.path().to_string()).collect(),
-                        })
+                        self.item_list_cache = ItemCache::from_items(item_cache_params, &items);
                     }
                     Err(e) => err = Some(format!("{e:#}")),
                 };
-
-                if let Some(e) = err {
-                    drop(current_vault);
-                    drop(state);
-                    self.error(e);
-                    return;
-                }
             }
 
             self.thumbnail_params.container_width = ui.available_width();
-            ui.add(egui::widgets::Slider::new(
-                &mut self.thumbnail_params.max_row_height,
-                128.0..=1024.0,
-            ));
 
-            let mut err = None;
-
-            if self.thumbnail_grid.is_none()
-                || self.thumbnail_params != self.thumbnail_grid.as_ref().unwrap().params
-            {
+            let new_thumbnail_grid = self.thumbnail_grid.params != self.thumbnail_params;
+            if new_item_list || new_thumbnail_grid {
                 self.thumbnail_grid_set_scroll = true;
                 ctx.request_repaint();
                 let params = self.thumbnail_params.clone();
 
-                if let Some(items) = &self.item_list_cache {
-                    match compute_thumbnails_grid(params, &items.resolve_refs(&current_vault)) {
-                        Ok(info) => self.thumbnail_grid = Some(info),
-                        Err(e) => err = Some(format!("{e:#}")),
-                    };
-                }
+                match compute_thumbnails_grid(
+                    params,
+                    &self.item_list_cache.resolve_refs(&current_vault),
+                ) {
+                    Ok(info) => self.thumbnail_grid = info,
+                    Err(e) => err = Some(format!("{e:#}")),
+                };
             }
 
             drop(current_vault);
@@ -470,9 +479,7 @@ impl eframe::App for App {
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show_viewport(ui, |ui, vp| {
-                    let Some(grid) = self.thumbnail_grid.as_ref() else {
-                        return;
-                    };
+                    let grid = &self.thumbnail_grid;
                     if grid.thumbnails.is_empty() {
                         return;
                     }
@@ -487,11 +494,7 @@ impl eframe::App for App {
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
 
-                    let first_visible = self
-                        .thumbnail_grid_first_visible
-                        .as_ref()
-                        .unwrap_or(&"".to_string())
-                        .clone();
+                    let first_visible = self.thumbnail_grid_first_visible.as_ref();
                     let mut next_first_visible: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
@@ -499,7 +502,7 @@ impl eframe::App for App {
                         let text = egui::Label::new(item.path.clone());
 
                         // scroll to item if resize event has occurred
-                        if self.thumbnail_grid_set_scroll && item.path == first_visible {
+                        if self.thumbnail_grid_set_scroll && Some(&item.path) == first_visible {
                             info!("do scroll to {} at {:?}", &item.path, &abs_bounds);
                             ui.scroll_to_rect(abs_bounds, Some(egui::Align::Min));
                             self.thumbnail_grid_set_scroll = false;
