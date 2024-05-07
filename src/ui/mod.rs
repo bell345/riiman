@@ -5,11 +5,12 @@ use poll_promise::Promise;
 
 use std::ops::Add;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::info;
 use uuid::Uuid;
 
 use crate::data::Vault;
+use crate::errors::AppError::NotImplemented;
 use crate::fields;
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::compute::compute_thumbnails_grid;
@@ -19,17 +20,21 @@ use crate::tasks::sort::{
 };
 use crate::tasks::AsyncTaskResult::{ImportComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
 use crate::tasks::{
-    AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError, TaskState, ThumbnailGridInfo,
-    ThumbnailGridParams,
+    AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState,
+    ThumbnailGridInfo, ThumbnailGridParams,
 };
 use crate::ui::item_cache::{ItemCache, ItemCacheParams};
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
+use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::{ThumbnailCache, ThumbnailCacheItem};
 
 mod item_cache;
 mod modals;
+mod stepwise_range;
 mod thumb_cache;
+
+static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
 const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
@@ -45,10 +50,12 @@ pub(crate) struct App {
 
     vault_loading: bool,
     thumbnail_params: ThumbnailGridParams,
+    thumbnail_height_selection: f64,
     thumbnail_grid: ThumbnailGridInfo,
-    thumbnail_grid_first_visible: Option<String>,
+    thumbnail_grid_middle_item: Option<String>,
     thumbnail_grid_scroll_cooldown: Option<DateTime<Utc>>,
     thumbnail_grid_set_scroll: bool,
+    thumbnail_grid_last_vp: Option<egui::Rect>,
 
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
@@ -177,6 +184,7 @@ impl eframe::App for App {
 
         for result in self.tasks.iter_ready() {
             match result {
+                Ok(AsyncTaskResult::None) => {}
                 Ok(VaultLoaded(name)) => {
                     self.vault_loading = false;
                     self.state.blocking_write().set_current_vault_name(name)
@@ -200,11 +208,8 @@ impl eframe::App for App {
                     self.thumbnail_cache
                         .commit(params, ThumbnailCacheItem::Loaded(hndl));
                 }
-                Err(TaskError::WasmNotImplemented) => {
-                    self.error("Not implemented in WASM".to_string())
-                }
-                Err(TaskError::Error(e)) => self.error(format!("{e:#}")),
-                _ => {}
+                Err(e) if NotImplemented.is_err(&e) => self.error("Not implemented".to_string()),
+                Err(e) => self.error(format!("{e:#}")),
             }
             ctx.request_repaint();
         }
@@ -282,13 +287,20 @@ impl eframe::App for App {
             .max_height(24.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let slider_range = THUMBNAIL_SLIDER_RANGE.get_or_init(|| {
+                        StepwiseRange::new(&[0.0, 1.0, 2.0, 3.0], &[128.0, 256.0, 512.0, 1024.0])
+                    });
+                    let mut slider_value =
+                        slider_range.lerp_in(self.thumbnail_params.max_row_height);
+
                     ui.add(
-                        egui::widgets::Slider::new(
-                            &mut self.thumbnail_params.max_row_height,
-                            128.0..=1024.0,
-                        )
-                        .show_value(false),
+                        egui::widgets::Slider::new(&mut slider_value, slider_range.input_range())
+                            .step_by(1.0)
+                            .show_value(false),
                     );
+
+                    self.thumbnail_params.max_row_height = slider_range.lerp_out(slider_value);
+
                     // square four corners
                     ui.label("\u{26f6}");
 
@@ -489,22 +501,33 @@ impl eframe::App for App {
 
                     let abs_min = ui.min_rect().min.to_vec2();
                     let abs_vp = vp.translate(abs_min);
+                    let vp_middle = (vp.min + vp.max.to_vec2()) / 2.0;
+                    let vp_changed = self.thumbnail_grid_last_vp != Some(vp);
+                    let vp_scrolled = vp_changed
+                        && vp.size()
+                            == self
+                                .thumbnail_grid_last_vp
+                                .map(|v| v.size())
+                                .unwrap_or(vp.size());
+                    let vp_resized = vp_changed && !vp_scrolled;
                     let max_y = grid.thumbnails.last().unwrap().bounds.max.y;
                     ui.set_width(ui.available_width());
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
 
-                    let first_visible = self.thumbnail_grid_first_visible.as_ref();
-                    let mut next_first_visible: Option<String> = None;
+                    let middle_item = self.thumbnail_grid_middle_item.as_ref();
+                    let mut next_middle: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
                         let abs_bounds = item.bounds.translate(abs_min);
                         let text = egui::Label::new(item.path.clone());
 
                         // scroll to item if resize event has occurred
-                        if self.thumbnail_grid_set_scroll && Some(&item.path) == first_visible {
+                        if (self.thumbnail_grid_set_scroll || vp_resized)
+                            && Some(&item.path) == middle_item
+                        {
                             info!("do scroll to {} at {:?}", &item.path, &abs_bounds);
-                            ui.scroll_to_rect(abs_bounds, Some(egui::Align::Min));
+                            ui.scroll_to_rect(abs_bounds, Some(egui::Align::Center));
                             self.thumbnail_grid_set_scroll = false;
                             self.thumbnail_grid_scroll_cooldown = Some(Utc::now().add(
                                 TimeDelta::milliseconds(THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS),
@@ -513,10 +536,11 @@ impl eframe::App for App {
                         // mark current item as item to scroll to when resize occurs
                         else if self.thumbnail_grid_scroll_cooldown.unwrap_or(Utc::now())
                             <= Utc::now()
-                            && item.bounds.max.y > (vp.min.y + THUMBNAIL_VISIBLE_THRESHOLD)
-                            && next_first_visible.is_none()
+                            && vp_scrolled
+                            && next_middle.is_none()
+                            && item.bounds.contains(vp_middle)
                         {
-                            next_first_visible = Some(item.path.clone());
+                            next_middle = Some(item.path.clone());
                         }
 
                         if vp.intersects(item.bounds) {
@@ -556,9 +580,11 @@ impl eframe::App for App {
                         }
                     }
 
-                    if next_first_visible.is_some() {
-                        self.thumbnail_grid_first_visible = next_first_visible;
+                    if next_middle.is_some() {
+                        self.thumbnail_grid_middle_item = next_middle;
                     }
+
+                    self.thumbnail_grid_last_vp = Some(vp);
 
                     for params in self.lq_thumbnail_cache.drain_requests() {
                         self.add_task("Load thumbnail", move |s, p| {

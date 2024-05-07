@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::ops::Deref;
 use std::path::Path;
 
@@ -77,7 +78,10 @@ impl Vault {
             (_, None) => path,
         };
 
-        Ok(rel_path.to_str().ok_or(AppError::InvalidUnicode)?)
+        rel_path
+            .to_str()
+            .ok_or(AppError::InvalidUnicode)
+            .with_context(|| format!("while decoding path: {}", path.display()))
     }
 
     pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<String> {
@@ -92,7 +96,8 @@ impl Vault {
 
         Ok(abs_path
             .to_str()
-            .ok_or(AppError::InvalidUnicode)?
+            .ok_or(AppError::InvalidUnicode)
+            .with_context(|| format!("while decoding path: {}", abs_path.display()))?
             .to_string())
     }
 

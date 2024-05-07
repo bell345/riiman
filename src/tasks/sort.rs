@@ -1,9 +1,9 @@
-use derive_more::{Display, Not};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::ops::{Deref, Not};
 use std::path::Path;
 
+use derive_more::Display;
 use uuid::Uuid;
 
 use crate::data::kind::KindType;
@@ -186,16 +186,19 @@ fn evaluate_filter(item: &Item, vault: &Vault, filter: &FilterExpression) -> any
     Ok(match filter {
         FilterExpression::None => true,
         FilterExpression::TextSearch(text) => {
-            if item.path().contains(text) {
+            let lower_text = &text.to_lowercase();
+            if item.path().to_lowercase().contains(lower_text) {
                 return Ok(true);
             }
 
+            let matches = |s: &String| s.to_lowercase().contains(lower_text);
+
             for (def, v) in item.iter_field_defs(vault) {
                 if match def.field_type {
-                    KindType::Tag => def.name.contains(text),
-                    KindType::Str => String::from(kind::Str::try_from(v.clone())?).contains(text),
+                    KindType::Tag => matches(&def.name),
+                    KindType::Str => matches(&String::from(kind::Str::try_from(v.clone())?)),
                     KindType::ItemRef => {
-                        String::from(kind::ItemRef::try_from(v.clone())?).contains(text)
+                        matches(&String::from(kind::ItemRef::try_from(v.clone())?))
                     }
                     KindType::List => return Err(AppError::NotImplemented.into()),
                     KindType::Dictionary => return Err(AppError::NotImplemented.into()),

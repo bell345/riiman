@@ -1,9 +1,15 @@
+use std::path::Path;
+
 use eframe::egui::ColorImage;
 use poll_promise::Promise;
-use std::path::Path;
+
+use progress::ProgressReceiver;
+use progress::ProgressSenderAsync;
+pub use progress::ProgressSenderRef;
 
 pub use crate::tasks::compute::ThumbnailGridInfo;
 pub use crate::tasks::compute::ThumbnailGridParams;
+use crate::tasks::image::ThumbnailParams;
 
 pub(crate) mod compute;
 pub(crate) mod image;
@@ -11,11 +17,6 @@ pub(crate) mod import;
 mod progress;
 pub(crate) mod sort;
 pub(crate) mod vault;
-
-use crate::tasks::image::ThumbnailParams;
-use progress::ProgressReceiver;
-use progress::ProgressSenderAsync;
-pub use progress::ProgressSenderRef;
 
 #[derive(Debug)]
 pub enum AsyncTaskResult {
@@ -34,13 +35,6 @@ pub enum AsyncTaskResult {
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
 
-#[derive(Debug)]
-pub enum TaskError {
-    UserCancelled,
-    WasmNotImplemented,
-    Error(anyhow::Error),
-}
-
 #[derive(Debug, Clone, Default)]
 pub enum ProgressState {
     #[default]
@@ -51,14 +45,7 @@ pub enum ProgressState {
     Completed,
 }
 
-impl<T: Into<anyhow::Error>> From<T> for TaskError {
-    fn from(value: T) -> Self {
-        Self::Error(value.into())
-    }
-}
-
-pub type TaskResult<T> = Result<T, TaskError>;
-pub type AsyncTaskReturn = Result<AsyncTaskResult, TaskError>;
+pub type AsyncTaskReturn = anyhow::Result<AsyncTaskResult>;
 
 struct Task {
     name: String,

@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::data::Vault;
 use crate::errors::AppError;
 use crate::state::AppStateRef;
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskError};
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 
 pub async fn choose_and_load_vault(
     state: AppStateRef,
@@ -12,7 +12,7 @@ pub async fn choose_and_load_vault(
 ) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
-    let fp = dialog.pick_file().await.ok_or(TaskError::UserCancelled)?;
+    let fp = dialog.pick_file().await.ok_or(AppError::UserCancelled)?;
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -102,7 +102,7 @@ pub async fn save_new_vault(
 ) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
-    let fp = dialog.save_file().await.ok_or(TaskError::UserCancelled)?;
+    let fp = dialog.save_file().await.ok_or(AppError::UserCancelled)?;
     let path = fp.path();
     vault.set_file_path(path);
 

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use chrono::Utc;
 use magick_rust::MagickWand;
 use tokio::task::JoinSet;
@@ -9,10 +9,13 @@ use tracing::info;
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
+use crate::tasks::image::{commit_thumbnail_to_fs, ThumbnailParams};
 use crate::tasks::vault::save_vault;
 use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
 };
+
+const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 
 async fn import_single_image(
     state: AppStateRef,
@@ -55,13 +58,27 @@ async fn import_single_image(
 
     item.set_known_field_value(fields::general::LAST_MODIFIED, file_modified);
 
-    let wand = MagickWand::new();
-    wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)?;
+    commit_thumbnail_to_fs(
+        state.clone(),
+        &ThumbnailParams {
+            path: path.clone(),
+            last_modified: Some(file_modified),
+            height: THUMBNAIL_LOW_QUALITY_HEIGHT,
+        },
+    )
+    .await
+    .map_err(|e| anyhow!(e))?;
 
-    let width = wand.get_image_width() as u64;
-    let height = wand.get_image_height() as u64;
-    item.set_known_field_value(fields::image::HEIGHT, height);
-    item.set_known_field_value(fields::image::WIDTH, width);
+    {
+        let wand = MagickWand::new();
+        wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)
+            .with_context(|| format!("while reading image metadata of {}", path.display()))?;
+
+        let width = wand.get_image_width() as u64;
+        let height = wand.get_image_height() as u64;
+        item.set_known_field_value(fields::image::HEIGHT, height);
+        item.set_known_field_value(fields::image::WIDTH, width);
+    }
 
     Ok(path)
 }
@@ -89,7 +106,8 @@ pub async fn import_images_recursively(
     let scan_progress = progress.sub_task("Scan", 0.05);
     scan_progress.send(ProgressState::Indeterminate);
 
-    let mut entries: Vec<(tokio::fs::DirEntry, std::fs::Metadata)> = vec![];
+    type Entry = (tokio::fs::DirEntry, std::fs::Metadata);
+    let mut entries: Vec<Entry> = vec![];
     let mut dir_queue: Vec<PathBuf> = vec![root_dir.into()];
 
     while let Some(dir_path) = dir_queue.pop() {
@@ -114,16 +132,25 @@ pub async fn import_images_recursively(
         }
     }
 
+    entries.reverse();
+    let total = entries.len();
+
     scan_progress.send(ProgressState::Completed);
-    info!("completed scan: {} items", entries.len());
+    info!("completed scan: {} items", total);
+
+    const CONCURRENT_TASKS_LIMIT: usize = 16;
 
     let mut join_set = JoinSet::new();
-    for (entry, metadata) in entries {
-        join_set.spawn(import_single_image(state.clone(), entry, metadata));
+
+    while join_set.len() < CONCURRENT_TASKS_LIMIT {
+        if let Some((entry, metadata)) = entries.pop() {
+            join_set.spawn(import_single_image(state.clone(), entry, metadata));
+        } else {
+            break;
+        }
     }
 
     let import_progress = progress.sub_task("Import", 0.90);
-    let total = join_set.len();
     let mut results = vec![];
     while let Some(res) = join_set.join_next().await {
         let task_res = res
@@ -140,6 +167,10 @@ pub async fn import_images_recursively(
         }
 
         results.push(task_res);
+
+        if let Some((entry, metadata)) = entries.pop() {
+            join_set.spawn(import_single_image(state.clone(), entry, metadata));
+        }
     }
 
     save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;

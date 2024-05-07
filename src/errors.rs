@@ -3,8 +3,10 @@ use crate::data::FieldValue;
 use thiserror::Error;
 use uuid::Uuid;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum AppError {
+    #[error("user cancelled")]
+    UserCancelled,
     #[error("not yet implemented")]
     NotImplemented,
     #[error("invalid unicode")]
@@ -24,4 +26,14 @@ pub enum AppError {
         field ID {field_id} while recursing fields of {item_path}"
     )]
     FieldTreeLoop { item_path: String, field_id: Uuid },
+}
+
+impl AppError {
+    pub fn is_err(&self, e: &anyhow::Error) -> bool {
+        if let Some(app_e) = e.downcast_ref::<Self>() {
+            app_e == self
+        } else {
+            false
+        }
+    }
 }

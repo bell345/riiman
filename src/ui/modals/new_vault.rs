@@ -14,7 +14,7 @@ impl NewVaultDialog {
         let modal = Modal::new(ctx, "new_vault_name_modal");
 
         modal.show(|ui| {
-            modal.title(ui, "New vault name");
+            modal.title(ui, "New vault");
             modal.frame(ui, |ui| {
                 ui.label("Enter name of new vault:");
                 ui.text_edit_singleline(&mut self.new_vault_name);
