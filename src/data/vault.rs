@@ -1,6 +1,6 @@
 use anyhow::Context;
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::{Ref, RefMut};
@@ -44,6 +44,16 @@ impl Vault {
             self.set_definition((*def).clone());
         }
         self
+    }
+
+    pub fn root_dir(&self) -> Result<PathBuf, AppError> {
+        Ok(self
+            .file_path
+            .as_ref()
+            .ok_or(AppError::VaultNoPath)?
+            .parent()
+            .ok_or(AppError::VaultNoParent)?
+            .into())
     }
 
     pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {

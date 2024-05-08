@@ -24,10 +24,8 @@ async fn import_single_image(
 ) -> SingleImportResult {
     let path: Box<Path> = entry.path().into();
 
-    let state_ref = state.read().await;
-    let vault = state_ref
-        .get_current_vault()
-        .ok_or(AppError::NoCurrentVault)?;
+    let r = state.read().await;
+    let vault = r.current_vault()?;
 
     let mut item_ref = vault.ensure_item_mut(&path)?;
     let item = item_ref.value_mut();
@@ -93,22 +91,13 @@ pub async fn import_images_recursively(
         return Err(WasmNotImplemented);
     }
 
-    let state_read = state.read().await;
-    let curr_vault = state_read
-        .get_current_vault()
-        .context("there is no current vault")?;
-    let vault_path = curr_vault
-        .file_path
-        .as_ref()
-        .context("vault has no file path")?;
-    let root_dir = vault_path.parent().context("getting vault directory")?;
+    let root_dir = state.read().await.current_vault()?.root_dir()?;
 
     let scan_progress = progress.sub_task("Scan", 0.05);
     scan_progress.send(ProgressState::Indeterminate);
 
-    type Entry = (tokio::fs::DirEntry, std::fs::Metadata);
-    let mut entries: Vec<Entry> = vec![];
-    let mut dir_queue: Vec<PathBuf> = vec![root_dir.into()];
+    let mut entries: Vec<(tokio::fs::DirEntry, std::fs::Metadata)> = vec![];
+    let mut dir_queue: Vec<PathBuf> = vec![root_dir.clone()];
 
     while let Some(dir_path) = dir_queue.pop() {
         let mut read_dir = tokio::fs::read_dir(dir_path)
@@ -159,7 +148,6 @@ pub async fn import_images_recursively(
         let p = results.len() as f32 / total as f32;
         if let Ok(path) = &task_res {
             let msg = path.to_str().unwrap_or("").to_string();
-            info!("sending msg: {msg}");
             import_progress.send(ProgressState::DeterminateWithMessage(p, msg));
         } else {
             info!("unknown result: {task_res:?}");
@@ -173,7 +161,11 @@ pub async fn import_images_recursively(
         }
     }
 
-    save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;
+    {
+        let r = state.read().await;
+        let curr_vault = r.current_vault()?;
+        save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;
+    }
 
     Ok(AsyncTaskResult::ImportComplete {
         path: root_dir.into(),

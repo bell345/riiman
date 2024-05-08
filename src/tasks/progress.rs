@@ -47,9 +47,9 @@ fn compute_progress(sub_tasks: &DashMap<String, SubTaskProgress>) -> ProgressSta
 }
 
 impl ProgressSenderAsync {
-    pub fn new(name: &str, tx: tokio::sync::watch::Sender<ProgressState>) -> Box<Arc<Self>> {
+    pub fn new(name: String, tx: tokio::sync::watch::Sender<ProgressState>) -> Box<Arc<Self>> {
         Arc::new(Self {
-            name: name.to_string(),
+            name,
             tx,
             sub_tasks: DashMap::new(),
         })

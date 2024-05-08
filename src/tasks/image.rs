@@ -62,8 +62,8 @@ async fn read_and_resize(
     params: &ThumbnailParams,
 ) -> anyhow::Result<MagickWand> {
     let abs_path = {
-        let state = state.read().await;
-        let vault = state.get_current_vault().ok_or(AppError::NoCurrentVault)?;
+        let r = state.read().await;
+        let vault = r.current_vault()?;
         vault.resolve_abs_path(&params.path)?
     };
 
@@ -115,15 +115,15 @@ async fn thumbnail_needs_updating(params: &ThumbnailParams, meta: &Metadata) -> 
         return true;
     }
 
-    let Some(cache_modified) = params.last_modified else {
+    let Some(source_modified) = params.last_modified else {
         return true;
     };
 
-    let Ok(file_modified): Result<DateTime<Utc>, _> = meta.modified().map(|st| st.into()) else {
+    let Ok(thumb_modified): Result<DateTime<Utc>, _> = meta.modified().map(|st| st.into()) else {
         return true;
     };
 
-    cache_modified < file_modified
+    source_modified > thumb_modified
 }
 
 pub async fn load_image_thumbnail_with_fs(

@@ -11,10 +11,19 @@ pub struct ThumbnailPosition {
     pub bounds: egui::Rect,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ThumbnailGridParams {
     pub max_row_height: f32,
     pub container_width: f32,
+}
+
+impl Default for ThumbnailGridParams {
+    fn default() -> Self {
+        Self {
+            max_row_height: 128.0,
+            container_width: 0.0,
+        }
+    }
 }
 
 #[derive(Default, Debug)]

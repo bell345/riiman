@@ -3,6 +3,7 @@ use std::path::Path;
 use eframe::egui::ColorImage;
 use poll_promise::Promise;
 
+use crate::state::AppStateRef;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
@@ -46,6 +47,9 @@ pub enum ProgressState {
 }
 
 pub type AsyncTaskReturn = anyhow::Result<AsyncTaskResult>;
+pub type TaskFactory = Box<
+    dyn FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn> + Send + Sync + 'static,
+>;
 
 struct Task {
     name: String,
@@ -55,13 +59,13 @@ struct Task {
 
 impl Task {
     pub fn with_progress(
-        name: &str,
+        name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) -> Task {
         let (tx, rx) = tokio::sync::watch::channel(ProgressState::NotStarted);
         Task {
-            name: name.to_string(),
-            promise: factory(ProgressSenderAsync::new(name, tx)),
+            promise: factory(ProgressSenderAsync::new(name.clone(), tx)),
+            name,
             progress_rx: Some(rx),
         }
     }
@@ -80,12 +84,16 @@ pub(crate) struct TaskState {
 }
 
 impl TaskState {
-    pub fn add_task_with_progress(
+    pub fn add(
         &mut self,
-        name: &str,
+        name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
         self.running_tasks.push(Task::with_progress(name, factory));
+    }
+
+    pub fn running_tasks_count(&self) -> usize {
+        self.running_tasks.len()
     }
 
     pub fn iter_ready(&mut self) -> Vec<AsyncTaskReturn> {

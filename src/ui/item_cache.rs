@@ -1,5 +1,6 @@
 use crate::data::{Item, Vault};
-use crate::tasks::sort::{FilterExpression, SortExpression};
+use crate::state::AppStateRef;
+use crate::tasks::sort::{get_filtered_and_sorted_items, FilterExpression, SortExpression};
 use std::ops::Deref;
 use std::path::Path;
 
@@ -17,11 +18,26 @@ pub struct ItemCache {
 }
 
 impl ItemCache {
-    pub fn from_items(params: ItemCacheParams, items: &[impl Deref<Target = Item>]) -> Self {
-        Self {
-            params,
-            item_paths: items.iter().map(|i| i.path().to_string()).collect(),
+    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<bool> {
+        let state = state.blocking_read();
+        let current_vault = state.current_vault()?;
+
+        let params = ItemCacheParams {
+            vault_name: current_vault.name.to_string(),
+            filter: state.filter.clone(),
+            sorts: state.sorts.clone(),
+        };
+
+        let new_item_list = self.params != params;
+        if !new_item_list {
+            return Ok(false);
         }
+
+        let items = get_filtered_and_sorted_items(&current_vault, &state.filter, &state.sorts)?;
+        self.params = params;
+        self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
+
+        Ok(true)
     }
 
     pub fn resolve_refs<'a, 'b: 'a>(

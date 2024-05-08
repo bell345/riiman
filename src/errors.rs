@@ -15,6 +15,8 @@ pub enum AppError {
     NoCurrentVault,
     #[error("vault has no parent")]
     VaultNoParent,
+    #[error("vault has no file path")]
+    VaultNoPath,
     #[error("wrong field type, expected {expected:?}, got {got:?}")]
     WrongFieldType { expected: KindType, got: FieldValue },
     #[error("wrong mime type, expected {expected:?}, got {got:?}")]

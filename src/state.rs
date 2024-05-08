@@ -1,14 +1,34 @@
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
+use poll_promise::Promise;
 
 use crate::data::Vault;
+use crate::errors::AppError;
+use crate::fields;
+use crate::tasks::sort::{FilterExpression, SortDirection, SortExpression};
+use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 
-#[derive(Default)]
 pub(crate) struct AppState {
+    task_queue: Mutex<Vec<(String, TaskFactory)>>,
     vaults: DashMap<String, Vault>,
-    current_vault_name: Option<String>,
+    pub current_vault_name: Option<String>,
+
+    pub filter: FilterExpression,
+    pub sorts: Vec<SortExpression>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            task_queue: Default::default(),
+            vaults: Default::default(),
+            current_vault_name: None,
+            filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
+            sorts: vec![SortExpression::Path(SortDirection::Ascending)],
+        }
+    }
 }
 
 impl AppState {
@@ -18,14 +38,40 @@ impl AppState {
         self.current_vault_name = Some(name);
     }
 
-    pub fn set_current_vault_name(&mut self, name: String) {
-        self.current_vault_name = Some(name);
-    }
-
-    pub fn get_current_vault(&self) -> Option<impl Deref<Target = Vault> + '_> {
+    pub fn current_vault_opt(&self) -> Option<impl Deref<Target = Vault> + '_> {
         let name = self.current_vault_name.as_ref()?;
         let vault = self.vaults.get(name)?;
         Some(vault)
+    }
+
+    pub fn current_vault(&self) -> Result<impl Deref<Target = Vault> + '_, AppError> {
+        self.current_vault_opt().ok_or(AppError::NoCurrentVault)
+    }
+
+    pub fn add_task(
+        &self,
+        name: String,
+        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        let mut l = self.task_queue.lock().unwrap();
+        l.push((name, Box::new(task_factory)));
+    }
+
+    pub fn drain_tasks(&mut self, n: usize) -> Vec<(String, TaskFactory)> {
+        let mut l = self.task_queue.lock().unwrap();
+        let mut v: Vec<(String, TaskFactory)> = vec![];
+        for _ in 0..n {
+            if let Some(x) = l.pop() {
+                v.push(x);
+            } else {
+                break;
+            }
+        }
+
+        v
     }
 }
 

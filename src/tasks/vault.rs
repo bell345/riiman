@@ -118,13 +118,7 @@ pub async fn save_current_vault(
     state: AppStateRef,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    save_vault(
-        &*state
-            .read()
-            .await
-            .get_current_vault()
-            .ok_or(AppError::NoCurrentVault)?,
-        progress,
-    )
-    .await
+    let r = state.read().await;
+    let vault = r.current_vault()?;
+    save_vault(&vault, progress).await
 }
