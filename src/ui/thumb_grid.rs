@@ -99,8 +99,10 @@ impl ThumbnailGrid {
                 let abs_vp = vp.translate(abs_min);
                 let vp_middle = (vp.min + vp.max.to_vec2()) / 2.0;
                 let vp_changed = self.last_vp != Some(vp);
-                let vp_scrolled =
-                    vp_changed && vp.size() == self.last_vp.map(|v| v.size()).unwrap_or(vp.size());
+                let vp_scrolled = vp_changed
+                    && (vp.size() - self.last_vp.map(|v| v.size()).unwrap_or(vp.size()))
+                        .length_sq()
+                        < 1.0;
                 let vp_resized = vp_changed && !vp_scrolled;
                 let max_y = grid.thumbnails.last().unwrap().bounds.max.y;
                 ui.set_width(ui.available_width());

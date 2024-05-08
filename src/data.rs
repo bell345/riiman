@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 pub use field::kind;
 pub use field::kind::FieldKind as FieldValueKind;
 pub use field::kind::TagKind as FieldKind;
