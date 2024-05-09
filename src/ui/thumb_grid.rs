@@ -98,13 +98,20 @@ impl ThumbnailGrid {
         thumb
     }
 
+    pub fn view_selected_paths<R>(&mut self, f: impl FnOnce(Vec<&String>) -> R) -> R {
+        let ro = std::mem::take(&mut self.checked_items).into_read_only();
+        let res = f(ro.iter().filter(|(_, v)| **v).map(|(k, _)| k).collect());
+        drop(std::mem::replace(&mut self.checked_items, ro.into_inner()));
+        res
+    }
+
     pub fn update(
         &mut self,
         ui: &mut egui::Ui,
         state: AppStateRef,
         item_cache: &ItemCache,
         item_cache_is_new: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
         let state = state.blocking_read();
         let current_vault = state.current_vault()?;
 
@@ -116,168 +123,182 @@ impl ThumbnailGrid {
             ui.ctx().request_repaint();
             let params = self.params.clone();
 
-            let items = item_cache.resolve_refs(&current_vault);
+            let items = item_cache.resolve_all_refs(&current_vault);
 
             self.info = compute_thumbnails_grid(params, &items)?;
         }
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false; 2])
-            .show_viewport(ui, |ui, vp| {
-                let grid = &self.info;
-                if grid.thumbnails.is_empty() {
-                    return;
+        if item_cache_is_new {
+            let included_paths = item_cache.item_path_set();
+            let mut to_remove = vec![];
+            for item in self.checked_items.iter() {
+                if !included_paths.contains(item.key()) {
+                    to_remove.push(item.key().clone());
                 }
+            }
+            for path in to_remove {
+                self.checked_items.remove(&path);
+            }
+        }
 
-                let abs_min = ui.min_rect().min.to_vec2();
-                let abs_vp = vp.translate(abs_min);
-                let vp_middle = (vp.min + vp.max.to_vec2()) / 2.0;
-                let vp_changed = self.last_vp != Some(vp);
-                let vp_scrolled = vp_changed
-                    && (vp.size() - self.last_vp.map(|v| v.size()).unwrap_or(vp.size()))
-                        .length_sq()
-                        < 1.0;
-                let vp_resized = vp_changed && !vp_scrolled;
-                let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
-                ui.set_width(ui.available_width());
-                ui.set_height(max_y);
-                ui.set_clip_rect(abs_vp);
+        Ok(Some(
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .animated(false)
+                .show_viewport(ui, |ui, vp| {
+                    let grid = &self.info;
+                    if grid.thumbnails.is_empty() {
+                        return;
+                    }
 
-                let middle_item = self.middle_item.as_ref();
-                let hover_item = self.hovering_item.as_ref();
-                let mut next_middle: Option<String> = None;
-                let mut next_hover: Option<String> = None;
+                    let abs_min = ui.min_rect().min.to_vec2();
+                    let abs_vp = vp.translate(abs_min);
+                    let vp_middle = (vp.min + vp.max.to_vec2()) / 2.0;
+                    let vp_changed = self.last_vp != Some(vp);
+                    let vp_scrolled = vp_changed
+                        && (vp.size() - self.last_vp.map(|v| v.size()).unwrap_or(vp.size()))
+                            .length_sq()
+                            < 1.0;
+                    let vp_resized = vp_changed && !vp_scrolled;
+                    let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
+                    ui.set_width(ui.available_width());
+                    ui.set_height(max_y);
+                    ui.set_clip_rect(abs_vp);
 
-                for item in grid.thumbnails.iter() {
-                    let outer_bounds = item.outer_bounds.translate(abs_min);
-                    let inner_bounds = item.inner_bounds.translate(abs_min);
-                    let text = egui::Label::new(item.path.clone());
+                    let middle_item = self.middle_item.as_ref();
+                    let hover_item = self.hovering_item.as_ref();
+                    let mut next_middle: Option<String> = None;
+                    let mut next_hover: Option<String> = None;
 
-                    let is_hover = |r: &egui::Response| {
-                        if let Some(hover_pos) = r.hover_pos() {
-                            if outer_bounds.contains(hover_pos) {
-                                return true;
+                    for item in grid.thumbnails.iter() {
+                        let outer_bounds = item.outer_bounds.translate(abs_min);
+                        let inner_bounds = item.inner_bounds.translate(abs_min);
+                        let text = egui::Label::new(item.path.clone());
+
+                        let is_hover = |r: &egui::Response| {
+                            if let Some(hover_pos) = r.hover_pos() {
+                                if outer_bounds.contains(hover_pos) {
+                                    return true;
+                                }
                             }
-                        }
-                        false
-                    };
-
-                    // scroll to item if resize event has occurred
-                    if (self.set_scroll || vp_resized) && Some(&item.path) == middle_item {
-                        info!("do scroll to {} at {:?}", &item.path, &outer_bounds);
-                        info!("set_scroll = {}, resized = {}", self.set_scroll, vp_resized);
-                        ui.scroll_to_rect(outer_bounds, Some(egui::Align::Center));
-                        self.set_scroll = false;
-                        self.scroll_cooldown = Some(Utc::now().add(TimeDelta::milliseconds(
-                            THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS,
-                        )));
-                    }
-                    // mark current item as item to scroll to when resize occurs
-                    else if self.scroll_cooldown.unwrap_or(Utc::now()) <= Utc::now()
-                        && vp_scrolled
-                        && next_middle.is_none()
-                        && item.outer_bounds.contains(vp_middle)
-                    {
-                        next_middle = Some(item.path.clone());
-                    }
-
-                    if vp.intersects(item.outer_bounds) {
-                        let thumb = self.resolve_thumbnail(item);
-
-                        let ThumbnailCacheItem::Loaded(hndl) = thumb else {
-                            ui.put(inner_bounds, text);
-                            ui.put(inner_bounds, egui::Spinner::new());
-                            continue;
+                            false
                         };
 
-                        let checked = {
-                            let check_ref =
-                                self.checked_items.entry(item.path.clone()).or_default();
-                            *check_ref.value()
-                        };
-                        if checked {
-                            let highlight_tint = get_accent_color();
-                            let highlight_rect = inner_bounds.expand(HIGHLIGHT_PADDING);
-                            let shape = egui::epaint::RectShape::filled(
-                                highlight_rect,
-                                ROUNDING,
-                                highlight_tint,
-                            );
-                            ui.painter_at(highlight_rect).add(shape);
+                        // scroll to item if resize event has occurred
+                        if (self.set_scroll || vp_resized) && Some(&item.path) == middle_item {
+                            info!("do scroll to {} at {:?}", &item.path, &outer_bounds);
+                            info!("set_scroll = {}, resized = {}", self.set_scroll, vp_resized);
+                            ui.scroll_to_rect(outer_bounds, Some(egui::Align::Center));
+                            self.set_scroll = false;
+                            self.scroll_cooldown = Some(Utc::now().add(TimeDelta::milliseconds(
+                                THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS,
+                            )));
+                        }
+                        // mark current item as item to scroll to when resize occurs
+                        else if self.scroll_cooldown.unwrap_or(Utc::now()) <= Utc::now()
+                            && vp_scrolled
+                            && next_middle.is_none()
+                            && item.outer_bounds.contains(vp_middle)
+                        {
+                            next_middle = Some(item.path.clone());
                         }
 
-                        let img = egui::Image::new(egui::ImageSource::Texture(
-                            egui::load::SizedTexture::from_handle(&hndl),
-                        ))
-                        .bg_fill(egui::Color32::from_gray(20))
-                        .shrink_to_fit();
+                        if vp.intersects(item.outer_bounds) {
+                            let thumb = self.resolve_thumbnail(item);
 
-                        let tint = if Some(&item.path) == hover_item {
-                            HOVER_TINT
-                        } else {
-                            egui::Color32::WHITE
-                        };
+                            let ThumbnailCacheItem::Loaded(hndl) = thumb else {
+                                ui.put(inner_bounds, text);
+                                ui.put(inner_bounds, egui::Spinner::new());
+                                continue;
+                            };
 
-                        let img_btn = egui::ImageButton::new(img)
-                            .rounding(ROUNDING)
-                            .tint(tint)
-                            .frame(false);
+                            let checked = {
+                                let check_ref =
+                                    self.checked_items.entry(item.path.clone()).or_default();
+                                *check_ref.value()
+                            };
+                            if checked {
+                                let highlight_tint = get_accent_color();
+                                let highlight_rect = inner_bounds.expand(HIGHLIGHT_PADDING);
+                                let shape = egui::epaint::RectShape::filled(
+                                    highlight_rect,
+                                    ROUNDING,
+                                    highlight_tint,
+                                );
+                                ui.painter_at(highlight_rect).add(shape);
+                            }
 
-                        let res = ui.put(inner_bounds, img_btn);
-                        let is_clicked = res.clicked();
-                        if is_clicked {
-                            info!("Clicked {}!", item.path);
-                        }
-                        if is_hover(&res) {
-                            next_hover = Some(item.path.clone());
-                        }
+                            let img = egui::Image::new(egui::ImageSource::Texture(
+                                egui::load::SizedTexture::from_handle(&hndl),
+                            ))
+                            .bg_fill(egui::Color32::from_gray(20))
+                            .shrink_to_fit();
 
-                        ui.scope(|ui| {
-                            ui.spacing_mut().interact_size =
-                                egui::Vec2::splat(CHECKBOX_INTERACT_SIZE);
-                            let mut check_ref =
-                                self.checked_items.entry(item.path.clone()).or_default();
-                            let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
-                            let checkbox_rect =
-                                CHECKBOX_ALIGN.align_size_within_rect(CHECKBOX_SIZE, outer_bounds);
-                            let res = ui.put(checkbox_rect, checkbox);
+                            let tint = if Some(&item.path) == hover_item {
+                                HOVER_TINT
+                            } else {
+                                egui::Color32::WHITE
+                            };
+
+                            let img_btn = egui::ImageButton::new(img)
+                                .rounding(ROUNDING)
+                                .tint(tint)
+                                .frame(false);
+
+                            let res = ui.put(inner_bounds, img_btn);
+                            let is_clicked = res.clicked();
+                            if is_clicked {
+                                info!("Clicked {}!", item.path);
+                            }
                             if is_hover(&res) {
                                 next_hover = Some(item.path.clone());
                             }
-                            if !res.clicked() && is_clicked {
-                                *check_ref.value_mut() ^= true;
-                            }
-                        });
+
+                            ui.scope(|ui| {
+                                ui.spacing_mut().interact_size =
+                                    egui::Vec2::splat(CHECKBOX_INTERACT_SIZE);
+                                let mut check_ref =
+                                    self.checked_items.entry(item.path.clone()).or_default();
+                                let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
+                                let checkbox_rect = CHECKBOX_ALIGN
+                                    .align_size_within_rect(CHECKBOX_SIZE, outer_bounds);
+                                let res = ui.put(checkbox_rect, checkbox);
+                                if is_hover(&res) {
+                                    next_hover = Some(item.path.clone());
+                                }
+                                if !res.clicked() && is_clicked {
+                                    *check_ref.value_mut() ^= true;
+                                }
+                            });
+                        }
                     }
-                }
 
-                if next_middle.is_some() {
-                    self.middle_item = next_middle;
-                }
+                    if next_middle.is_some() {
+                        self.middle_item = next_middle;
+                    }
 
-                self.hovering_item = next_hover;
+                    self.hovering_item = next_hover;
 
-                self.last_vp = Some(vp);
+                    self.last_vp = Some(vp);
 
-                for params in self.lq_cache.drain_requests() {
-                    state.add_task(
-                        format!("Load thumbnail for {}", params.path.display()),
-                        Box::new(move |s, p| {
-                            Promise::spawn_async(load_image_thumbnail_with_fs(s, p, params))
-                        }),
-                    );
-                }
+                    for params in self.lq_cache.drain_requests() {
+                        state.add_task(
+                            format!("Load thumbnail for {}", params.path.display()),
+                            Box::new(move |s, p| {
+                                Promise::spawn_async(load_image_thumbnail_with_fs(s, p, params))
+                            }),
+                        );
+                    }
 
-                for params in self.cache.drain_requests() {
-                    state.add_task(
-                        format!("Load thumbnail for {}", params.path.display()),
-                        Box::new(move |s, p| {
-                            Promise::spawn_async(load_image_thumbnail(s, p, params))
-                        }),
-                    );
-                }
-            });
-
-        Ok(())
+                    for params in self.cache.drain_requests() {
+                        state.add_task(
+                            format!("Load thumbnail for {}", params.path.display()),
+                            Box::new(move |s, p| {
+                                Promise::spawn_async(load_image_thumbnail(s, p, params))
+                            }),
+                        );
+                    }
+                }),
+        ))
     }
 }

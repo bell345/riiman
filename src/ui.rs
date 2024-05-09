@@ -3,7 +3,6 @@ use std::ops::Add;
 use std::sync::{Arc, OnceLock};
 
 use eframe::egui;
-use eframe::emath::{vec2, Align2};
 use poll_promise::Promise;
 use tracing::info;
 use uuid::Uuid;
@@ -53,6 +52,8 @@ pub(crate) struct App {
     sort_field_id: Option<Uuid>,
     sort_direction: SortDirection,
     search_text: String,
+
+    expand_right_panel: bool,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -340,11 +341,11 @@ impl eframe::App for App {
 
                     let icon_width = painter
                         .text(
-                            output.rect.min.add(vec2(
+                            output.rect.min.add(egui::vec2(
                                 style.spacing.button_padding.x,
                                 output.rect.size().y / 2.0,
                             )),
-                            Align2::LEFT_CENTER,
+                            egui::Align2::LEFT_CENTER,
                             "\u{1f50d}",
                             egui::TextStyle::Button.resolve(style),
                             style.visuals.strong_text_color(),
@@ -353,13 +354,13 @@ impl eframe::App for App {
 
                     if self.search_text.is_empty() {
                         painter.text(
-                            output.rect.min.add(vec2(
+                            output.rect.min.add(egui::vec2(
                                 style.spacing.button_padding.x
                                     + icon_width
                                     + style.spacing.button_padding.x,
                                 output.rect.size().y / 2.0,
                             )),
-                            Align2::LEFT_CENTER,
+                            egui::Align2::LEFT_CENTER,
                             "Search...",
                             egui::TextStyle::Body.resolve(style),
                             style.visuals.weak_text_color(),
@@ -416,20 +417,74 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let mut update = || -> anyhow::Result<()> {
-                let is_new_item_list = self.item_list_cache.update(self.state.clone())?;
-                self.thumbnail_grid.update(
-                    ui,
-                    self.state.clone(),
-                    &self.item_list_cache,
-                    is_new_item_list,
-                )
-            };
+            egui::SidePanel::right("right_panel").show_animated_inside(
+                ui,
+                self.expand_right_panel,
+                |ui| {
+                    let r = self.state.blocking_read();
+                    let Some(vault) = r.current_vault_opt() else {
+                        return;
+                    };
 
+                    let items = self.thumbnail_grid.view_selected_paths(|paths| {
+                        self.item_list_cache.resolve_refs(&vault, paths)
+                    });
+
+                    ui.label(format!(
+                        "{} item{}",
+                        items.len(),
+                        if items.len() == 1 { "" } else { "s" }
+                    ));
+                },
+            );
+
+            let mut update =
+                || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
+                    let is_new_item_list = self.item_list_cache.update(self.state.clone())?;
+                    self.thumbnail_grid.update(
+                        ui,
+                        self.state.clone(),
+                        &self.item_list_cache,
+                        is_new_item_list,
+                    )
+                };
+
+            let mut scroll_area_rect: Option<egui::Rect> = None;
             match update() {
+                Ok(Some(egui::scroll_area::ScrollAreaOutput { inner_rect, .. })) => {
+                    scroll_area_rect = Some(inner_rect);
+                }
                 Ok(_) => {}
                 Err(e) if AppError::NoCurrentVault.is_err(&e) => {}
                 Err(e) => self.error(format!("{e:?}")),
+            }
+
+            const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+            const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
+                ne: 0.0,
+                nw: 0.0,
+                se: 0.0,
+                sw: 4.0,
+            };
+
+            let btn_text = if self.expand_right_panel {
+                // right pointing triangle
+                "\u{25b6}"
+            } else {
+                // left pointing triangle
+                "\u{25c0}"
+            };
+            let expand_btn = egui::Button::new(
+                egui::RichText::new(btn_text).line_height(Some(EXPAND_BTN_SIZE.y)),
+            )
+            .rounding(EXPAND_BTN_ROUNDING)
+            .min_size(EXPAND_BTN_SIZE);
+
+            let btn_rect = egui::Align2::RIGHT_TOP
+                .align_size_within_rect(EXPAND_BTN_SIZE, scroll_area_rect.unwrap_or(ui.min_rect()));
+
+            if ui.put(btn_rect, expand_btn).clicked() {
+                self.expand_right_panel ^= true;
             }
         });
     }
