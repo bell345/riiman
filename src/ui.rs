@@ -27,6 +27,7 @@ use crate::ui::thumb_grid::ThumbnailGrid;
 mod item_cache;
 mod modals;
 mod stepwise_range;
+mod theme;
 mod thumb_cache;
 mod thumb_grid;
 
