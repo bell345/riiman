@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::data::FieldValue;
+use crate::data::{FieldStore, FieldValue};
 use crate::errors::AppError;
 
 use super::field::FieldDefinition;
@@ -133,5 +133,11 @@ impl Vault {
 
     pub fn iter_items(&self) -> impl Iterator<Item = RefMulti<'_, String, Item>> {
         self.items.iter()
+    }
+}
+
+impl FieldStore for Vault {
+    fn fields(&self) -> &DashMap<Uuid, FieldValue> {
+        &self.fields
     }
 }

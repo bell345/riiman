@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::data::FieldStore;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use magick_rust::MagickWand;

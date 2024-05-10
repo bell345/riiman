@@ -12,8 +12,10 @@ use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 
 pub(crate) struct AppState {
     task_queue: Mutex<Vec<(String, TaskFactory)>>,
+    error_queue: Mutex<Vec<anyhow::Error>>,
     vaults: DashMap<String, Vault>,
     pub current_vault_name: Option<String>,
+    pub vault_loading: bool,
 
     pub filter: FilterExpression,
     pub sorts: Vec<SortExpression>,
@@ -23,8 +25,10 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             task_queue: Default::default(),
+            error_queue: Default::default(),
             vaults: Default::default(),
             current_vault_name: None,
+            vault_loading: false,
             filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
             sorts: vec![SortExpression::Path(SortDirection::Ascending)],
         }
@@ -58,6 +62,20 @@ impl AppState {
     ) {
         let mut l = self.task_queue.lock().unwrap();
         l.push((name, Box::new(task_factory)));
+    }
+
+    pub fn catch<T, E: Into<anyhow::Error>>(
+        &self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, ()> {
+        match f() {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                let mut queue = self.error_queue.lock().unwrap();
+                queue.push(e.into());
+                Err(())
+            }
+        }
     }
 
     pub fn drain_tasks(&mut self, n: usize) -> Vec<(String, TaskFactory)> {

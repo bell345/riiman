@@ -1,8 +1,10 @@
+use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
+use crate::data::FieldStore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -13,7 +15,7 @@ pub struct FieldDefinition {
     pub field_type: kind::KindType,
     parents: HashSet<Uuid>,
     children: HashSet<Uuid>,
-    fields: HashMap<Uuid, FieldValue>,
+    fields: DashMap<Uuid, FieldValue>,
 }
 
 impl FieldDefinition {
@@ -54,6 +56,12 @@ impl FieldDefinition {
 
     pub fn add_child(&mut self, child_id: Uuid) {
         self.children.insert(child_id);
+    }
+}
+
+impl FieldStore for FieldDefinition {
+    fn fields(&self) -> &DashMap<Uuid, FieldValue> {
+        &self.fields
     }
 }
 
@@ -143,11 +151,28 @@ macro_rules! impl_kind {
 }
 
 macro_rules! define_kinds {
-    { $( $name:ident $( ( $type:ty ) )? ),* } => {
+    {
+        $(
+            $( #[display( $display:literal )] )?
+            $name:ident $( ( $type:ty ) )?
+        ),*
+    } => {
 
-        #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(
+            std::fmt::Debug,
+            derive_more::Display,
+            Clone,
+            PartialEq,
+            Eq,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize
+        )]
         pub enum KindType {
-            $( $name , )*
+            $(
+                $( #[display(fmt = $display )] )?
+                $name ,
+            )*
         }
 
         #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -162,25 +187,41 @@ macro_rules! define_kinds {
 }
 
 pub mod kind {
-    use std::ops::Deref;
-
     pub trait TagKind:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
     {
         fn get_type() -> KindType;
     }
 
-    pub trait FieldKind<T>: TagKind + From<T> + Into<T> + Deref<Target = T> {}
+    pub trait FieldKind<T>: TagKind + From<T> + Into<T> + std::ops::Deref<Target = T> {}
 
     define_kinds! {
         Tag,
+
         Boolean(bool),
+
+        #[display("Signed Integer")]
         Int(i64),
+
+        #[display("Unsigned Integer")]
         UInt(u64),
+
+        #[display("Floating Point Decimal")]
+        Float(ordered_float::OrderedFloat<f64>),
+
+        #[display("String")]
         Str(String),
+
+        #[display("Item Reference")]
         ItemRef(String),
-        List(u64),
-        Dictionary,
+
+        List(Vec<Value>),
+
+        Colour([u8; 3]),
+
+        Dictionary(Vec<(String, Value)>),
+
+        #[display("Date and Time")]
         DateTime(chrono::DateTime<chrono::Utc>)
     }
 

@@ -7,7 +7,7 @@ use derive_more::Display;
 use uuid::Uuid;
 
 use crate::data::kind::KindType;
-use crate::data::{kind, FieldDefinition, FieldValue, FieldValueKind, Item, Vault};
+use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, Vault};
 use crate::errors::AppError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -171,10 +171,15 @@ fn evaluate_match_expression(
         FieldValue::Boolean(v) => evaluate_match_expression_typed::<bool, kind::Boolean>(v, expr)?,
         FieldValue::Int(v) => evaluate_match_expression_typed::<i64, kind::Int>(v, expr)?,
         FieldValue::UInt(v) => evaluate_match_expression_typed::<u64, kind::UInt>(v, expr)?,
+        FieldValue::Float(v) => evaluate_match_expression_typed::<
+            ordered_float::OrderedFloat<f64>,
+            kind::Float,
+        >(v, expr)?,
+        FieldValue::Colour(v) => evaluate_match_expression_typed::<[u8; 3], kind::Colour>(v, expr)?,
         FieldValue::Str(v) => evaluate_match_expression_string(v, expr)?,
         FieldValue::ItemRef(v) => evaluate_match_expression_string(v, expr)?,
         FieldValue::List(_) => todo!(),
-        FieldValue::Dictionary => true,
+        FieldValue::Dictionary(_) => true,
         FieldValue::DateTime(v) => evaluate_match_expression_typed::<
             chrono::DateTime<chrono::Utc>,
             kind::DateTime,
@@ -193,7 +198,9 @@ fn evaluate_filter(item: &Item, vault: &Vault, filter: &FilterExpression) -> any
 
             let matches = |s: &String| s.to_lowercase().contains(lower_text);
 
-            for (def, v) in item.iter_field_defs(vault) {
+            for r in item.iter_field_defs(vault) {
+                let def = r.definition();
+                let v = r.value();
                 if match def.field_type {
                     KindType::Tag => matches(&def.name),
                     KindType::Str => matches(&String::from(kind::Str::try_from(v.clone())?)),
@@ -214,7 +221,7 @@ fn evaluate_filter(item: &Item, vault: &Vault, filter: &FilterExpression) -> any
         FilterExpression::TagMatch(id) => item.has_tag(vault, id)?,
         FilterExpression::FieldMatch(id, expr) => {
             if let Some(v) = item.get_field_value(&id) {
-                return evaluate_match_expression(v, expr);
+                return evaluate_match_expression(&v, expr);
             }
 
             false
@@ -236,39 +243,29 @@ fn cmp_by_field(
     field_def: &FieldDefinition,
 ) -> Option<Ordering> {
     let id = &field_def.id;
+    macro_rules! cmp_typed {
+        ($t:ty, $kind:ident) => {
+            item1
+                .get_field_value_typed::<$t, kind::$kind>(id)
+                .ok()??
+                .cmp(&item2.get_field_value_typed::<$t, kind::$kind>(id).ok()??)
+        };
+    }
     Some(match field_def.field_type {
         KindType::Tag => item1
             .has_tag(vault, id)
             .unwrap_or(false)
             .cmp(&item2.has_tag(vault, id).ok()?),
-        KindType::Boolean => item1
-            .get_field_value_typed::<bool, kind::Boolean>(id)
-            .ok()??
-            .cmp(
-                &item2
-                    .get_field_value_typed::<bool, kind::Boolean>(id)
-                    .ok()??,
-            ),
-        KindType::Int => item1
-            .get_field_value_typed::<i64, kind::Int>(id)
-            .ok()??
-            .cmp(&item2.get_field_value_typed::<i64, kind::Int>(id).ok()??),
-        KindType::UInt => item1
-            .get_field_value_typed::<u64, kind::UInt>(id)
-            .ok()??
-            .cmp(&item2.get_field_value_typed::<u64, kind::UInt>(id).ok()??),
+        KindType::Boolean => cmp_typed!(bool, Boolean),
+        KindType::Int => cmp_typed!(i64, Int),
+        KindType::UInt => cmp_typed!(u64, UInt),
+        KindType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
+        KindType::Colour => cmp_typed!([u8; 3], Colour),
         KindType::Str | KindType::ItemRef => item1
             .get_field_value(id)?
             .as_str()?
             .cmp(item2.get_field_value(id)?.as_str()?),
-        KindType::DateTime => item1
-            .get_field_value_typed::<chrono::DateTime<chrono::Utc>, kind::DateTime>(id)
-            .ok()??
-            .cmp(
-                &item2
-                    .get_field_value_typed::<chrono::DateTime<chrono::Utc>, kind::DateTime>(id)
-                    .ok()??,
-            ),
+        KindType::DateTime => cmp_typed!(chrono::DateTime<chrono::Utc>, DateTime),
         KindType::List => todo!(),
         KindType::Dictionary => todo!(),
     })

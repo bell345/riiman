@@ -92,5 +92,12 @@ field_defs! {
         media_type: Str,
         #[id("2ee79ce5-9ddc-4115-8f95-e7c028cf495f")]
         last_modified: DateTime
+    },
+    #[id("49b61dab-ce73-4ac9-ac3a-fb20f928e1e3")]
+    meta {
+        #[id("5ea86c5a-1458-4977-97b5-bc03bce0354b")]
+        colour: Colour,
+        #[id("be17c008-c9ba-4691-8e15-44bf76a28a8b")]
+        aliases: List
     }
 }

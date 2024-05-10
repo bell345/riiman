@@ -1,3 +1,5 @@
+use crate::state::AppStateRef;
+use crate::ui::modals::AppModal;
 use egui_modal::{Icon, Modal};
 use uuid::Uuid;
 
@@ -51,8 +53,10 @@ impl MessageDialog {
         self.title = Some(title);
         self
     }
+}
 
-    pub fn update(&mut self, ctx: &eframe::egui::Context) -> &mut Self {
+impl AppModal for MessageDialog {
+    fn update(&mut self, ctx: &eframe::egui::Context, _state: AppStateRef) -> &mut dyn AppModal {
         let modal = Modal::new(ctx, format!("msg_modal_{}", self.id));
 
         modal.show(|ui| {
@@ -87,7 +91,7 @@ impl MessageDialog {
         self
     }
 
-    pub fn is_open(&self) -> bool {
+    fn is_open(&self) -> bool {
         self.modal.as_ref().is_some_and(|m| m.is_open())
     }
 }

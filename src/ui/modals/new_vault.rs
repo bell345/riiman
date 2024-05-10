@@ -1,16 +1,21 @@
-use eframe::egui::{Color32, TextBuffer};
+use crate::data::Vault;
+use crate::state::AppStateRef;
+use crate::tasks;
+use crate::ui::modals::AppModal;
+use eframe::egui::Color32;
 use egui_modal::Modal;
+use poll_promise::Promise;
 
 #[derive(Default)]
 pub struct NewVaultDialog {
     modal: Option<Modal>,
     new_vault_name: String,
     error_message: Option<String>,
-    is_ready: bool,
+    opened: bool,
 }
 
-impl NewVaultDialog {
-    pub fn update(&mut self, ctx: &eframe::egui::Context) -> &mut Self {
+impl AppModal for NewVaultDialog {
+    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal {
         let modal = Modal::new(ctx, "new_vault_name_modal");
 
         modal.show(|ui| {
@@ -29,27 +34,33 @@ impl NewVaultDialog {
                         self.error_message = "Please enter a vault name.".to_string().into();
                         modal.open();
                     } else {
-                        self.is_ready = true;
+                        let Self { new_vault_name, .. } = std::mem::take(self);
+                        state.blocking_write().vault_loading = true;
+                        state
+                            .blocking_read()
+                            .add_task("Create vault".into(), |s, p| {
+                                Promise::spawn_async(tasks::vault::save_new_vault(
+                                    s,
+                                    Vault::new(new_vault_name),
+                                    p,
+                                ))
+                            });
                     }
                 }
                 modal.button(ui, "Cancel");
             });
         });
 
+        if !self.opened {
+            modal.open();
+            self.opened = true;
+        }
+
         self.modal = Some(modal);
         self
     }
 
-    pub fn ready(&mut self) -> Option<String> {
-        if self.is_ready {
-            let new_vault_name = self.new_vault_name.take().trim().into();
-            *self = Default::default();
-            return Some(new_vault_name);
-        }
-        None
-    }
-
-    pub fn open(&mut self) {
-        self.modal.take().unwrap().open();
+    fn is_open(&self) -> bool {
+        self.modal.as_ref().is_some_and(|m| m.is_open())
     }
 }

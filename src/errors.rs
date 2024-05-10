@@ -23,11 +23,8 @@ pub enum AppError {
     WrongMimeType { expected: String, got: String },
     #[error("missing field definition with ID {id}")]
     MissingFieldDefinition { id: Uuid },
-    #[error(
-        "found infinite loop that contains \
-        field ID {field_id} while recursing fields of {item_path}"
-    )]
-    FieldTreeLoop { item_path: String, field_id: Uuid },
+    #[error("found infinite loop that contains field ID {field_id}")]
+    FieldTreeLoop { field_id: Uuid },
 }
 
 impl AppError {

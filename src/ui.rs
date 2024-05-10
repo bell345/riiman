@@ -7,9 +7,7 @@ use poll_promise::Promise;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::data::Vault;
 use crate::errors::AppError;
-use crate::errors::AppError::NotImplemented;
 
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::AsyncTaskResult::{ImportComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
@@ -19,6 +17,7 @@ use crate::tasks::sort::{FilterExpression, SortDirection, SortExpression, SortTy
 use crate::ui::item_cache::ItemCache;
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
+use crate::ui::modals::AppModal;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::ThumbnailCacheItem;
 use crate::ui::thumb_grid::ThumbnailGrid;
@@ -40,10 +39,7 @@ pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
 
-    vault_loading: bool,
-
-    msg_dialogs: Vec<MessageDialog>,
-    new_vault_dialog: NewVaultDialog,
+    modal_dialogs: Vec<Box<dyn AppModal>>,
 
     item_list_cache: ItemCache,
     thumbnail_grid: ThumbnailGrid,
@@ -96,12 +92,12 @@ impl App {
 
     fn error(&mut self, message: String) {
         let dialog = MessageDialog::error(message);
-        self.msg_dialogs.push(dialog);
+        self.modal_dialogs.push(Box::new(dialog));
     }
 
     fn success(&mut self, title: String, message: String) {
         let dialog = MessageDialog::success(message).with_title(title);
-        self.msg_dialogs.push(dialog);
+        self.modal_dialogs.push(Box::new(dialog));
     }
 
     fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
@@ -113,7 +109,7 @@ impl App {
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
         if let Some(path) = stored_state.current_vault_file_path {
-            self.vault_loading = true;
+            self.state.blocking_write().vault_loading = true;
             self.add_task("Load vault".into(), move |s, p| {
                 Promise::spawn_async(crate::tasks::vault::load_vault_from_path(path, s, p))
             });
@@ -148,19 +144,8 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.msg_dialogs
-            .retain_mut(|dialog| dialog.update(ctx).is_open());
-
-        if let Some(new_vault_name) = self.new_vault_dialog.update(ctx).ready() {
-            self.vault_loading = true;
-            self.add_task("Create vault".into(), move |s, p| {
-                Promise::spawn_async(crate::tasks::vault::save_new_vault(
-                    s,
-                    Vault::new(new_vault_name),
-                    p,
-                ))
-            });
-        }
+        self.modal_dialogs
+            .retain_mut(|dialog| dialog.update(ctx, self.state.clone()).is_open());
 
         self.add_queued_tasks();
 
@@ -168,10 +153,11 @@ impl eframe::App for App {
             match result {
                 Ok(AsyncTaskResult::None) => {}
                 Ok(VaultLoaded(name)) => {
-                    self.vault_loading = false;
-                    self.state.blocking_write().current_vault_name = Some(name);
+                    let mut wr = self.state.blocking_write();
+                    wr.current_vault_name = Some(name);
+                    wr.vault_loading = false;
                 }
-                Ok(VaultSaved(_)) => self.vault_loading = false,
+                Ok(VaultSaved(_)) => self.state.blocking_write().vault_loading = false,
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -186,7 +172,9 @@ impl eframe::App for App {
                     self.thumbnail_grid
                         .commit(params, ThumbnailCacheItem::Loaded(hndl));
                 }
-                Err(e) if NotImplemented.is_err(&e) => self.error("Not implemented".to_string()),
+                Err(e) if AppError::NotImplemented.is_err(&e) => {
+                    self.error("Not implemented".to_string())
+                }
                 Err(e) => self.error(format!("{e:#}")),
             }
             ctx.request_repaint();
@@ -195,23 +183,24 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Vault", |ui| {
+                    let vault_loading = self.state.blocking_read().vault_loading;
                     if ui
-                        .add_enabled(!self.vault_loading, egui::Button::new("New"))
+                        .add_enabled(!vault_loading, egui::Button::new("New"))
                         .clicked()
                     {
                         info!("New vault clicked!");
 
-                        self.new_vault_dialog.open();
+                        self.modal_dialogs.push(Box::new(NewVaultDialog::default()));
 
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(!self.vault_loading, egui::Button::new("Open"))
+                        .add_enabled(!vault_loading, egui::Button::new("Open"))
                         .clicked()
                     {
                         info!("Open vault clicked!");
 
-                        self.vault_loading = true;
+                        self.state.blocking_write().vault_loading = true;
                         self.add_task("Load vault".into(), |s, p| {
                             Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p))
                         });
@@ -221,12 +210,12 @@ impl eframe::App for App {
 
                     if self.state().current_vault().is_ok()
                         && ui
-                            .add_enabled(!self.vault_loading, egui::Button::new("Save"))
+                            .add_enabled(!vault_loading, egui::Button::new("Save"))
                             .clicked()
                     {
                         info!("Save vault clicked!");
 
-                        self.vault_loading = true;
+                        self.state.blocking_write().vault_loading = true;
                         self.add_task("Save vault".into(), |state, p| {
                             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
                         });
