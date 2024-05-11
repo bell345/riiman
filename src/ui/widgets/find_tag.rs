@@ -1,8 +1,5 @@
-use std::ops::Add;
 /// Heavily informed by Jake Hansen's 'egui_autocomplete':
 /// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
-use std::sync::Arc;
-
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
@@ -13,13 +10,14 @@ use crate::state::AppStateRef;
 use crate::tasks::filter::{
     evaluate_field_search, FieldMatchResult, MergedFieldMatchResult, TextSearchQuery,
 };
+use crate::ui::widgets;
 
 pub struct FindTag<'a> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
     app_state: AppStateRef,
 
-    exclude_ids: Vec<Uuid>,
+    exclude_ids: Option<&'a Vec<Uuid>>,
     max_suggestions: usize,
     highlight: bool,
 }
@@ -88,29 +86,19 @@ impl<'a> FindTag<'a> {
             app_state,
             max_suggestions: 10,
             highlight: true,
-            exclude_ids: vec![],
+            exclude_ids: None,
         }
     }
 
-    /// This determines the number of options appear in the dropdown menu
-    pub fn max_suggestions(mut self, max_suggestions: usize) -> Self {
-        self.max_suggestions = max_suggestions;
-        self
-    }
-    /// If set to true, characters will be highlighted in the dropdown to show the match
-    pub fn highlight_matches(mut self, highlight: bool) -> Self {
-        self.highlight = highlight;
-        self
-    }
-
-    pub fn exclude_ids(mut self, exclude_ids: Vec<Uuid>) -> Self {
-        self.exclude_ids = exclude_ids;
+    pub fn exclude_ids(mut self, exclude_ids: &'a Vec<Uuid>) -> Self {
+        self.exclude_ids = Some(exclude_ids);
         self
     }
 }
 
 impl<'a> Widget for FindTag<'a> {
-    fn ui(mut self, ui: &mut Ui) -> Response {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let empty_vec = vec![];
         ui.ctx().check_for_id_clash(
             self.widget_id,
             Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
@@ -119,22 +107,6 @@ impl<'a> Widget for FindTag<'a> {
 
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
         let mut tag_selected = false;
-
-        let mut layouter = |ui: &egui::Ui, text: &str, _wrap_width: f32| -> Arc<egui::Galley> {
-            let mut job = egui::text::LayoutJob::default();
-            let style = ui.style();
-
-            job.append(
-                text,
-                16.0,
-                egui::TextFormat::simple(
-                    egui::TextStyle::Body.resolve(style),
-                    style.visuals.text_color(),
-                ),
-            );
-
-            ui.fonts(|f| f.layout_job(job))
-        };
 
         let up_pressed = state.focused
             && ui.input_mut(|input| {
@@ -145,37 +117,7 @@ impl<'a> Widget for FindTag<'a> {
                 input.consume_key(egui::Modifiers::default(), egui::Key::ArrowDown)
             });
 
-        let mut text_res =
-            ui.add(egui::TextEdit::singleline(&mut state.search_text).layouter(&mut layouter));
-
-        let style = ui.style();
-        let painter = ui.painter_at(text_res.rect);
-
-        let icon_width = painter
-            .text(
-                text_res.rect.min.add(egui::vec2(
-                    style.spacing.button_padding.x,
-                    text_res.rect.size().y / 2.0,
-                )),
-                egui::Align2::LEFT_CENTER,
-                "\u{1f50d}",
-                egui::TextStyle::Button.resolve(style),
-                style.visuals.strong_text_color(),
-            )
-            .width();
-
-        if state.search_text.is_empty() {
-            painter.text(
-                text_res.rect.min.add(egui::vec2(
-                    style.spacing.button_padding.x + icon_width + style.spacing.button_padding.x,
-                    text_res.rect.size().y / 2.0,
-                )),
-                egui::Align2::LEFT_CENTER,
-                "Search...",
-                egui::TextStyle::Body.resolve(style),
-                style.visuals.weak_text_color(),
-            );
-        }
+        let mut text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
 
         state.focused = text_res.has_focus();
 
@@ -185,9 +127,13 @@ impl<'a> Widget for FindTag<'a> {
             let Ok(vault) = r.catch(|| r.current_vault()) else {
                 return text_res;
             };
-            let Ok(search_results) =
-                r.catch(|| evaluate_field_search(&vault, &state.search_query, &self.exclude_ids))
-            else {
+            let Ok(search_results) = r.catch(|| {
+                evaluate_field_search(
+                    &vault,
+                    &state.search_query,
+                    self.exclude_ids.unwrap_or(&empty_vec),
+                )
+            }) else {
                 return text_res;
             };
             state.search_results = Some(search_results);

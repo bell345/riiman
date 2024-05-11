@@ -4,17 +4,17 @@ use eframe::egui::{
 };
 use eframe::epaint;
 
-pub struct Tag {
-    definition: FieldDefinition,
+pub struct Tag<'a> {
+    definition: &'a FieldDefinition,
 }
 
-impl Tag {
-    pub fn new(definition: FieldDefinition) -> Self {
+impl<'a> Tag<'a> {
+    pub fn new(definition: &'a FieldDefinition) -> Self {
         Self { definition }
     }
 }
 
-impl Widget for Tag {
+impl<'a> Widget for Tag<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         let label_text = WidgetText::from(&self.definition.name);
         let mut layout_job = label_text.into_layout_job(
