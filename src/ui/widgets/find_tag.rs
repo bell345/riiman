@@ -1,4 +1,6 @@
-/// Heavily informed by Jake Hansen's 'egui_autocomplete': https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
+use std::ops::Add;
+/// Heavily informed by Jake Hansen's 'egui_autocomplete':
+/// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 use std::sync::Arc;
 
 use eframe::egui;
@@ -17,6 +19,7 @@ pub struct FindTag<'a> {
     tag_id: &'a mut Option<Uuid>,
     app_state: AppStateRef,
 
+    exclude_ids: Vec<Uuid>,
     max_suggestions: usize,
     highlight: bool,
 }
@@ -85,6 +88,7 @@ impl<'a> FindTag<'a> {
             app_state,
             max_suggestions: 10,
             highlight: true,
+            exclude_ids: vec![],
         }
     }
 
@@ -98,6 +102,11 @@ impl<'a> FindTag<'a> {
         self.highlight = highlight;
         self
     }
+
+    pub fn exclude_ids(mut self, exclude_ids: Vec<Uuid>) -> Self {
+        self.exclude_ids = exclude_ids;
+        self
+    }
 }
 
 impl<'a> Widget for FindTag<'a> {
@@ -109,7 +118,7 @@ impl<'a> Widget for FindTag<'a> {
         );
 
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
-        let original = self.tag_id.clone();
+        let mut tag_selected = false;
 
         let mut layouter = |ui: &egui::Ui, text: &str, _wrap_width: f32| -> Arc<egui::Galley> {
             let mut job = egui::text::LayoutJob::default();
@@ -138,24 +147,59 @@ impl<'a> Widget for FindTag<'a> {
 
         let mut text_res =
             ui.add(egui::TextEdit::singleline(&mut state.search_text).layouter(&mut layouter));
+
+        let style = ui.style();
+        let painter = ui.painter_at(text_res.rect);
+
+        let icon_width = painter
+            .text(
+                text_res.rect.min.add(egui::vec2(
+                    style.spacing.button_padding.x,
+                    text_res.rect.size().y / 2.0,
+                )),
+                egui::Align2::LEFT_CENTER,
+                "\u{1f50d}",
+                egui::TextStyle::Button.resolve(style),
+                style.visuals.strong_text_color(),
+            )
+            .width();
+
+        if state.search_text.is_empty() {
+            painter.text(
+                text_res.rect.min.add(egui::vec2(
+                    style.spacing.button_padding.x + icon_width + style.spacing.button_padding.x,
+                    text_res.rect.size().y / 2.0,
+                )),
+                egui::Align2::LEFT_CENTER,
+                "Search...",
+                egui::TextStyle::Body.resolve(style),
+                style.visuals.weak_text_color(),
+            );
+        }
+
         state.focused = text_res.has_focus();
 
         if state.search_results.is_none() || text_res.changed() {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
             let r = self.app_state.blocking_read();
-            let Ok(vault) = r.catch(|| r.current_vault()) else { return text_res; };
+            let Ok(vault) = r.catch(|| r.current_vault()) else {
+                return text_res;
+            };
             let Ok(search_results) =
-                r.catch(|| evaluate_field_search(&vault, &state.search_query))
+                r.catch(|| evaluate_field_search(&vault, &state.search_query, &self.exclude_ids))
             else {
                 return text_res;
             };
             state.search_results = Some(search_results);
-            state.selected_index = None;
+            state.selected_index = Some(0);
         }
 
-        state.update_index(down_pressed, up_pressed, state.search_results.as_ref().unwrap().len(), 10);
-
-        let sr = state.search_results.as_ref().unwrap();
+        state.update_index(
+            down_pressed,
+            up_pressed,
+            state.search_results.as_ref().unwrap().len(),
+            10,
+        );
 
         let accepted_by_keyboard = ui.input_mut(|input| input.key_pressed(egui::Key::Enter))
             || ui.input_mut(|input| input.key_pressed(egui::Key::Tab));
@@ -163,15 +207,20 @@ impl<'a> Widget for FindTag<'a> {
             state.selected_index,
             ui.memory(|mem| mem.is_popup_open(self.widget_id)) && accepted_by_keyboard,
         ) {
-            state.search_text.clear();
-            *self.tag_id = Some(sr[index].id);
+            tag_selected = true;
+            *self.tag_id = Some(state.search_results.as_ref().unwrap()[index].id);
         }
 
         let r = self.app_state.blocking_read();
-        let Ok(vault) = r.catch(|| r.current_vault()) else { return text_res; };
+        let Ok(vault) = r.catch(|| r.current_vault()) else {
+            return text_res;
+        };
         egui::popup::popup_below_widget(ui, self.widget_id, &text_res, |ui| {
             ui.set_min_width(200.0);
-            for (i, MergedFieldMatchResult { id, matches }) in sr
+            for (i, MergedFieldMatchResult { id, matches }) in state
+                .search_results
+                .as_ref()
+                .unwrap()
                 .iter()
                 .take(self.max_suggestions)
                 .enumerate()
@@ -181,8 +230,10 @@ impl<'a> Widget for FindTag<'a> {
                 } else {
                     false
                 };
-                
-                let Some(def) = vault.get_definition(id) else { return; };
+
+                let Some(def) = vault.get_definition(id) else {
+                    return;
+                };
 
                 let mut name_indices = vec![];
                 let mut aliases_and_indices = IndexMap::new();
@@ -229,11 +280,11 @@ impl<'a> Widget for FindTag<'a> {
                     job.append(def.name.as_ref(), 0.0, egui::TextFormat::default());
                     job
                 };
-                
+
                 let res = ui.toggle_value(&mut selected, text);
                 if res.clicked() {
                     info!("clicked on {}", def.name);
-                    state.search_text.clear();
+                    tag_selected = true;
                     *self.tag_id = Some(*id);
                 }
                 if res.has_focus() {
@@ -241,20 +292,31 @@ impl<'a> Widget for FindTag<'a> {
                 }
             }
         });
-        
-        if state.focused && !sr.is_empty()
-        {
+
+        if state.focused && !state.search_results.as_ref().unwrap().is_empty() {
             ui.memory_mut(|mem| mem.open_popup(self.widget_id));
         } else {
-            ui.memory_mut(|mem| {
+            /*ui.memory_mut(|mem| {
                 if mem.is_popup_open(self.widget_id) {
                     mem.close_popup()
                 }
-            });
+            });*/
         }
+
+        if tag_selected {
+            ui.memory_mut(|mem| {
+                if mem.is_popup_open(self.widget_id) {
+                    mem.close_popup();
+                }
+            });
+            text_res.changed = true;
+            state.focused = false;
+            state.search_results = None;
+            state.search_text.clear();
+        }
+
         state.store(ui.ctx(), self.widget_id);
 
-        text_res.changed = *self.tag_id != original;
         text_res
     }
 }

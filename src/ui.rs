@@ -368,8 +368,6 @@ impl eframe::App for App {
                         );
                     }
 
-                    ui.text_edit_singleline(&mut self.search_text);
-
                     {
                         let mut wr = self.state.blocking_write();
                         wr.sorts = match self.sort_type {

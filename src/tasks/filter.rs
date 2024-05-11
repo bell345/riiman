@@ -474,9 +474,14 @@ pub struct MergedFieldMatchResult {
 pub fn evaluate_field_search(
     vault: &Vault,
     query: &TextSearchQuery,
+    exclude_ids: &[Uuid],
 ) -> anyhow::Result<Vec<MergedFieldMatchResult>> {
     let mut results = vec![];
     for def in vault.iter_field_defs() {
+        if exclude_ids.contains(&def.id) {
+            continue;
+        }
+
         for result in evaluate_field_search_one(&def, vault, query, &vec![])? {
             results.push(result);
         }
