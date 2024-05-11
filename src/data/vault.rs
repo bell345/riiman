@@ -134,6 +134,17 @@ impl Vault {
     pub fn iter_items(&self) -> impl Iterator<Item = RefMulti<'_, String, Item>> {
         self.items.iter()
     }
+
+    pub fn iter_field_defs(&self) -> impl Iterator<Item = RefMulti<'_, Uuid, FieldDefinition>> {
+        self.definitions.iter()
+    }
+
+    pub fn resolve_field_defs(
+        &self,
+        ids: impl Iterator<Item = impl Deref<Target = Uuid>>,
+    ) -> impl Iterator<Item = impl Deref<Target = FieldDefinition> + '_> {
+        ids.filter_map(|id| self.get_definition(&id))
+    }
 }
 
 impl FieldStore for Vault {

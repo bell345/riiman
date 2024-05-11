@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -13,8 +13,8 @@ pub struct FieldDefinition {
     pub id: Uuid,
     pub name: String,
     pub field_type: kind::KindType,
-    parents: HashSet<Uuid>,
-    children: HashSet<Uuid>,
+    parents: DashSet<Uuid>,
+    children: DashSet<Uuid>,
     fields: DashMap<Uuid, FieldValue>,
 }
 
@@ -50,12 +50,20 @@ impl FieldDefinition {
         self.children.iter()
     }
 
-    pub fn add_parent(&mut self, parent_id: Uuid) {
+    pub fn add_parent(&self, parent_id: Uuid) {
         self.parents.insert(parent_id);
     }
 
-    pub fn add_child(&mut self, child_id: Uuid) {
+    pub fn remove_parent(&self, parent_id: Uuid) {
+        self.parents.remove(&parent_id);
+    }
+
+    pub fn add_child(&self, child_id: Uuid) {
         self.children.insert(child_id);
+    }
+
+    pub fn remove_child(&self, child_id: Uuid) {
+        self.children.remove(&child_id);
     }
 }
 
@@ -187,6 +195,8 @@ macro_rules! define_kinds {
 }
 
 pub mod kind {
+    use crate::errors::AppError;
+
     pub trait TagKind:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
     {
@@ -226,12 +236,19 @@ pub mod kind {
     }
 
     impl Value {
-        pub fn as_str(&self) -> Option<&str> {
+        pub fn as_str_opt(&self) -> Option<&str> {
             match self {
                 Value::Str(x) => Some(x.as_str()),
                 Value::ItemRef(x) => Some(x.as_str()),
                 _ => None,
             }
+        }
+
+        pub fn as_str(&self) -> Result<&str, AppError> {
+            self.as_str_opt().ok_or_else(|| AppError::WrongFieldType {
+                expected: KindType::Str,
+                got: self.clone(),
+            })
         }
     }
 

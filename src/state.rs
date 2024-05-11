@@ -1,13 +1,14 @@
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
+use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use poll_promise::Promise;
 
 use crate::data::Vault;
 use crate::errors::AppError;
 use crate::fields;
-use crate::tasks::sort::{FilterExpression, SortDirection, SortExpression};
+use crate::tasks::filter::FilterExpression;
+use crate::tasks::sort::{SortDirection, SortExpression};
 use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 
 pub(crate) struct AppState {
@@ -42,13 +43,13 @@ impl AppState {
         self.current_vault_name = Some(name);
     }
 
-    pub fn current_vault_opt(&self) -> Option<impl Deref<Target = Vault> + '_> {
+    pub fn current_vault_opt(&self) -> Option<Ref<'_, String, Vault>> {
         let name = self.current_vault_name.as_ref()?;
         let vault = self.vaults.get(name)?;
         Some(vault)
     }
 
-    pub fn current_vault(&self) -> Result<impl Deref<Target = Vault> + '_, AppError> {
+    pub fn current_vault(&self) -> Result<Ref<'_, String, Vault>, AppError> {
         self.current_vault_opt().ok_or(AppError::NoCurrentVault)
     }
 

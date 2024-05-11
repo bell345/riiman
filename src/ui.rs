@@ -10,11 +10,13 @@ use uuid::Uuid;
 use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
+use crate::tasks::filter::FilterExpression;
 use crate::tasks::AsyncTaskResult::{ImportComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
-use crate::tasks::sort::{FilterExpression, SortDirection, SortExpression, SortType};
+use crate::tasks::sort::{SortDirection, SortExpression, SortType};
 use crate::ui::item_cache::ItemCache;
+use crate::ui::modals::edit_tag::EditTagDialog;
 use crate::ui::modals::message::MessageDialog;
 use crate::ui::modals::new_vault::NewVaultDialog;
 use crate::ui::modals::AppModal;
@@ -28,6 +30,7 @@ mod stepwise_range;
 mod theme;
 mod thumb_cache;
 mod thumb_grid;
+mod widgets;
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -90,14 +93,16 @@ impl App {
         }
     }
 
-    fn error(&mut self, message: String) {
-        let dialog = MessageDialog::error(message);
+    fn add_modal_dialog(&mut self, dialog: impl AppModal + 'static) {
         self.modal_dialogs.push(Box::new(dialog));
     }
 
+    fn error(&mut self, message: String) {
+        self.add_modal_dialog(MessageDialog::error(message));
+    }
+
     fn success(&mut self, title: String, message: String) {
-        let dialog = MessageDialog::success(message).with_title(title);
-        self.modal_dialogs.push(Box::new(dialog));
+        self.add_modal_dialog(MessageDialog::success(message).with_title(title));
     }
 
     fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
@@ -190,7 +195,7 @@ impl eframe::App for App {
                     {
                         info!("New vault clicked!");
 
-                        self.modal_dialogs.push(Box::new(NewVaultDialog::default()));
+                        self.add_modal_dialog(NewVaultDialog::default());
 
                         ui.close_menu();
                     }
@@ -241,6 +246,13 @@ impl eframe::App for App {
                                 )
                             });
 
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button("Tags", |ui| {
+                        if ui.button("Edit tag").clicked() {
+                            self.add_modal_dialog(EditTagDialog::select());
                             ui.close_menu();
                         }
                     });
@@ -364,7 +376,7 @@ impl eframe::App for App {
                             SortType::Path => vec![SortExpression::Path(self.sort_direction)],
                             SortType::Field => vec![],
                         };
-                        wr.filter = FilterExpression::TextSearch(self.search_text.clone());
+                        wr.filter = FilterExpression::TextSearch(self.search_text.clone().into());
                     }
                 });
             });

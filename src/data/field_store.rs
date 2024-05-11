@@ -1,3 +1,4 @@
+use crate::data::field_refs::FieldDefValueRef;
 use crate::data::{FieldDefinition, FieldKind, FieldValue, FieldValueKind, KnownField, Vault};
 use crate::errors::AppError;
 use crate::fields;
@@ -8,31 +9,6 @@ use eframe::egui;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use uuid::Uuid;
-
-pub struct FieldDefRef<'a> {
-    inner: dashmap::mapref::multiple::RefMulti<'a, Uuid, FieldValue>,
-    definition: dashmap::mapref::one::Ref<'a, Uuid, FieldDefinition>,
-}
-
-impl<'a> FieldDefRef<'a> {
-    fn try_new<'b: 'a>(
-        inner: dashmap::mapref::multiple::RefMulti<'a, Uuid, FieldValue>,
-        vault: &'b Vault,
-    ) -> Option<Self> {
-        Some(Self {
-            definition: vault.get_definition(inner.key())?,
-            inner,
-        })
-    }
-
-    pub fn definition(&self) -> &(impl Deref<Target = FieldDefinition> + 'a) {
-        &self.definition
-    }
-
-    pub fn value(&self) -> &FieldValue {
-        self.inner.value()
-    }
-}
 
 pub trait FieldStore {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
@@ -138,12 +114,12 @@ pub trait FieldStore {
         self.fields().iter()
     }
 
-    fn iter_field_defs<'a, 'b: 'a>(
+    fn iter_fields_with_defs<'a, 'b: 'a>(
         &'a self,
         vault: &'b Vault,
-    ) -> impl Iterator<Item = FieldDefRef<'a>> {
+    ) -> impl Iterator<Item = FieldDefValueRef<'a>> {
         self.iter_fields()
-            .filter_map(|r| FieldDefRef::try_new(r, vault))
+            .filter_map(|r| FieldDefValueRef::try_new(r, vault))
     }
 
     fn has_tag(&self, vault: &Vault, tag_id: &Uuid) -> anyhow::Result<bool> {

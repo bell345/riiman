@@ -13,6 +13,7 @@ pub use crate::tasks::compute::ThumbnailGridParams;
 use crate::tasks::image::ThumbnailParams;
 
 pub(crate) mod compute;
+pub(crate) mod filter;
 pub(crate) mod image;
 pub(crate) mod import;
 mod progress;

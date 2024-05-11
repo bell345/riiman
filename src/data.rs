@@ -12,6 +12,7 @@ pub use item::Item;
 pub use vault::Vault;
 
 mod field;
+mod field_refs;
 mod field_store;
 mod item;
 mod vault;
