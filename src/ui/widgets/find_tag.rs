@@ -1,3 +1,4 @@
+use crate::data::FieldDefinition;
 /// Heavily informed by Jake Hansen's 'egui_autocomplete':
 /// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 use eframe::egui;
@@ -20,6 +21,7 @@ pub struct FindTag<'a> {
     exclude_ids: Option<&'a Vec<Uuid>>,
     max_suggestions: usize,
     highlight: bool,
+    show_tag: bool,
 }
 
 #[derive(Default, Clone)]
@@ -87,12 +89,26 @@ impl<'a> FindTag<'a> {
             max_suggestions: 10,
             highlight: true,
             exclude_ids: None,
+            show_tag: false,
         }
     }
 
     pub fn exclude_ids(mut self, exclude_ids: &'a Vec<Uuid>) -> Self {
         self.exclude_ids = Some(exclude_ids);
         self
+    }
+
+    pub fn show_tag(mut self, show_tag: bool) -> Self {
+        self.show_tag = show_tag;
+        self
+    }
+
+    pub fn definition(&self) -> Option<FieldDefinition> {
+        let tag_id = self.tag_id.as_ref()?;
+        let r = self.app_state.blocking_read();
+        let vault = r.current_vault_opt()?;
+        let def = vault.get_definition(tag_id)?;
+        Some(def.clone())
     }
 }
 
@@ -117,7 +133,14 @@ impl<'a> Widget for FindTag<'a> {
                 input.consume_key(egui::Modifiers::default(), egui::Key::ArrowDown)
             });
 
-        let mut text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
+        let mut text_res = {
+            let tags = if self.show_tag {
+                self.definition().map(|def| vec![def]).unwrap_or_default()
+            } else {
+                Default::default()
+            };
+            ui.add(widgets::SearchBox::new(&mut state.search_text).tags(&tags))
+        };
 
         state.focused = text_res.has_focus();
 

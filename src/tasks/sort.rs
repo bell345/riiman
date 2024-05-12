@@ -90,8 +90,8 @@ fn cmp_by_field(
             .as_str_opt()?
             .cmp(item2.get_field_value(id)?.as_str_opt()?),
         KindType::DateTime => cmp_typed!(chrono::DateTime<chrono::Utc>, DateTime),
-        KindType::List => todo!(),
-        KindType::Dictionary => todo!(),
+        KindType::List => Ordering::Equal,
+        KindType::Dictionary => Ordering::Equal,
     })
 }
 

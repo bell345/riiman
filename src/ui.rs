@@ -1,7 +1,6 @@
-use std::ops::Add;
+use std::sync::OnceLock;
 
-use std::sync::{Arc, OnceLock};
-
+use crate::data::FieldStore;
 use eframe::egui;
 use poll_promise::Promise;
 use tracing::info;
@@ -22,7 +21,7 @@ use crate::ui::modals::new_vault::NewVaultDialog;
 use crate::ui::modals::AppModal;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::ThumbnailCacheItem;
-use crate::ui::thumb_grid::ThumbnailGrid;
+use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
 
 mod item_cache;
 mod modals;
@@ -293,7 +292,14 @@ impl eframe::App for App {
                     }
 
                     if self.sort_type == SortType::Field {
-                        ui.label("Field goes here");
+                        ui.add(
+                            widgets::FindTag::new(
+                                "sort_field",
+                                &mut self.sort_field_id,
+                                self.state.clone(),
+                            )
+                            .show_tag(true),
+                        );
                     }
 
                     egui::ComboBox::from_label("Sort by")
@@ -314,13 +320,21 @@ impl eframe::App for App {
                             ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
                         });
 
-                    ui.add(widgets::SearchBox::new(&mut self.search_text));
+                    ui.add(
+                        widgets::SearchBox::new(&mut self.search_text).desired_width(f32::INFINITY),
+                    );
 
                     {
                         let mut wr = self.state.blocking_write();
                         wr.sorts = match self.sort_type {
                             SortType::Path => vec![SortExpression::Path(self.sort_direction)],
-                            SortType::Field => vec![],
+                            SortType::Field => {
+                                if let Some(field_id) = self.sort_field_id {
+                                    vec![SortExpression::Field(field_id, self.sort_direction)]
+                                } else {
+                                    vec![]
+                                }
+                            }
                         };
                         wr.filter = FilterExpression::TextSearch(self.search_text.clone().into());
                     }
@@ -368,43 +382,83 @@ impl eframe::App for App {
                 ui,
                 self.expand_right_panel,
                 |ui| {
-                    let r = self.state.blocking_read();
-                    let Some(vault) = r.current_vault_opt() else {
-                        return;
-                    };
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .show_viewport(ui, |ui, _vp| {
+                            ui.horizontal(|ui| {
+                                ui.label("Select: ");
+                                ui.selectable_value(
+                                    &mut self.thumbnail_grid.select_mode,
+                                    SelectMode::Single,
+                                    "Single",
+                                );
+                                ui.selectable_value(
+                                    &mut self.thumbnail_grid.select_mode,
+                                    SelectMode::Multiple,
+                                    "Multiple",
+                                );
+                            });
 
-                    let items = self.thumbnail_grid.view_selected_paths(|paths| {
-                        self.item_list_cache.resolve_refs(&vault, paths)
-                    });
+                            let r = self.state.blocking_read();
+                            let Some(vault) = r.current_vault_opt() else {
+                                return;
+                            };
 
-                    ui.label(format!(
-                        "{} item{}",
-                        items.len(),
-                        if items.len() == 1 { "" } else { "s" }
-                    ));
+                            let items = self.thumbnail_grid.view_selected_paths(|paths| {
+                                self.item_list_cache.resolve_refs(&vault, paths)
+                            });
+
+                            if items.len() == 1 {
+                                let item = items.first().unwrap();
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(item.path())
+                                            .text_style(egui::TextStyle::Heading),
+                                    );
+
+                                    for def in item.iter_fields_with_defs(&vault) {
+                                        ui.add(
+                                            widgets::Tag::new(def.definition()).value(def.value()),
+                                        );
+                                    }
+                                });
+                            } else {
+                                ui.label(format!(
+                                    "{} item{}",
+                                    items.len(),
+                                    if items.len() == 1 { "" } else { "s" }
+                                ));
+                            }
+                        });
                 },
             );
 
-            let mut update =
-                || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
-                    let is_new_item_list = self.item_list_cache.update(self.state.clone())?;
-                    self.thumbnail_grid.update(
-                        ui,
-                        self.state.clone(),
-                        &self.item_list_cache,
-                        is_new_item_list,
-                    )
-                };
+            let scroll_area_rect = egui::CentralPanel::default()
+                .show_inside(ui, |ui| {
+                    let mut update =
+                        || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
+                            let is_new_item_list =
+                                self.item_list_cache.update(self.state.clone())?;
+                            self.thumbnail_grid.update(
+                                ui,
+                                self.state.clone(),
+                                &self.item_list_cache,
+                                is_new_item_list,
+                            )
+                        };
 
-            let mut scroll_area_rect: Option<egui::Rect> = None;
-            match update() {
-                Ok(Some(egui::scroll_area::ScrollAreaOutput { inner_rect, .. })) => {
-                    scroll_area_rect = Some(inner_rect);
-                }
-                Ok(_) => {}
-                Err(e) if AppError::NoCurrentVault.is_err(&e) => {}
-                Err(e) => self.error(format!("{e:?}")),
-            }
+                    let mut scroll_area_rect: Option<egui::Rect> = None;
+                    match update() {
+                        Ok(Some(egui::scroll_area::ScrollAreaOutput { inner_rect, .. })) => {
+                            scroll_area_rect = Some(inner_rect);
+                        }
+                        Ok(_) => {}
+                        Err(e) if AppError::NoCurrentVault.is_err(&e) => {}
+                        Err(e) => self.error(format!("{e:?}")),
+                    }
+                    scroll_area_rect
+                })
+                .inner;
 
             const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
             const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {

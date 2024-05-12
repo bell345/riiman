@@ -39,7 +39,17 @@ pub struct ThumbnailGrid {
     set_scroll: bool,
     last_vp: Option<egui::Rect>,
     hovering_item: Option<String>,
+    pressing_item: Option<String>,
     checked_items: DashMap<String, bool>,
+
+    pub select_mode: SelectMode,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub enum SelectMode {
+    #[default]
+    Single,
+    Multiple,
 }
 
 impl Default for ThumbnailGrid {
@@ -62,7 +72,9 @@ impl Default for ThumbnailGrid {
             set_scroll: Default::default(),
             last_vp: Default::default(),
             hovering_item: Default::default(),
+            pressing_item: Default::default(),
             checked_items: Default::default(),
+            select_mode: Default::default(),
         }
     }
 }
@@ -115,7 +127,7 @@ impl ThumbnailGrid {
         let state = state.blocking_read();
         let current_vault = state.current_vault()?;
 
-        self.params.container_width = ui.available_width();
+        self.params.container_width = ui.available_width().floor();
 
         let thumbnail_grid_is_new = self.info.params != self.params;
         if item_cache_is_new || thumbnail_grid_is_new {
@@ -167,8 +179,10 @@ impl ThumbnailGrid {
 
                     let middle_item = self.middle_item.as_ref();
                     let hover_item = self.hovering_item.as_ref();
+                    let pressing_item = self.pressing_item.as_ref();
                     let mut next_middle: Option<String> = None;
                     let mut next_hover: Option<String> = None;
+                    let mut next_pressing: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
                         let outer_bounds = item.outer_bounds.translate(abs_min);
@@ -245,31 +259,50 @@ impl ThumbnailGrid {
                                 .tint(tint)
                                 .frame(false);
 
-                            let res = ui.put(inner_bounds, img_btn);
+                            let res = ui.put(inner_bounds, img_btn).on_hover_text(&item.path);
                             let is_clicked = res.clicked();
-                            if is_clicked {
-                                info!("Clicked {}!", item.path);
-                            }
                             if is_hover(&res) {
                                 next_hover = Some(item.path.clone());
                             }
+                            if res.is_pointer_button_down_on() {
+                                next_pressing = Some(item.path.clone());
+                            }
 
-                            ui.scope(|ui| {
-                                ui.spacing_mut().interact_size =
-                                    egui::Vec2::splat(CHECKBOX_INTERACT_SIZE);
-                                let mut check_ref =
-                                    self.checked_items.entry(item.path.clone()).or_default();
-                                let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
-                                let checkbox_rect = CHECKBOX_ALIGN
-                                    .align_size_within_rect(CHECKBOX_SIZE, outer_bounds);
-                                let res = ui.put(checkbox_rect, checkbox);
-                                if is_hover(&res) {
-                                    next_hover = Some(item.path.clone());
-                                }
-                                if !res.clicked() && is_clicked {
-                                    *check_ref.value_mut() ^= true;
-                                }
-                            });
+                            if Some(&item.path) == hover_item
+                                || Some(&item.path) == pressing_item
+                                || res.is_pointer_button_down_on()
+                                || checked
+                            {
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().interact_size =
+                                        egui::Vec2::splat(CHECKBOX_INTERACT_SIZE);
+                                    let mut check_ref =
+                                        self.checked_items.entry(item.path.clone()).or_default();
+                                    let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
+                                    let checkbox_rect = CHECKBOX_ALIGN
+                                        .align_size_within_rect(CHECKBOX_SIZE, outer_bounds);
+                                    let res = ui.put(checkbox_rect, checkbox);
+                                    if is_hover(&res) {
+                                        next_hover = Some(item.path.clone());
+                                    }
+                                    if res.is_pointer_button_down_on() {
+                                        next_pressing = Some(item.path.clone());
+                                    }
+
+                                    // clicked on image but not on checkbox -> select only this imag
+                                    if !res.clicked() && is_clicked {
+                                        if self.select_mode == SelectMode::Single
+                                            && !ui.input(|i| i.modifiers.shift)
+                                        {
+                                            drop(check_ref);
+                                            self.checked_items.clear();
+                                            self.checked_items.insert(item.path.clone(), true);
+                                        } else {
+                                            *check_ref.value_mut() ^= true;
+                                        }
+                                    }
+                                });
+                            }
                         }
                     }
 
@@ -278,6 +311,7 @@ impl ThumbnailGrid {
                     }
 
                     self.hovering_item = next_hover;
+                    self.pressing_item = next_pressing;
 
                     self.last_vp = Some(vp);
 
