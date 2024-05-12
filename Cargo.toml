@@ -23,7 +23,7 @@ ordered-float = { version = "4.2", features = ["serde"] }
 
 # gui
 eframe = { version = "0.27.2", features = ["persistence"] }
-egui_extras = { version = "0.27.2", features = ["all_loaders", "default"] }
+egui_extras = { version = "0.27.2", features = ["svg"] }
 egui-modal = "0.3.6"
 rfd = "0.14.1"
 

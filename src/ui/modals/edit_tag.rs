@@ -72,52 +72,74 @@ impl EditTagDialog {
 
         ui.heading("Edit properties");
 
-        ui.horizontal(|ui| {
-            ui.label("Name: ");
-            ui.text_edit_singleline(&mut def.name);
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Type: ");
-            egui::ComboBox::new("edit_tag_type_box", "")
-                .selected_text(def.field_type.to_string())
-                .show_ui(ui, |ui| {
-                    macro_rules! option {
-                        ($name:ident) => {
-                            ui.selectable_value(
-                                &mut def.field_type,
-                                FieldType::$name,
-                                FieldType::$name.to_string(),
-                            );
-                        };
-                    }
-
-                    option!(Tag);
-                    option!(Boolean);
-                    option!(Int);
-                    option!(UInt);
-                    option!(Float);
-                    option!(Colour);
-                    option!(Str);
-                    option!(ItemRef);
-                    option!(List);
-                    option!(Dictionary);
-                    option!(DateTime);
+        egui_extras::TableBuilder::new(ui)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(egui_extras::Column::auto())
+            .column(egui_extras::Column::remainder())
+            .auto_shrink([false, true])
+            .vscroll(false)
+            .body(|mut body| {
+                body.row(24.0, |mut row| {
+                    row.col(|ui| {
+                        ui.label("Name: ");
+                    });
+                    row.col(|ui| {
+                        ui.text_edit_singleline(&mut def.name);
+                    });
                 });
-        });
+                body.row(24.0, |mut row| {
+                    row.col(|ui| {
+                        ui.label("Type: ");
+                    });
+                    row.col(|ui| {
+                        egui::ComboBox::new("edit_tag_type_box", "")
+                            .selected_text(def.field_type.to_string())
+                            .show_ui(ui, |ui| {
+                                macro_rules! option {
+                                    ($name:ident) => {
+                                        ui.selectable_value(
+                                            &mut def.field_type,
+                                            FieldType::$name,
+                                            FieldType::$name.to_string(),
+                                        );
+                                    };
+                                }
 
-        ui.horizontal(|ui| {
-            ui.label("Colour: ");
-
-            let r = state.blocking_read();
-            let Ok(mut colour) = r.catch(|| {
-                def.get_or_insert_known_field_value(fields::meta::COLOUR, [255, 255, 255])
-            }) else {
-                return;
-            };
-            ui.color_edit_button_srgb(&mut colour);
-            def.set_known_field_value(fields::meta::COLOUR, colour);
-        });
+                                option!(Tag);
+                                option!(Boolean);
+                                option!(Int);
+                                option!(UInt);
+                                option!(Float);
+                                option!(Colour);
+                                option!(Str);
+                                option!(ItemRef);
+                                option!(List);
+                                option!(Dictionary);
+                                option!(DateTime);
+                            });
+                    });
+                });
+                body.row(24.0, |mut row| {
+                    row.col(|ui| {
+                        ui.label("Colour: ");
+                    });
+                    row.col(|ui| {
+                        let visuals = ui.style().visuals.widgets.inactive;
+                        let b = visuals.bg_fill;
+                        let r = state.blocking_read();
+                        let Ok(mut colour) = r.catch(|| {
+                            def.get_or_insert_known_field_value(
+                                fields::meta::COLOUR,
+                                [b.r(), b.g(), b.b()],
+                            )
+                        }) else {
+                            return;
+                        };
+                        ui.color_edit_button_srgb(&mut colour);
+                        def.set_known_field_value(fields::meta::COLOUR, colour);
+                    });
+                });
+            });
 
         let parent_ids: Vec<Uuid> = def.iter_parent_ids().map(|u| *u).collect();
         let child_ids: Vec<Uuid> = def.iter_child_ids().map(|u| *u).collect();
@@ -128,6 +150,7 @@ impl EditTagDialog {
         ui.group(|ui| {
             let mut result = ListEditResult::None;
             widgets::ListEdit::new("edit_tag_parent_table", &parent_ids, &mut result)
+                .row_height(22.0)
                 .header_label("Parents:".into())
                 .item_ui(|ui, parent_id| {
                     let Some(parent_def) = vault.get_definition(parent_id) else {
@@ -174,6 +197,7 @@ impl EditTagDialog {
         ui.group(|ui| {
             let mut result = ListEditResult::None;
             widgets::ListEdit::new("edit_tag_child_table", &child_ids, &mut result)
+                .row_height(22.0)
                 .header_label("Children:".into())
                 .item_ui(|ui, child_id| {
                     let Some(child_def) = vault.get_definition(child_id) else {
