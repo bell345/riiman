@@ -6,7 +6,7 @@ use eframe::egui::{
     Vec2, Widget, WidgetInfo, WidgetText, WidgetType,
 };
 use eframe::emath::Rot2;
-use eframe::epaint::{self, ClippedShape, Hsva, Primitive};
+use eframe::epaint::{self, ClippedShape, Hsva, HsvaGamma, Primitive};
 use relativetime::RelativeTime;
 
 use crate::data::kind::Value;
@@ -120,7 +120,7 @@ impl<'a> Tag<'a> {
         self.sizes(&self.galley(ui), &self.value_galley(ui)).3
     }
 
-    pub fn paint(&self, ui: &Ui, rect: Rect) {
+    pub fn paint(&self, ui: &Ui, rect: Rect, response: Option<Response>) {
         let p = ui.painter_at(rect);
         let galley = self.galley(ui);
         let value_galley = self.value_galley(ui);
@@ -128,13 +128,26 @@ impl<'a> Tag<'a> {
         let (hanger_size, label_size, value_size, total_size) = self.sizes(&galley, &value_galley);
 
         let visuals = ui.style().visuals.widgets.inactive;
-        let bg = self
+        let mut bg = self
             .definition
             .get_known_field_value(fields::meta::COLOUR)
             .ok()
             .flatten()
             .map(|[r, g, b]| Color32::from_rgb(r, g, b))
             .unwrap_or(visuals.bg_fill);
+
+        let mut hsva = HsvaGamma::from(bg);
+
+        if response
+            .as_ref()
+            .is_some_and(|r| r.is_pointer_button_down_on())
+        {
+            hsva.v *= 0.8;
+        } else if response.as_ref().is_some_and(|r| r.hovered()) {
+            hsva.v = 1.0 - 0.8 * (1.0 - hsva.v);
+        }
+
+        bg = Color32::from(hsva);
 
         let value_bg = bg.gamma_multiply(0.5).to_opaque();
 
@@ -241,7 +254,7 @@ impl<'a> Widget for Tag<'a> {
         res.widget_info(|| WidgetInfo::labeled(WidgetType::Label, galley.text()));
 
         if ui.is_rect_visible(res.rect) {
-            self.paint(ui, rect);
+            self.paint(ui, rect, Some(res.clone()));
         }
 
         res

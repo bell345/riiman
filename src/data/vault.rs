@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::collections::VecDeque;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -144,6 +145,24 @@ impl Vault {
         ids: impl Iterator<Item = impl Deref<Target = Uuid>>,
     ) -> impl Iterator<Item = impl Deref<Target = FieldDefinition> + '_> {
         ids.filter_map(|id| self.get_definition(&id))
+    }
+
+    pub fn iter_field_ancestor_paths(&self, id: &Uuid) -> Vec<VecDeque<Uuid>> {
+        let Some(def) = self.get_definition(id) else {
+            return vec![];
+        };
+        let mut paths: Vec<VecDeque<Uuid>> = def
+            .iter_parent_ids()
+            .flat_map(|parent_id| self.iter_field_ancestor_paths(&parent_id))
+            .map(|mut path| {
+                path.push_back(*id);
+                path
+            })
+            .collect();
+        if paths.is_empty() {
+            paths.push(VecDeque::from([*id]));
+        }
+        paths
     }
 }
 

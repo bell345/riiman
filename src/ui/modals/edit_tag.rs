@@ -6,12 +6,10 @@ use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
 use eframe::egui;
 use eframe::egui::{Color32, Widget};
-use egui_modal::Modal;
 use uuid::Uuid;
 
 #[derive(Default)]
 pub struct EditTagDialog {
-    modal: Option<Modal>,
     definition: Option<FieldDefinition>,
     error_message: Option<String>,
     is_new: bool,
@@ -21,6 +19,31 @@ pub struct EditTagDialog {
     removed_children: Vec<Uuid>,
 
     opened: bool,
+}
+
+#[derive(Clone)]
+struct State {
+    selected_tag_ids: Vec<Uuid>,
+    opened: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            selected_tag_ids: Default::default(),
+            opened: true,
+        }
+    }
+}
+
+impl State {
+    fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
+        ctx.data(|r| r.get_temp(id))
+    }
+
+    fn store(self, ctx: &egui::Context, id: egui::Id) {
+        ctx.data_mut(|wr| wr.insert_temp(id, self));
+    }
 }
 
 impl EditTagDialog {
@@ -54,6 +77,10 @@ impl EditTagDialog {
 }
 
 impl EditTagDialog {
+    fn id() -> egui::Id {
+        "edit_tag_window".into()
+    }
+
     fn edit_ui(&mut self, ui: &mut egui::Ui, state: AppStateRef) {
         let Some(def) = self.definition.as_mut() else {
             return;
@@ -301,77 +328,79 @@ impl EditTagDialog {
 }
 
 impl AppModal for EditTagDialog {
-    fn update(&mut self, ctx: &egui::Context, state: AppStateRef) -> &mut dyn AppModal {
-        let modal = Modal::new(ctx, "edit_tag_modal");
-
-        modal.show(|ui| {
-            let state = state.clone();
-            modal.title(ui, if self.is_new { "New tag" } else { "Edit tag" });
-            modal.frame(ui, |ui| {
-                ui.heading("Choose a tag");
-                ui.horizontal(|ui| {
-                    ui.label("Search for tag: ");
-                    let mut tag_id = self.definition.as_ref().map(|def| def.id);
-                    if ui
-                        .add(widgets::FindTag::new(
-                            "edit_tag_find",
-                            &mut tag_id,
-                            state.clone(),
-                        ))
-                        .changed()
-                    {
-                        if let Some(tag_id) = tag_id {
-                            let r = state.blocking_read();
-                            let Ok(vault) = r.catch(|| r.current_vault()) else {
-                                return;
-                            };
-                            let Some(def) = vault.get_definition(&tag_id) else {
-                                return;
-                            };
-                            self.definition = Some(def.clone());
-                            self.removed_children = vec![];
-                            self.removed_parents = vec![];
-                        } else {
-                            self.definition = None;
-                        }
-                    }
+    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) -> &mut dyn AppModal {
+        let mut widget_state = State::load(ctx, Self::id()).unwrap_or_default();
+        egui::Window::new("Edit tags")
+            .id("edit_tag_window".into())
+            .open(&mut widget_state.opened)
+            .show(ctx, |ui| {
+                egui::SidePanel::left("edit_tag_window_left").show_inside(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add(widgets::TagTree::new(
+                            "edit_tag_tree",
+                            &mut widget_state.selected_tag_ids,
+                            app_state.clone(),
+                        ));
+                    });
+                });
+                egui::TopBottomPanel::bottom("edit_tag_window_bottom").show_inside(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.button("Save");
+                        ui.button("Reset");
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.button("Delete");
+                        });
+                    });
                 });
 
-                ui.separator();
-
-                if self.definition.is_some() {
-                    self.edit_ui(ui, state);
-                }
-
-                if let Some(msg) = &self.error_message {
-                    ui.colored_label(Color32::RED, msg);
-                }
-            });
-            modal.buttons(ui, |ui| {
-                if let Some(def) = self.definition.as_ref() {
-                    if modal.suggested_button(ui, "Create").clicked() {
-                        if def.name.trim().is_empty() {
-                            self.error_message = "Please enter a tag name.".to_string().into();
-                            modal.open();
-                        } else {
-                            self.is_ready = true;
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.heading("Choose a tag");
+                    ui.horizontal(|ui| {
+                        ui.label("Search for tag: ");
+                        let mut tag_id = self.definition.as_ref().map(|def| def.id);
+                        if ui
+                            .add(widgets::FindTag::new(
+                                "edit_tag_find",
+                                &mut tag_id,
+                                app_state.clone(),
+                            ))
+                            .changed()
+                        {
+                            if let Some(tag_id) = tag_id {
+                                let r = app_state.blocking_read();
+                                let Ok(vault) = r.catch(|| r.current_vault()) else {
+                                    return;
+                                };
+                                let Some(def) = vault.get_definition(&tag_id) else {
+                                    return;
+                                };
+                                self.definition = Some(def.clone());
+                                self.removed_children = vec![];
+                                self.removed_parents = vec![];
+                            } else {
+                                self.definition = None;
+                            }
                         }
+                    });
+
+                    ui.separator();
+
+                    if self.definition.is_some() {
+                        self.edit_ui(ui, app_state);
                     }
-                }
-                modal.button(ui, "Cancel");
+
+                    if let Some(msg) = &self.error_message {
+                        ui.colored_label(Color32::RED, msg);
+                    }
+                });
             });
-        });
 
-        if !self.opened {
-            modal.open();
-            self.opened = true;
-        }
-
-        self.modal = Some(modal);
+        self.opened = widget_state.opened;
+        widget_state.store(ctx, Self::id());
         self
     }
 
     fn is_open(&self) -> bool {
-        self.modal.as_ref().is_some_and(|m| m.is_open())
+        self.opened
     }
 }

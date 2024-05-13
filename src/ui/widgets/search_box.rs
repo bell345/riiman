@@ -81,7 +81,7 @@ impl<'a> Widget for SearchBox<'a> {
         let mut tag_location = output.rect.left_center() + vec2(icon_reserved_width, 0.0);
         for (def, size) in tags.iter().zip(tag_sizes) {
             let rect = Rect::from_min_size(tag_location - vec2(0.0, size.y / 2.0), size);
-            widgets::Tag::new(def).small(true).paint(ui, rect);
+            widgets::Tag::new(def).small(true).paint(ui, rect, None);
             tag_location += vec2(size.x + style.spacing.item_spacing.x, 0.0);
         }
 

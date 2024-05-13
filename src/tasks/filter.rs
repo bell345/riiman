@@ -471,6 +471,28 @@ pub struct MergedFieldMatchResult {
     pub matches: Vec<FieldMatchResult>,
 }
 
+impl MergedFieldMatchResult {
+    pub fn no_matches(id: Uuid) -> Self {
+        Self {
+            id,
+            matches: vec![],
+        }
+    }
+
+    pub fn with_matches<'a>(
+        id: Uuid,
+        results: impl Iterator<Item = &'a FieldMatchResult> + 'a,
+    ) -> Self {
+        Self {
+            id,
+            matches: results
+                .filter(|r| r.id() == id)
+                .map(|r| r.clone())
+                .collect(),
+        }
+    }
+}
+
 pub fn evaluate_field_search(
     vault: &Vault,
     query: &TextSearchQuery,
@@ -497,15 +519,10 @@ pub fn evaluate_field_search(
             continue;
         }
 
-        merged_results.push(MergedFieldMatchResult {
+        merged_results.push(MergedFieldMatchResult::with_matches(
             id,
-            matches: results
-                .iter()
-                .skip(i)
-                .filter(|r| r.id() == id)
-                .map(|r| r.clone())
-                .collect(),
-        });
+            results.iter().skip(i),
+        ));
 
         processed.insert(id);
     }
