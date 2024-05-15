@@ -5,9 +5,9 @@ use derive_more::Display;
 use uuid::Uuid;
 
 use crate::data::kind::KindType;
-use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, Vault};
+use crate::data::{kind, FieldDefinition, FieldStore, Item, SerialColour, Vault};
 use crate::errors::AppError;
-use crate::tasks::filter::{evaluate_filter, evaluate_items_filter, new_matcher, FilterExpression};
+use crate::tasks::filter::{evaluate_items_filter, FilterExpression};
 
 #[derive(
     Default, Display, Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize,
@@ -76,6 +76,7 @@ fn cmp_by_field(
         };
     }
     Some(match field_def.field_type {
+        KindType::Container => return None,
         KindType::Tag => item1
             .has_tag(vault, id)
             .unwrap_or(false)
@@ -84,7 +85,7 @@ fn cmp_by_field(
         KindType::Int => cmp_typed!(i64, Int),
         KindType::UInt => cmp_typed!(u64, UInt),
         KindType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
-        KindType::Colour => cmp_typed!([u8; 3], Colour),
+        KindType::Colour => cmp_typed!(SerialColour, Colour),
         KindType::Str | KindType::ItemRef => item1
             .get_field_value(id)?
             .as_str_opt()?

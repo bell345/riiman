@@ -149,7 +149,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.modal_dialogs
-            .retain_mut(|dialog| dialog.update(ctx, self.state.clone()).is_open());
+            .retain_mut(|dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 
         self.add_queued_tasks();
 

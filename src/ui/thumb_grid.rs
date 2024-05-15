@@ -306,7 +306,17 @@ impl ThumbnailGrid {
                         }
                     }
 
-                    if next_middle.is_some() {
+                    let selected_path = self.view_selected_paths(|paths| {
+                        if paths.len() == 1 {
+                            Some(paths.first().unwrap().to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if selected_path.is_some() {
+                        self.middle_item = selected_path;
+                    } else if next_middle.is_some() {
                         self.middle_item = next_middle;
                     }
 

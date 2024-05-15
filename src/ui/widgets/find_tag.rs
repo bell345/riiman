@@ -1,4 +1,4 @@
-use crate::data::FieldDefinition;
+use crate::data::{kind, FieldDefinition};
 /// Heavily informed by Jake Hansen's 'egui_autocomplete':
 /// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 use eframe::egui;
@@ -18,7 +18,8 @@ pub struct FindTag<'a> {
     tag_id: &'a mut Option<Uuid>,
     app_state: AppStateRef,
 
-    exclude_ids: Option<&'a Vec<Uuid>>,
+    exclude_ids: Option<&'a [Uuid]>,
+    filter_types: Option<&'a [kind::KindType]>,
     max_suggestions: usize,
     highlight: bool,
     show_tag: bool,
@@ -89,12 +90,18 @@ impl<'a> FindTag<'a> {
             max_suggestions: 10,
             highlight: true,
             exclude_ids: None,
+            filter_types: None,
             show_tag: false,
         }
     }
 
-    pub fn exclude_ids(mut self, exclude_ids: &'a Vec<Uuid>) -> Self {
+    pub fn exclude_ids(mut self, exclude_ids: &'a [Uuid]) -> Self {
         self.exclude_ids = Some(exclude_ids);
+        self
+    }
+
+    pub fn filter_types(mut self, filter_types: &'a [kind::KindType]) -> Self {
+        self.filter_types = Some(filter_types);
         self
     }
 
@@ -114,7 +121,6 @@ impl<'a> FindTag<'a> {
 
 impl<'a> Widget for FindTag<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let empty_vec = vec![];
         ui.ctx().check_for_id_clash(
             self.widget_id,
             Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
@@ -154,7 +160,8 @@ impl<'a> Widget for FindTag<'a> {
                 evaluate_field_search(
                     &vault,
                     &state.search_query,
-                    self.exclude_ids.unwrap_or(&empty_vec),
+                    self.exclude_ids,
+                    self.filter_types,
                 )
             }) else {
                 return text_res;

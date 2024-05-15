@@ -42,8 +42,8 @@ macro_rules! field_defs {
                     #[allow(unused_imports)]
                     use uuid::{uuid, Uuid};
 
-                    pub const NAMESPACE: KnownField<kind::Dictionary> =
-                        KnownField::<kind::Dictionary>::new(
+                    pub const NAMESPACE: KnownField<kind::Container> =
+                        KnownField::<kind::Container>::new(
                             uuid!($ns_id), stringify!($ns_name)
                         );
                     $(

@@ -8,6 +8,7 @@ use eframe::emath::Rect;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use std::collections::HashSet;
+use tracing::info;
 use uuid::Uuid;
 
 pub struct TagTree<'a> {
@@ -80,7 +81,7 @@ impl TagTreeEntry {
         def: &FieldDefinition,
         selected_ids: &mut HashSet<Uuid>,
     ) -> Response {
-        let res = ui.add(widgets::Tag::new(def));
+        let res = ui.add(widgets::Tag::new(def).selected(selected_ids.contains(&self.item.id)));
         if res.clicked() {
             selected_ids.clear();
             selected_ids.insert(self.item.id);
@@ -237,7 +238,7 @@ impl<'a> Widget for TagTree<'a> {
                 input.consume_key(egui::Modifiers::default(), egui::Key::ArrowDown)
             });
 
-        let mut text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
+        let text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
 
         ui.separator();
 
@@ -251,7 +252,7 @@ impl<'a> Widget for TagTree<'a> {
             };
 
             let Ok(search_results) =
-                r.catch(|| evaluate_field_search(&vault, &state.search_query, &vec![]))
+                r.catch(|| evaluate_field_search(&vault, &state.search_query, None, None))
             else {
                 return text_res;
             };
@@ -295,12 +296,16 @@ impl<'a> Widget for TagTree<'a> {
                         item.ui(ui, 0, self.app_state.clone(), &mut selected_ids);
                     }
 
+                    info!("selected_ids: {selected_ids:?}");
+
                     let diff = selected_ids.difference(&prev_set).collect_vec();
                     *self.selected_tag_ids = if let Some(new_id) = diff.first() {
                         vec![**new_id]
                     } else {
                         prev_set.into_iter().take(1).collect()
                     };
+
+                    info!("selected_tag_ids: {:?}", self.selected_tag_ids);
 
                     /* *self.selected_tag_ids = state
                     .selected_indices

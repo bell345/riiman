@@ -1,12 +1,13 @@
+use eframe::egui;
+use eframe::egui::{Color32, Widget};
+use uuid::Uuid;
+
 use crate::data::{kind, FieldDefinition, FieldStore, FieldType, FieldValue};
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::ui::modals::AppModal;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
-use eframe::egui;
-use eframe::egui::{Color32, Widget};
-use uuid::Uuid;
 
 #[derive(Default)]
 pub struct EditTagDialog {
@@ -43,6 +44,10 @@ impl State {
 
     fn store(self, ctx: &egui::Context, id: egui::Id) {
         ctx.data_mut(|wr| wr.insert_temp(id, self));
+    }
+
+    fn dispose(ctx: &egui::Context, id: egui::Id) {
+        ctx.data_mut(|wr| wr.remove_temp::<Self>(id));
     }
 }
 
@@ -81,6 +86,7 @@ impl EditTagDialog {
         "edit_tag_window".into()
     }
 
+    //noinspection DuplicatedCode
     fn edit_ui(&mut self, ui: &mut egui::Ui, state: AppStateRef) {
         let Some(def) = self.definition.as_mut() else {
             return;
@@ -152,17 +158,16 @@ impl EditTagDialog {
                     });
                     row.col(|ui| {
                         let visuals = ui.style().visuals.widgets.inactive;
-                        let b = visuals.bg_fill;
                         let r = state.blocking_read();
                         let Ok(mut colour) = r.catch(|| {
                             def.get_or_insert_known_field_value(
                                 fields::meta::COLOUR,
-                                [b.r(), b.g(), b.b()],
+                                visuals.bg_fill.into(),
                             )
                         }) else {
                             return;
                         };
-                        ui.color_edit_button_srgb(&mut colour);
+                        ui.color_edit_button_srgb(colour.as_mut_slice());
                         def.set_known_field_value(fields::meta::COLOUR, colour);
                     });
                 });
@@ -196,7 +201,8 @@ impl EditTagDialog {
                                     create_state,
                                     state.clone(),
                                 )
-                                .exclude_ids(&exclude_ids),
+                                .exclude_ids(&exclude_ids)
+                                .filter_types(&[kind::KindType::Container]),
                             )
                             .changed()
                             && create_state.is_some()
@@ -341,6 +347,18 @@ impl AppModal for EditTagDialog {
                             &mut widget_state.selected_tag_ids,
                             app_state.clone(),
                         ));
+
+                        if widget_state.selected_tag_ids.first()
+                            != self.definition.as_ref().map(|d| &d.id)
+                        {
+                            if let Some(id) = widget_state.selected_tag_ids.first() {
+                                let r = app_state.blocking_read();
+                                let Ok(vault) = r.catch(|| r.current_vault()) else {
+                                    return;
+                                };
+                                self.definition = vault.get_definition(id).map(|d| d.clone());
+                            }
+                        }
                     });
                 });
                 egui::TopBottomPanel::bottom("edit_tag_window_bottom").show_inside(ui, |ui| {
@@ -353,38 +371,7 @@ impl AppModal for EditTagDialog {
                     });
                 });
 
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.heading("Choose a tag");
-                    ui.horizontal(|ui| {
-                        ui.label("Search for tag: ");
-                        let mut tag_id = self.definition.as_ref().map(|def| def.id);
-                        if ui
-                            .add(widgets::FindTag::new(
-                                "edit_tag_find",
-                                &mut tag_id,
-                                app_state.clone(),
-                            ))
-                            .changed()
-                        {
-                            if let Some(tag_id) = tag_id {
-                                let r = app_state.blocking_read();
-                                let Ok(vault) = r.catch(|| r.current_vault()) else {
-                                    return;
-                                };
-                                let Some(def) = vault.get_definition(&tag_id) else {
-                                    return;
-                                };
-                                self.definition = Some(def.clone());
-                                self.removed_children = vec![];
-                                self.removed_parents = vec![];
-                            } else {
-                                self.definition = None;
-                            }
-                        }
-                    });
-
-                    ui.separator();
-
+                egui::CentralPanel::default().show_inside(ui, |ui| {
                     if self.definition.is_some() {
                         self.edit_ui(ui, app_state);
                     }
@@ -398,6 +385,10 @@ impl AppModal for EditTagDialog {
         self.opened = widget_state.opened;
         widget_state.store(ctx, Self::id());
         self
+    }
+
+    fn dispose(&mut self, ctx: &egui::Context, _state: AppStateRef) {
+        State::dispose(ctx, Self::id());
     }
 
     fn is_open(&self) -> bool {

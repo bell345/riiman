@@ -1,6 +1,7 @@
 use dashmap::{DashMap, DashSet};
+use eframe::egui;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -37,7 +38,7 @@ impl FieldDefinition {
         }
     }
 
-    pub fn with_parent(mut self, parent_id: Uuid) -> Self {
+    pub fn with_parent(self, parent_id: Uuid) -> Self {
         self.add_parent(parent_id);
         self
     }
@@ -169,6 +170,7 @@ macro_rules! define_kinds {
         #[derive(
             std::fmt::Debug,
             derive_more::Display,
+            Copy,
             Clone,
             PartialEq,
             Eq,
@@ -183,6 +185,16 @@ macro_rules! define_kinds {
             )*
         }
 
+        impl KindType {
+            pub const fn all() -> &'static [KindType] {
+                &[
+                    $(
+                        Self:: $name ,
+                    )*
+                ]
+            }
+        }
+
         #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         pub enum Value {
             $( $name $( ( $type ) )? , )*
@@ -194,7 +206,71 @@ macro_rules! define_kinds {
     };
 }
 
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct SerialColour(pub(crate) [u8; 3]);
+
+impl SerialColour {
+    pub fn r(&self) -> u8 {
+        self.0[0]
+    }
+    pub fn g(&self) -> u8 {
+        self.0[1]
+    }
+    pub fn b(&self) -> u8 {
+        self.0[2]
+    }
+    pub fn as_slice(&self) -> &[u8; 3] {
+        &self.0
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [u8; 3] {
+        &mut self.0
+    }
+}
+
+impl Display for SerialColour {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{:2x}{:2x}{:2x}", self.r(), self.g(), self.b())
+    }
+}
+
+impl From<SerialColour> for egui::Color32 {
+    fn from(value: SerialColour) -> Self {
+        egui::Color32::from_rgb(value.r(), value.g(), value.b())
+    }
+}
+
+impl From<egui::Color32> for SerialColour {
+    fn from(value: egui::Color32) -> Self {
+        Self([value.r(), value.g(), value.b()])
+    }
+}
+
+impl From<SerialColour> for [u8; 3] {
+    fn from(value: SerialColour) -> Self {
+        [value.r(), value.g(), value.b()]
+    }
+}
+
+impl From<[u8; 3]> for SerialColour {
+    fn from(value: [u8; 3]) -> Self {
+        Self(value)
+    }
+}
+
 pub mod kind {
+    use super::SerialColour;
     use crate::errors::AppError;
 
     pub trait TagKind:
@@ -207,6 +283,8 @@ pub mod kind {
 
     define_kinds! {
         Tag,
+
+        Container,
 
         Boolean(bool),
 
@@ -227,7 +305,7 @@ pub mod kind {
 
         List(Vec<Value>),
 
-        Colour([u8; 3]),
+        Colour(SerialColour),
 
         Dictionary(Vec<(String, Value)>),
 

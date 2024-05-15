@@ -2,7 +2,7 @@ use crate::data::Vault;
 use crate::state::AppStateRef;
 use crate::tasks;
 use crate::ui::modals::AppModal;
-use eframe::egui::Color32;
+use eframe::egui::{Color32, Context};
 use egui_modal::Modal;
 use poll_promise::Promise;
 
@@ -59,6 +59,8 @@ impl AppModal for NewVaultDialog {
         self.modal = Some(modal);
         self
     }
+
+    fn dispose(&mut self, _ctx: &Context, _state: AppStateRef) {}
 
     fn is_open(&self) -> bool {
         self.modal.as_ref().is_some_and(|m| m.is_open())

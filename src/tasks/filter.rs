@@ -1,10 +1,13 @@
 use crate::data::kind::KindType;
-use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, Vault};
+use crate::data::{
+    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour, Vault,
+};
 use crate::errors::AppError;
 use crate::fields;
 use serde::{Deserializer, Serializer};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -99,14 +102,9 @@ impl TextSearchQuery {
             .unwrap();
         let haystack_utf32 = nucleo_matcher::Utf32Str::new(haystack, l_tmp.deref_mut());
         l_idx_buf.deref_mut().clear();
-        if let Some(score) =
-            self.pattern
-                .indices(haystack_utf32, l_matcher.deref_mut(), l_idx_buf.deref_mut())
-        {
-            Some((score, l_idx_buf.deref().clone()))
-        } else {
-            None
-        }
+        self.pattern
+            .indices(haystack_utf32, l_matcher.deref_mut(), l_idx_buf.deref_mut())
+            .map(|score| (score, l_idx_buf.deref().clone()))
     }
 
     pub fn score(&self, haystack: &str) -> Option<u32> {
@@ -188,7 +186,7 @@ fn evaluate_match_expression_typed<V, T: FieldValueKind<V>>(
     expr: &ValueMatchExpression,
 ) -> anyhow::Result<bool>
 where
-    V: Eq + Ord + Copy,
+    V: Eq + Ord + Copy + Display,
     <T as TryFrom<FieldValue>>::Error: std::error::Error + Send + Sync + 'static,
 {
     Ok(match expr {
@@ -204,7 +202,7 @@ where
         }
         ValueMatchExpression::LessThan(x) => value < &*T::try_from(x.clone())?,
         ValueMatchExpression::GreaterThan(x) => value > &*T::try_from(x.clone())?,
-        ValueMatchExpression::Regex(_) => todo!(),
+        ValueMatchExpression::Regex(x) => x.is_match(&format!("{}", value)),
     })
 }
 
@@ -214,6 +212,7 @@ fn evaluate_match_expression(
 ) -> anyhow::Result<bool> {
     Ok(match value {
         FieldValue::Tag => true,
+        FieldValue::Container => false,
         FieldValue::Boolean(v) => evaluate_match_expression_typed::<bool, kind::Boolean>(v, expr)?,
         FieldValue::Int(v) => evaluate_match_expression_typed::<i64, kind::Int>(v, expr)?,
         FieldValue::UInt(v) => evaluate_match_expression_typed::<u64, kind::UInt>(v, expr)?,
@@ -221,11 +220,26 @@ fn evaluate_match_expression(
             ordered_float::OrderedFloat<f64>,
             kind::Float,
         >(v, expr)?,
-        FieldValue::Colour(v) => evaluate_match_expression_typed::<[u8; 3], kind::Colour>(v, expr)?,
+        FieldValue::Colour(v) => {
+            evaluate_match_expression_typed::<SerialColour, kind::Colour>(v, expr)?
+        }
         FieldValue::Str(v) => evaluate_match_expression_string(v, expr)?,
         FieldValue::ItemRef(v) => evaluate_match_expression_string(v, expr)?,
-        FieldValue::List(_) => todo!(),
-        FieldValue::Dictionary(_) => true,
+        FieldValue::List(list) => list
+            .iter()
+            .map(|v| evaluate_match_expression(v, expr))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .any(|b| b),
+        FieldValue::Dictionary(dict) => dict
+            .iter()
+            .map(|(k, v)| {
+                Ok(evaluate_match_expression_string(k, expr)?
+                    || evaluate_match_expression(v, expr)?)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .any(|b| b),
         FieldValue::DateTime(v) => evaluate_match_expression_typed::<
             chrono::DateTime<chrono::Utc>,
             kind::DateTime,
@@ -269,7 +283,7 @@ pub fn evaluate_filter(
         FilterExpression::FolderMatch(x) => Path::new(item.path()).starts_with(x),
         FilterExpression::TagMatch(id) => item.has_tag(vault, id)?,
         FilterExpression::FieldMatch(id, expr) => {
-            if let Some(v) = item.get_field_value(&id) {
+            if let Some(v) = item.get_field_value(id) {
                 return evaluate_match_expression(&v, expr);
             }
 
@@ -381,14 +395,14 @@ fn evaluate_field_search_one(
     def: &FieldDefinition,
     vault: &Vault,
     query: &TextSearchQuery,
-    seen: &Vec<Uuid>,
+    seen: &[Uuid],
 ) -> anyhow::Result<Vec<FieldMatchResult>> {
     if seen.contains(&def.id) {
         return Err(AppError::FieldTreeLoop { field_id: def.id }.into());
     }
 
     let mut results = vec![];
-    let mut seen = seen.clone();
+    let mut seen = Vec::from(seen);
     seen.push(def.id);
 
     if let Some((score, indices)) = query.indices(&def.name) {
@@ -459,7 +473,11 @@ fn evaluate_field_search_one(
                 },
             });
         }
-        seen.push((*parent).id);
+
+        #[allow(clippy::explicit_auto_deref)]
+        {
+            seen.push((*parent).id);
+        }
     }
 
     Ok(results)
@@ -485,10 +503,7 @@ impl MergedFieldMatchResult {
     ) -> Self {
         Self {
             id,
-            matches: results
-                .filter(|r| r.id() == id)
-                .map(|r| r.clone())
-                .collect(),
+            matches: results.filter(|r| r.id() == id).cloned().collect(),
         }
     }
 }
@@ -496,15 +511,22 @@ impl MergedFieldMatchResult {
 pub fn evaluate_field_search(
     vault: &Vault,
     query: &TextSearchQuery,
-    exclude_ids: &[Uuid],
+    exclude_ids: Option<&[Uuid]>,
+    filter_types: Option<&[KindType]>,
 ) -> anyhow::Result<Vec<MergedFieldMatchResult>> {
     let mut results = vec![];
+    let exclude_ids = exclude_ids.unwrap_or(&[]);
+    let filter_types = filter_types.unwrap_or_else(|| KindType::all());
     for def in vault.iter_field_defs() {
         if exclude_ids.contains(&def.id) {
             continue;
         }
 
-        for result in evaluate_field_search_one(&def, vault, query, &vec![])? {
+        if filter_types.contains(&def.field_type) {
+            continue;
+        }
+
+        for result in evaluate_field_search_one(&def, vault, query, &[])? {
             results.push(result);
         }
     }

@@ -1,5 +1,6 @@
 use crate::state::AppStateRef;
 use crate::ui::modals::AppModal;
+use eframe::egui::Context;
 use egui_modal::{Icon, Modal};
 use uuid::Uuid;
 
@@ -90,6 +91,8 @@ impl AppModal for MessageDialog {
         self.modal = Some(modal);
         self
     }
+
+    fn dispose(&mut self, _ctx: &Context, _state: AppStateRef) {}
 
     fn is_open(&self) -> bool {
         self.modal.as_ref().is_some_and(|m| m.is_open())

@@ -63,12 +63,12 @@ impl Vault {
 
     pub fn set_definition(&self, definition: FieldDefinition) {
         for parent_id in definition.iter_parent_ids() {
-            if let Some(mut parent_ref) = self.definitions.get_mut(&parent_id) {
+            if let Some(parent_ref) = self.definitions.get_mut(&parent_id) {
                 parent_ref.add_child(definition.id);
             }
         }
         for child_id in definition.iter_child_ids() {
-            if let Some(mut child_ref) = self.definitions.get_mut(&child_id) {
+            if let Some(child_ref) = self.definitions.get_mut(&child_id) {
                 child_ref.add_parent(definition.id);
             }
         }
