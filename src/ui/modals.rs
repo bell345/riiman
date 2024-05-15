@@ -1,12 +1,18 @@
 use crate::state::AppStateRef;
 
-pub(crate) mod edit_tag;
-pub(crate) mod message;
-pub(crate) mod new_vault;
+mod delete_def;
+mod edit_tag;
+mod message;
+mod new_vault;
 
-pub trait AppModal {
+pub use delete_def::DeleteDefinition;
+pub use edit_tag::EditTagDialog;
+pub use message::MessageDialog;
+pub use new_vault::NewVaultDialog;
+
+pub trait AppModal: Send + Sync + 'static {
     fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal;
-    fn dispose(&mut self, ctx: &eframe::egui::Context, state: AppStateRef);
+    fn dispose(&mut self, _ctx: &eframe::egui::Context, _state: AppStateRef) {}
     fn is_open(&self) -> bool;
 
     fn update_or_dispose(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> bool {

@@ -89,6 +89,10 @@ pub trait FieldStore {
         self.fields().contains_key(field_id)
     }
 
+    fn remove_field(&self, field_id: &Uuid) -> Option<(Uuid, FieldValue)> {
+        self.fields().remove(field_id)
+    }
+
     fn get_field_value(&self, field_id: &Uuid) -> Option<impl Deref<Target = FieldValue>> {
         self.fields().get(field_id)
     }

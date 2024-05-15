@@ -29,11 +29,9 @@ impl FieldDefinition {
         }
     }
 
-    pub fn new(id: Uuid, name: String, field_type: kind::KindType) -> Self {
+    pub fn new() -> Self {
         Self {
-            id,
-            name,
-            field_type,
+            id: Uuid::new_v4(),
             ..Default::default()
         }
     }

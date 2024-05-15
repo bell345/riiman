@@ -265,7 +265,7 @@ pub fn evaluate_filter(
                 let def = r.definition();
                 let v = r.value();
                 if match def.field_type {
-                    KindType::Tag => matches(&def.name),
+                    KindType::Tag | KindType::Container => matches(&def.name),
                     KindType::Str => matches(&String::from(kind::Str::try_from(v.clone())?)),
                     KindType::ItemRef => {
                         matches(&String::from(kind::ItemRef::try_from(v.clone())?))
@@ -522,7 +522,7 @@ pub fn evaluate_field_search(
             continue;
         }
 
-        if filter_types.contains(&def.field_type) {
+        if !filter_types.contains(&def.field_type) {
             continue;
         }
 

@@ -15,10 +15,6 @@ use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, Progress
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
 use crate::ui::item_cache::ItemCache;
-use crate::ui::modals::edit_tag::EditTagDialog;
-use crate::ui::modals::message::MessageDialog;
-use crate::ui::modals::new_vault::NewVaultDialog;
-use crate::ui::modals::AppModal;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::ThumbnailCacheItem;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
@@ -30,6 +26,9 @@ mod theme;
 mod thumb_cache;
 mod thumb_grid;
 mod widgets;
+
+pub use crate::ui::modals::AppModal;
+use crate::ui::modals::{EditTagDialog, MessageDialog, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -148,6 +147,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let errors = self.state.blocking_write().drain_errors();
+        for error in errors {
+            self.error(format!("{}", error));
+        }
+        self.modal_dialogs
+            .extend(self.state.blocking_write().drain_dialogs());
         self.modal_dialogs
             .retain_mut(|dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 

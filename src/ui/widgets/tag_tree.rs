@@ -15,6 +15,7 @@ pub struct TagTree<'a> {
     widget_id: egui::Id,
     selected_tag_ids: &'a mut Vec<Uuid>,
     app_state: AppStateRef,
+    updated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -215,7 +216,13 @@ impl<'a> TagTree<'a> {
             widget_id: egui::Id::new(widget_id),
             selected_tag_ids,
             app_state,
+            updated: false,
         }
+    }
+
+    pub fn updated(mut self, updated: bool) -> Self {
+        self.updated = updated;
+        self
     }
 }
 
@@ -244,7 +251,7 @@ impl<'a> Widget for TagTree<'a> {
 
         state.focused = text_res.has_focus();
 
-        if state.tree.is_none() || text_res.changed() {
+        if state.tree.is_none() || text_res.changed() || self.updated {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
             let r = self.app_state.blocking_read();
             let Ok(vault) = r.catch(|| r.current_vault()) else {
@@ -296,22 +303,12 @@ impl<'a> Widget for TagTree<'a> {
                         item.ui(ui, 0, self.app_state.clone(), &mut selected_ids);
                     }
 
-                    info!("selected_ids: {selected_ids:?}");
-
                     let diff = selected_ids.difference(&prev_set).collect_vec();
                     *self.selected_tag_ids = if let Some(new_id) = diff.first() {
                         vec![**new_id]
                     } else {
                         prev_set.into_iter().take(1).collect()
                     };
-
-                    info!("selected_tag_ids: {:?}", self.selected_tag_ids);
-
-                    /* *self.selected_tag_ids = state
-                    .selected_indices
-                    .iter()
-                    .filter_map(|i| resolve_index(search_results, *i).map(|r| r.id))
-                    .collect();*/
                 } else {
                     *self.selected_tag_ids = vec![];
                 }

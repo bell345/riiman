@@ -1,16 +1,17 @@
 use anyhow::Context;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::data::{FieldStore, FieldValue};
-use crate::errors::AppError;
+use crate::errors::{AppError, HierarchyError};
 
 use super::field::FieldDefinition;
 use super::item::Item;
@@ -24,6 +25,20 @@ pub struct Vault {
 
     #[serde(skip)]
     pub file_path: Option<Box<Path>>,
+}
+
+enum HierarchyWalkPosition {
+    FromParent { id: Uuid, parent_id: Uuid },
+    FromChild { id: Uuid, child_id: Uuid },
+}
+
+impl HierarchyWalkPosition {
+    fn id(&self) -> &Uuid {
+        match self {
+            Self::FromParent { id, .. } => id,
+            Self::FromChild { id, .. } => id,
+        }
+    }
 }
 
 impl Vault {
@@ -73,6 +88,23 @@ impl Vault {
             }
         }
         self.definitions.insert(definition.id, definition);
+    }
+
+    pub fn remove_definition(&self, id: &Uuid) {
+        if self.definitions.remove(id).is_some() {
+            for item in self.find_items_by_field(id) {
+                item.remove_field(id);
+            }
+
+            let desc_ids: Vec<_> = self
+                .iter_descendants(id)
+                .into_iter()
+                .map(|def| def.id)
+                .collect();
+            for desc_id in desc_ids {
+                self.remove_definition(&desc_id);
+            }
+        }
     }
 
     pub fn set_file_path(&mut self, path: &Path) {
@@ -163,6 +195,98 @@ impl Vault {
             paths.push(VecDeque::from([*id]));
         }
         paths
+    }
+
+    pub fn iter_descendants(&self, id: &Uuid) -> Vec<Ref<'_, Uuid, FieldDefinition>> {
+        let mut res = vec![];
+        let mut queue = vec![*id];
+        while let Some(id) = queue.pop() {
+            let Some(def) = self.get_definition(&id) else {
+                continue;
+            };
+            for child in def.iter_child_ids() {
+                let Some(child_def) = self.get_definition(&child) else {
+                    continue;
+                };
+                queue.extend(child_def.iter_child_ids().map(|cid| *cid));
+                res.push(child_def);
+            }
+        }
+
+        res
+    }
+
+    pub fn find_items_by_tag(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Item>> {
+        self.iter_items()
+            .filter(|item| item.has_tag(self, id).is_ok_and(|v| v))
+            .collect()
+    }
+
+    pub fn find_items_by_field(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Item>> {
+        self.iter_items()
+            .filter(|item| item.has_field(id))
+            .collect()
+    }
+
+    pub fn find_hierarchy_error(&self, def: &FieldDefinition) -> Result<(), HierarchyError> {
+        let mut parents = HashSet::new();
+        let mut children = HashSet::new();
+
+        let mut queue = vec![];
+        queue.extend(
+            def.iter_parent_ids()
+                .map(|id| HierarchyWalkPosition::FromChild {
+                    id: *id,
+                    child_id: def.id,
+                }),
+        );
+        queue.extend(
+            def.iter_child_ids()
+                .map(|id| HierarchyWalkPosition::FromParent {
+                    id: *id,
+                    parent_id: def.id,
+                }),
+        );
+
+        while let Some(pos) = queue.pop() {
+            match &pos {
+                HierarchyWalkPosition::FromParent { id, .. } => {
+                    if parents.contains(id) {
+                        return Err(HierarchyError::FieldTreeLoop { field_id: *id });
+                    }
+                    children.insert(*id);
+                }
+                HierarchyWalkPosition::FromChild { id, .. } => {
+                    if children.contains(&id) {
+                        return Err(HierarchyError::FieldTreeLoop { field_id: *id });
+                    }
+                    parents.insert(*id);
+                }
+            }
+
+            let pos_def = self
+                .get_definition(pos.id())
+                .ok_or(HierarchyError::MissingFieldDefinition { id: *pos.id() })?;
+
+            queue.extend(match pos {
+                HierarchyWalkPosition::FromChild { .. } => pos_def
+                    .iter_parent_ids()
+                    .map(|pid| HierarchyWalkPosition::FromChild {
+                        id: *pid,
+                        child_id: *pos.id(),
+                    })
+                    .collect_vec(),
+                HierarchyWalkPosition::FromParent { .. } => pos_def
+                    .iter_child_ids()
+                    .map(|cid| HierarchyWalkPosition::FromParent {
+                        id: *cid,
+                        parent_id: *pos.id(),
+                    })
+                    .collect_vec(),
+            });
+        }
+
+        Ok(())
     }
 }
 

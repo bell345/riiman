@@ -60,8 +60,6 @@ impl AppModal for NewVaultDialog {
         self
     }
 
-    fn dispose(&mut self, _ctx: &Context, _state: AppStateRef) {}
-
     fn is_open(&self) -> bool {
         self.modal.as_ref().is_some_and(|m| m.is_open())
     }

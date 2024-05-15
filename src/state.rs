@@ -10,10 +10,12 @@ use crate::fields;
 use crate::tasks::filter::FilterExpression;
 use crate::tasks::sort::{SortDirection, SortExpression};
 use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
+use crate::ui::AppModal;
 
 pub(crate) struct AppState {
     task_queue: Mutex<Vec<(String, TaskFactory)>>,
     error_queue: Mutex<Vec<anyhow::Error>>,
+    dialog_queue: Mutex<Vec<Box<dyn AppModal>>>,
     vaults: DashMap<String, Vault>,
     pub current_vault_name: Option<String>,
     pub vault_loading: bool,
@@ -27,6 +29,7 @@ impl Default for AppState {
         Self {
             task_queue: Default::default(),
             error_queue: Default::default(),
+            dialog_queue: Default::default(),
             vaults: Default::default(),
             current_vault_name: None,
             vault_loading: false,
@@ -65,6 +68,11 @@ impl AppState {
         l.push((name, Box::new(task_factory)));
     }
 
+    pub fn add_dialog(&self, dialog: impl AppModal) {
+        let mut l = self.dialog_queue.lock().unwrap();
+        l.push(Box::new(dialog));
+    }
+
     pub fn catch<T, E: Into<anyhow::Error>>(
         &self,
         f: impl FnOnce() -> Result<T, E>,
@@ -91,6 +99,14 @@ impl AppState {
         }
 
         v
+    }
+
+    pub fn drain_errors(&mut self) -> Vec<anyhow::Error> {
+        self.error_queue.lock().unwrap().drain(..).collect()
+    }
+
+    pub fn drain_dialogs(&mut self) -> Vec<Box<dyn AppModal>> {
+        self.dialog_queue.lock().unwrap().drain(..).collect()
     }
 }
 

@@ -1,7 +1,8 @@
+use std::marker::PhantomData;
+
 use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
-use egui_extras::{TableBody, TableRow};
-use std::marker::PhantomData;
+use egui_extras::TableBody;
 
 #[allow(clippy::type_complexity)]
 pub struct ListEdit<
@@ -10,7 +11,7 @@ pub struct ListEdit<
     T,
     ItemF: Fn(&mut Ui, &T) + 'a,
     CreateState: Default + Clone + Send + Sync + 'static,
-    CreateF: FnOnce(TableRow, &mut CreateState) -> Option<T> + 'a,
+    CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
 > {
     items: &'a Vec<T>,
     result: &'b mut ListEditResult<'a, T>,
@@ -20,22 +21,27 @@ pub struct ListEdit<
     item_ui: Option<Box<ItemF>>,
     create_ui: Option<Box<CreateF>>,
     row_height: f32,
+    updated: bool,
     _phantom: PhantomData<CreateState>,
 }
 
 #[derive(Debug, Default, Clone)]
-struct ListEditState<CreateState: Default + Clone + Send + Sync + 'static> {
+struct State<CreateState: Default + Clone + Send + Sync + 'static> {
     is_adding: bool,
     create_state: CreateState,
 }
 
-impl<CreateState: Default + Clone + Send + Sync + 'static> ListEditState<CreateState> {
+impl<CreateState: Default + Clone + Send + Sync + 'static> State<CreateState> {
     fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
         ctx.data(|r| r.get_temp(id))
     }
 
     fn store(self, ctx: &egui::Context, id: egui::Id) {
         ctx.data_mut(|wr| wr.insert_temp(id, self));
+    }
+
+    fn dispose(ctx: &egui::Context, id: egui::Id) {
+        ctx.data_mut(|wr| wr.remove_temp::<Self>(id));
     }
 }
 
@@ -51,7 +57,7 @@ impl<
         T,
         ItemF: Fn(&mut Ui, &T) + 'a,
         CreateState: Default + Clone + Send + Sync + 'static,
-        CreateF: FnOnce(TableRow, &mut CreateState) -> Option<T> + 'a,
+        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
     > ListEdit<'a, 'b, T, ItemF, CreateState, CreateF>
 {
     pub fn new(
@@ -68,6 +74,7 @@ impl<
             item_ui: None,
             create_ui: None,
             row_height: 18.0,
+            updated: false,
             _phantom: Default::default(),
         }
     }
@@ -97,28 +104,41 @@ impl<
         self
     }
 
-    fn body(&mut self, mut body: TableBody, state: &mut ListEditState<CreateState>) {
+    pub fn updated(mut self, updated: bool) -> Self {
+        self.updated = updated;
+        self
+    }
+
+    fn body(&mut self, mut body: TableBody, state: &mut State<CreateState>) {
         for item in self.items {
             if let Some(item_ui) = self.item_ui.as_ref() {
                 body.row(self.row_height, |mut row| {
-                    row.col(|ui| item_ui(ui, item));
                     row.col(|ui| {
                         if ui.add(egui::Button::new("\u{274c}").frame(false)).clicked() {
                             *self.result = ListEditResult::Remove(item);
                         }
                     });
+                    row.col(|ui| item_ui(ui, item));
                 });
             }
         }
 
         if state.is_adding {
             if let Some(create_ui) = self.create_ui.take() {
-                body.row(self.row_height, |row| {
-                    if let Some(new_item) = create_ui(row, &mut state.create_state) {
-                        *self.result = ListEditResult::Add(new_item);
-                        state.is_adding = false;
-                        state.create_state = Default::default();
-                    }
+                body.row(self.row_height, |mut row| {
+                    row.col(|ui| {
+                        if ui.add(egui::Button::new("\u{274c}").frame(false)).clicked() {
+                            state.is_adding = false;
+                            state.create_state = Default::default();
+                        }
+                    });
+                    row.col(|ui| {
+                        if let Some(new_item) = create_ui(ui, &mut state.create_state) {
+                            *self.result = ListEditResult::Add(new_item);
+                            state.is_adding = false;
+                            state.create_state = Default::default();
+                        }
+                    });
                 });
             }
         }
@@ -131,15 +151,15 @@ impl<
         T,
         ItemF: Fn(&mut Ui, &T) + 'a,
         CreateState: Default + Clone + Send + Sync + 'static,
-        CreateF: FnOnce(TableRow, &mut CreateState) -> Option<T> + 'a,
+        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
     > Widget for ListEdit<'a, 'b, T, ItemF, CreateState, CreateF>
 {
     fn ui(mut self, ui: &mut Ui) -> Response {
         *self.result = ListEditResult::None;
 
-        let mut state = ListEditState::load(ui.ctx(), self.widget_id).unwrap_or_default();
+        let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
 
-        let res = ui.vertical_centered(|ui| {
+        let res = ui.vertical_centered_justified(|ui| {
             if !self.header_label.is_empty() {
                 ui.label(&self.header_label);
             }
@@ -148,8 +168,8 @@ impl<
                 egui_extras::TableBuilder::new(ui)
                     .striped(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(egui_extras::Column::remainder())
                     .column(egui_extras::Column::exact(12.0))
+                    .column(egui_extras::Column::remainder())
                     .auto_shrink([false, true])
                     .vscroll(false)
                     .body(|body| self.body(body, &mut state));
@@ -162,6 +182,10 @@ impl<
         });
 
         state.store(ui.ctx(), self.widget_id);
+
+        if self.updated {
+            State::<CreateState>::dispose(ui.ctx(), self.widget_id);
+        }
 
         res.response
     }

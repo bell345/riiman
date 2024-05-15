@@ -36,3 +36,11 @@ impl AppError {
         }
     }
 }
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum HierarchyError {
+    #[error("missing field definition with ID {id}")]
+    MissingFieldDefinition { id: Uuid },
+    #[error("found infinite loop that contains field ID {field_id}")]
+    FieldTreeLoop { field_id: Uuid },
+}
