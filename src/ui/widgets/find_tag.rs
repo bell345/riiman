@@ -1,48 +1,51 @@
-use crate::data::{kind, FieldDefinition};
+use crate::data::{kind, FieldDefinition, Vault};
+use crate::shortcut;
 /// Heavily informed by Jake Hansen's 'egui_autocomplete':
 /// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
-use tracing::info;
 use uuid::Uuid;
 
-use crate::state::AppStateRef;
 use crate::tasks::filter::{
     evaluate_field_search, FieldMatchResult, MergedFieldMatchResult, TextSearchQuery,
 };
+use crate::ui::cloneable_state::CloneableState;
 use crate::ui::widgets;
 
-pub struct FindTag<'a> {
+pub struct FindTag<'a, 'b> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
-    app_state: AppStateRef,
+    vault: &'b Vault,
+
+    create_req: Option<&'a mut Option<String>>,
 
     exclude_ids: Option<&'a [Uuid]>,
-    filter_types: Option<&'a [kind::KindType]>,
+    filter_types: Option<Vec<kind::KindType>>,
     max_suggestions: usize,
     highlight: bool,
     show_tag: bool,
+    desired_width: f32,
+}
+
+#[derive(Clone)]
+enum AutocompleteResult {
+    MatchResult(MergedFieldMatchResult),
+    CreateResult,
 }
 
 #[derive(Default, Clone)]
 struct State {
     search_text: String,
     search_query: TextSearchQuery,
-    search_results: Option<Vec<MergedFieldMatchResult>>,
+    search_results: Option<Vec<AutocompleteResult>>,
     selected_index: Option<usize>,
     focused: bool,
 }
 
+impl CloneableState for State {}
+
 impl State {
-    fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
-        ctx.data(|r| r.get_temp(id))
-    }
-
-    fn store(self, ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.insert_temp(id, self));
-    }
-
     fn update_index(
         &mut self,
         down_pressed: bool,
@@ -77,21 +80,23 @@ impl State {
     }
 }
 
-impl<'a> FindTag<'a> {
+impl<'a, 'b> FindTag<'a, 'b> {
     pub fn new(
         widget_id: impl std::hash::Hash,
         tag_id: &'a mut Option<Uuid>,
-        app_state: AppStateRef,
+        vault: &'b Vault,
     ) -> Self {
         Self {
             widget_id: egui::Id::new(widget_id),
             tag_id,
-            app_state,
+            vault,
             max_suggestions: 10,
             highlight: true,
             exclude_ids: None,
             filter_types: None,
             show_tag: false,
+            desired_width: 120.0,
+            create_req: None,
         }
     }
 
@@ -100,8 +105,19 @@ impl<'a> FindTag<'a> {
         self
     }
 
-    pub fn filter_types(mut self, filter_types: &'a [kind::KindType]) -> Self {
-        self.filter_types = Some(filter_types);
+    pub fn filter_types(mut self, filter_types: &[kind::KindType]) -> Self {
+        self.filter_types = Some(filter_types.to_vec());
+        self
+    }
+
+    pub fn exclude_types(mut self, exclude_types: &[kind::KindType]) -> Self {
+        self.filter_types = Some(
+            kind::KindType::all()
+                .iter()
+                .filter(|t| !exclude_types.contains(t))
+                .cloned()
+                .collect(),
+        );
         self
     }
 
@@ -110,17 +126,74 @@ impl<'a> FindTag<'a> {
         self
     }
 
+    pub fn desired_width(mut self, desired_width: f32) -> Self {
+        self.desired_width = desired_width;
+        self
+    }
+
+    pub fn create_request(mut self, create_req: &'a mut Option<String>) -> Self {
+        self.create_req = Some(create_req);
+        self
+    }
+
     pub fn definition(&self) -> Option<FieldDefinition> {
         let tag_id = self.tag_id.as_ref()?;
-        let r = self.app_state.blocking_read();
-        let vault = r.current_vault_opt()?;
-        let def = vault.get_definition(tag_id)?;
+        let def = self.vault.get_definition(tag_id)?;
         Some(def.clone())
+    }
+
+    pub fn merge_indices(
+        &self,
+        matches: &[FieldMatchResult],
+    ) -> (
+        Vec<u32>,
+        IndexMap<String, Vec<u32>>,
+        IndexMap<Uuid, Vec<u32>>,
+        IndexMap<Uuid, IndexMap<String, Vec<u32>>>,
+    ) {
+        let mut name_indices = vec![];
+        let mut aliases_and_indices = IndexMap::new();
+        let mut parents_name_and_indices = IndexMap::new();
+        let mut parents_aliases_and_indices = IndexMap::new();
+
+        for m in matches {
+            match m {
+                FieldMatchResult::Name { indices, .. } => name_indices.append(&mut indices.clone()),
+                FieldMatchResult::Alias { alias, indices, .. } => aliases_and_indices
+                    .entry(alias.to_string())
+                    .or_insert_with(Vec::new)
+                    .append(&mut indices.clone()),
+                FieldMatchResult::ParentName {
+                    parent_id, indices, ..
+                } => parents_name_and_indices
+                    .entry(*parent_id)
+                    .or_insert_with(Vec::new)
+                    .append(&mut indices.clone()),
+                FieldMatchResult::ParentAlias {
+                    parent_id,
+                    alias,
+                    indices,
+                    ..
+                } => parents_aliases_and_indices
+                    .entry(*parent_id)
+                    .or_insert_with(IndexMap::new)
+                    .entry(alias.to_string())
+                    .or_insert_with(Vec::new)
+                    .append(&mut indices.clone()),
+            }
+        }
+
+        (
+            name_indices,
+            aliases_and_indices,
+            parents_name_and_indices,
+            parents_aliases_and_indices,
+        )
     }
 }
 
-impl<'a> Widget for FindTag<'a> {
-    fn ui(self, ui: &mut Ui) -> Response {
+impl<'a, 'b> Widget for FindTag<'a, 'b> {
+    fn ui(mut self, ui: &mut Ui) -> Response {
         ui.ctx().check_for_id_clash(
             self.widget_id,
             Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
@@ -130,14 +203,8 @@ impl<'a> Widget for FindTag<'a> {
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
         let mut tag_selected = false;
 
-        let up_pressed = state.focused
-            && ui.input_mut(|input| {
-                input.consume_key(egui::Modifiers::default(), egui::Key::ArrowUp)
-            });
-        let down_pressed = state.focused
-            && ui.input_mut(|input| {
-                input.consume_key(egui::Modifiers::default(), egui::Key::ArrowDown)
-            });
+        let up_pressed = state.focused && shortcut!(ui, ArrowUp);
+        let down_pressed = state.focused && shortcut!(ui, ArrowDown);
 
         let mut text_res = {
             let tags = if self.show_tag {
@@ -145,28 +212,36 @@ impl<'a> Widget for FindTag<'a> {
             } else {
                 Default::default()
             };
-            ui.add(widgets::SearchBox::new(&mut state.search_text).tags(&tags))
+            ui.add(
+                widgets::SearchBox::new(&mut state.search_text)
+                    .tags(&tags)
+                    .desired_width(self.desired_width),
+            )
         };
 
         state.focused = text_res.has_focus();
 
         if state.search_results.is_none() || text_res.changed() {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
-            let r = self.app_state.blocking_read();
-            let Ok(vault) = r.catch(|| r.current_vault()) else {
+            let Ok(search_results) = evaluate_field_search(
+                self.vault,
+                &state.search_query,
+                self.exclude_ids,
+                self.filter_types.as_deref(),
+            ) else {
                 return text_res;
             };
-            let Ok(search_results) = r.catch(|| {
-                evaluate_field_search(
-                    &vault,
-                    &state.search_query,
-                    self.exclude_ids,
-                    self.filter_types,
-                )
-            }) else {
-                return text_res;
-            };
-            state.search_results = Some(search_results);
+
+            let mut vec: Vec<_> = search_results
+                .into_iter()
+                .map(AutocompleteResult::MatchResult)
+                .collect();
+
+            if self.create_req.is_some() && !state.search_text.is_empty() {
+                vec.push(AutocompleteResult::CreateResult);
+            }
+
+            state.search_results = Some(vec);
             state.selected_index = Some(0);
         }
 
@@ -177,23 +252,27 @@ impl<'a> Widget for FindTag<'a> {
             10,
         );
 
-        let accepted_by_keyboard = ui.input_mut(|input| input.key_pressed(egui::Key::Enter))
-            || ui.input_mut(|input| input.key_pressed(egui::Key::Tab));
+        let accepted_by_keyboard = shortcut!(ui, Tab) || shortcut!(ui, Enter);
         if let (Some(index), true) = (
             state.selected_index,
             ui.memory(|mem| mem.is_popup_open(self.widget_id)) && accepted_by_keyboard,
         ) {
-            tag_selected = true;
-            *self.tag_id = Some(state.search_results.as_ref().unwrap()[index].id);
+            if let Some(results) = state.search_results.as_ref() {
+                if let Some(result) = results.get(index) {
+                    tag_selected = true;
+                    match result {
+                        AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
+                        AutocompleteResult::CreateResult => {
+                            **self.create_req.as_mut().unwrap() = Some(state.search_text.clone())
+                        }
+                    }
+                }
+            }
         }
 
-        let r = self.app_state.blocking_read();
-        let Ok(vault) = r.catch(|| r.current_vault()) else {
-            return text_res;
-        };
         egui::popup::popup_below_widget(ui, self.widget_id, &text_res, |ui| {
             ui.set_min_width(200.0);
-            for (i, MergedFieldMatchResult { id, matches }) in state
+            for (i, result) in state
                 .search_results
                 .as_ref()
                 .unwrap()
@@ -201,71 +280,51 @@ impl<'a> Widget for FindTag<'a> {
                 .take(self.max_suggestions)
                 .enumerate()
             {
-                let mut selected = if let Some(x) = state.selected_index {
+                let selected = if let Some(x) = state.selected_index {
                     x == i
                 } else {
                     false
                 };
 
-                let Some(def) = vault.get_definition(id) else {
-                    return;
-                };
+                match result {
+                    AutocompleteResult::MatchResult(MergedFieldMatchResult { id, .. }) => {
+                        let Some(def) = self.vault.get_definition(id) else {
+                            return;
+                        };
 
-                let mut name_indices = vec![];
-                let mut aliases_and_indices = IndexMap::new();
-                let mut parents_name_and_indices = IndexMap::new();
-                let mut parents_aliases_and_indices = IndexMap::new();
+                        /*let text = if self.highlight {
+                            highlight_matches(
+                                def.name.as_ref(),
+                                &name_indices,
+                                ui.style().visuals.widgets.active.text_color(),
+                            )
+                        } else {
+                            let mut job = egui::text::LayoutJob::default();
+                            job.append(def.name.as_ref(), 0.0, egui::TextFormat::default());
+                            job
+                        };*/
 
-                for m in matches {
-                    match m {
-                        FieldMatchResult::Name { indices, .. } => {
-                            name_indices.append(&mut indices.clone())
+                        let res = ui.add(widgets::Tag::new(&def).selected(selected));
+                        if res.clicked() {
+                            tag_selected = true;
+                            *self.tag_id = Some(*id);
                         }
-                        FieldMatchResult::Alias { alias, indices, .. } => aliases_and_indices
-                            .entry(alias.to_string())
-                            .or_insert_with(Vec::new)
-                            .append(&mut indices.clone()),
-                        FieldMatchResult::ParentName {
-                            parent_id, indices, ..
-                        } => parents_name_and_indices
-                            .entry(*parent_id)
-                            .or_insert_with(Vec::new)
-                            .append(&mut indices.clone()),
-                        FieldMatchResult::ParentAlias {
-                            parent_id,
-                            alias,
-                            indices,
-                            ..
-                        } => parents_aliases_and_indices
-                            .entry(*parent_id)
-                            .or_insert_with(IndexMap::new)
-                            .entry(alias.to_string())
-                            .or_insert_with(Vec::new)
-                            .append(&mut indices.clone()),
+                        if res.has_focus() {
+                            state.focused = true;
+                        }
                     }
-                }
-
-                let text = if self.highlight {
-                    highlight_matches(
-                        def.name.as_ref(),
-                        &name_indices,
-                        ui.style().visuals.widgets.active.text_color(),
-                    )
-                } else {
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(def.name.as_ref(), 0.0, egui::TextFormat::default());
-                    job
+                    AutocompleteResult::CreateResult => {
+                        let res = ui
+                            .selectable_label(selected, format!("New tag: {}", state.search_text));
+                        if res.clicked() {
+                            tag_selected = true;
+                            **self.create_req.as_mut().unwrap() = Some(state.search_text.clone());
+                        }
+                        if res.has_focus() {
+                            state.focused = true;
+                        }
+                    }
                 };
-
-                let res = ui.toggle_value(&mut selected, text);
-                if res.clicked() {
-                    info!("clicked on {}", def.name);
-                    tag_selected = true;
-                    *self.tag_id = Some(*id);
-                }
-                if res.has_focus() {
-                    state.focused = true;
-                }
             }
         });
 

@@ -1,10 +1,11 @@
+use eframe::egui::Color32;
+use egui_modal::Modal;
+use poll_promise::Promise;
+
 use crate::data::Vault;
 use crate::state::AppStateRef;
 use crate::tasks;
 use crate::ui::modals::AppModal;
-use eframe::egui::{Color32, Context};
-use egui_modal::Modal;
-use poll_promise::Promise;
 
 #[derive(Default)]
 pub struct NewVaultDialog {
@@ -15,8 +16,12 @@ pub struct NewVaultDialog {
 }
 
 impl AppModal for NewVaultDialog {
+    fn id(&self) -> eframe::egui::Id {
+        "new_vault_name_modal".into()
+    }
+
     fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal {
-        let modal = Modal::new(ctx, "new_vault_name_modal");
+        let modal = Modal::new(ctx, self.id().value());
 
         modal.show(|ui| {
             modal.title(ui, "New vault");
@@ -35,16 +40,15 @@ impl AppModal for NewVaultDialog {
                         modal.open();
                     } else {
                         let Self { new_vault_name, .. } = std::mem::take(self);
-                        state.blocking_write().vault_loading = true;
-                        state
-                            .blocking_read()
-                            .add_task("Create vault".into(), |s, p| {
-                                Promise::spawn_async(tasks::vault::save_new_vault(
-                                    s,
-                                    Vault::new(new_vault_name),
-                                    p,
-                                ))
-                            });
+                        let r = state.blocking_read();
+                        r.set_vault_loading();
+                        r.add_task("Create vault".into(), |s, p| {
+                            Promise::spawn_async(tasks::vault::save_new_vault(
+                                s,
+                                Vault::new(new_vault_name),
+                                p,
+                            ))
+                        });
                     }
                 }
                 modal.button(ui, "Cancel");

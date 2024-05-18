@@ -1,6 +1,8 @@
 use crate::data::FieldDefinition;
+use crate::shortcut;
 use crate::state::AppStateRef;
 use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult, TextSearchQuery};
+use crate::ui::cloneable_state::CloneableState;
 use crate::ui::widgets;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Vec2, Widget};
@@ -8,7 +10,6 @@ use eframe::emath::Rect;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use std::collections::HashSet;
-use tracing::info;
 use uuid::Uuid;
 
 pub struct TagTree<'a> {
@@ -159,15 +160,9 @@ struct State {
     focused: bool,
 }
 
+impl CloneableState for State {}
+
 impl State {
-    fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
-        ctx.data(|r| r.get_temp(id))
-    }
-
-    fn store(self, ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.insert_temp(id, self));
-    }
-
     fn search_results_count(&self) -> usize {
         let Some(results) = self.tree.as_ref() else {
             return 0;
@@ -236,14 +231,8 @@ impl<'a> Widget for TagTree<'a> {
 
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
 
-        let up_pressed = state.focused
-            && ui.input_mut(|input| {
-                input.consume_key(egui::Modifiers::default(), egui::Key::ArrowUp)
-            });
-        let down_pressed = state.focused
-            && ui.input_mut(|input| {
-                input.consume_key(egui::Modifiers::default(), egui::Key::ArrowDown)
-            });
+        let up_pressed = state.focused && shortcut!(ui, ArrowUp);
+        let down_pressed = state.focused && shortcut!(ui, ArrowDown);
 
         let text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
 

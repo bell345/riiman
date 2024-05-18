@@ -1,6 +1,5 @@
 use crate::state::AppStateRef;
 use crate::ui::modals::AppModal;
-use eframe::egui::Context;
 use egui_modal::{Icon, Modal};
 use uuid::Uuid;
 
@@ -57,6 +56,10 @@ impl MessageDialog {
 }
 
 impl AppModal for MessageDialog {
+    fn id(&self) -> eframe::egui::Id {
+        eframe::egui::Id::new(self.id)
+    }
+
     fn update(&mut self, ctx: &eframe::egui::Context, _state: AppStateRef) -> &mut dyn AppModal {
         let modal = Modal::new(ctx, format!("msg_modal_{}", self.id));
 

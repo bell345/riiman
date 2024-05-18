@@ -8,6 +8,8 @@ use dashmap::DashMap;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
+use dashmap::mapref::multiple::RefMulti;
+use dashmap::mapref::one::Ref;
 use uuid::Uuid;
 
 pub trait FieldStore {
@@ -93,8 +95,12 @@ pub trait FieldStore {
         self.fields().remove(field_id)
     }
 
-    fn get_field_value(&self, field_id: &Uuid) -> Option<impl Deref<Target = FieldValue>> {
+    fn get_field_value(&self, field_id: &Uuid) -> Option<Ref<'_, Uuid, FieldValue>> {
         self.fields().get(field_id)
+    }
+
+    fn set_field_value(&self, field_id: Uuid, value: FieldValue) {
+        self.fields().insert(field_id, value);
     }
 
     fn get_field_value_typed<V, T: FieldValueKind<V>>(
@@ -114,6 +120,10 @@ pub trait FieldStore {
         }
     }
 
+    fn get_field_with_def<'a, 'b: 'a>(&'a self, field_id: &Uuid, vault: &'b Vault) -> Option<FieldDefValueRef<Ref<'b, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
+        Some(FieldDefValueRef::new(vault.get_definition(field_id)?, self.get_field_value(field_id)?))
+    }
+
     fn iter_fields(&self) -> Iter<'_, Uuid, FieldValue> {
         self.fields().iter()
     }
@@ -121,9 +131,10 @@ pub trait FieldStore {
     fn iter_fields_with_defs<'a, 'b: 'a>(
         &'a self,
         vault: &'b Vault,
-    ) -> impl Iterator<Item = FieldDefValueRef<'a>> {
+    ) -> impl Iterator<Item = FieldDefValueRef<Ref<'a, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
         self.iter_fields()
-            .filter_map(|r| FieldDefValueRef::try_new(r, vault))
+            .map(|f| *f.key())
+            .filter_map(|id| self.get_field_with_def(&id, vault))
     }
 
     fn has_tag(&self, vault: &Vault, tag_id: &Uuid) -> anyhow::Result<bool> {
@@ -151,5 +162,29 @@ pub trait FieldStore {
         }
 
         Ok(false)
+    }
+
+    fn clear(&self) {
+        let field_ids: Vec<_> = self.iter_fields().map(|f| *f.key()).collect();
+        for id in field_ids {
+            self.remove_field(&id);
+        }
+    }
+
+    fn update<T: FieldStore>(&self, src: &T) {
+        for field in src.iter_fields() {
+            self.set_field_value(*field.key(), field.value().clone());
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SimpleFieldStore {
+    fields: DashMap<Uuid, FieldValue>,
+}
+
+impl FieldStore for SimpleFieldStore {
+    fn fields(&self) -> &DashMap<Uuid, FieldValue> {
+        &self.fields
     }
 }

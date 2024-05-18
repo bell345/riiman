@@ -1,3 +1,4 @@
+use crate::shortcut;
 use crate::state::AppStateRef;
 use crate::tasks::compute::{compute_thumbnails_grid, ThumbnailPosition};
 use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
@@ -8,6 +9,7 @@ use crate::ui::thumb_cache::{ThumbnailCache, ThumbnailCacheItem};
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use eframe::egui;
+use itertools::Itertools;
 use poll_promise::Promise;
 use std::ops::Add;
 use std::path::Path;
@@ -23,7 +25,6 @@ const ROUNDING: egui::Rounding = egui::Rounding::same(4.0);
 const HOVER_TINT: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 150);
 const CHECKBOX_ALIGN: egui::Align2 = egui::Align2::RIGHT_TOP;
 const CHECKBOX_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
-const CHECKBOX_PADDING: f32 = 0.0;
 const CHECKBOX_INTERACT_SIZE: f32 = 16.0;
 const HIGHLIGHT_PADDING: f32 = 2.0;
 
@@ -36,12 +37,14 @@ pub struct ThumbnailGrid {
 
     middle_item: Option<String>,
     scroll_cooldown: Option<DateTime<Utc>>,
+    has_focus: bool,
     set_scroll: bool,
     last_vp: Option<egui::Rect>,
     hovering_item: Option<String>,
     pressing_item: Option<String>,
     checked_items: DashMap<String, bool>,
 
+    pub double_clicked: bool,
     pub select_mode: SelectMode,
 }
 
@@ -69,14 +72,20 @@ impl Default for ThumbnailGrid {
             ),
             middle_item: Default::default(),
             scroll_cooldown: Default::default(),
+            has_focus: Default::default(),
             set_scroll: Default::default(),
             last_vp: Default::default(),
             hovering_item: Default::default(),
             pressing_item: Default::default(),
             checked_items: Default::default(),
+            double_clicked: Default::default(),
             select_mode: Default::default(),
         }
     }
+}
+
+fn wrap_index(i: usize, len: usize, delta: isize) -> usize {
+    ((((i as isize) + delta) + len as isize) % (len as isize)) as usize
 }
 
 impl ThumbnailGrid {
@@ -115,6 +124,26 @@ impl ThumbnailGrid {
         let res = f(ro.iter().filter(|(_, v)| **v).map(|(k, _)| k).collect());
         drop(std::mem::replace(&mut self.checked_items, ro.into_inner()));
         res
+    }
+
+    pub fn get_selected_paths(&self) -> Vec<String> {
+        self.checked_items
+            .iter()
+            .filter_map(|r| {
+                if *r.value() {
+                    Some(r.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn set_selected_paths(&mut self, paths: &[String]) {
+        self.checked_items.clear();
+        for path in paths {
+            self.checked_items.insert(path.clone(), true);
+        }
     }
 
     pub fn update(
@@ -158,8 +187,7 @@ impl ThumbnailGrid {
                 .auto_shrink([false; 2])
                 .animated(false)
                 .show_viewport(ui, |ui, vp| {
-                    let grid = &self.info;
-                    if grid.thumbnails.is_empty() {
+                    if self.info.thumbnails.is_empty() {
                         return;
                     }
 
@@ -172,10 +200,49 @@ impl ThumbnailGrid {
                             .length_sq()
                             < 1.0;
                     let vp_resized = vp_changed && !vp_scrolled;
-                    let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
+                    let max_y = self.info.thumbnails.last().unwrap().outer_bounds.max.y;
                     ui.set_width(ui.available_width());
                     ui.set_height(max_y);
                     ui.set_clip_rect(abs_vp);
+
+                    let selected_paths = self.get_selected_paths();
+                    let selected_id = selected_paths.first().map(egui::Id::new);
+
+                    if ui
+                        .memory(|r| r.focused())
+                        .is_some_and(|f| Some(f) == selected_id)
+                        && self.select_mode == SelectMode::Single
+                        && shortcut!(ui, Tab)
+                    {
+                        if let Some((i, _)) = self
+                            .info
+                            .thumbnails
+                            .iter()
+                            .find_position(|pos| selected_paths.contains(&pos.path))
+                        {
+                            let delta = if ui.input(|i| i.modifiers.shift) {
+                                -1
+                            } else {
+                                1
+                            };
+                            let next_path = self.info.thumbnails
+                                [wrap_index(i, self.info.thumbnails.len(), delta)]
+                            .path
+                            .clone();
+                            self.set_scroll = true;
+                            self.middle_item = Some(next_path.clone());
+                            ui.ctx().memory_mut(|wr| {
+                                wr.request_focus(egui::Id::new(next_path.clone()))
+                            });
+                            self.checked_items.clear();
+                            self.checked_items.insert(next_path, true);
+                        }
+                    }
+
+                    let grid = &self.info;
+
+                    self.double_clicked = false;
+                    self.has_focus = false;
 
                     let middle_item = self.middle_item.as_ref();
                     let hover_item = self.hovering_item.as_ref();
@@ -185,6 +252,7 @@ impl ThumbnailGrid {
                     let mut next_pressing: Option<String> = None;
 
                     for item in grid.thumbnails.iter() {
+                        let id = egui::Id::new(item.path.clone());
                         let outer_bounds = item.outer_bounds.translate(abs_min);
                         let inner_bounds = item.inner_bounds.translate(abs_min);
                         let text = egui::Label::new(item.path.clone());
@@ -259,7 +327,14 @@ impl ThumbnailGrid {
                                 .tint(tint)
                                 .frame(false);
 
-                            let res = ui.put(inner_bounds, img_btn).on_hover_text(&item.path);
+                            let res = ui
+                                .push_id(id, |ui| {
+                                    ui.put(inner_bounds, img_btn).on_hover_text(&item.path)
+                                })
+                                .inner;
+                            ui.ctx()
+                                .check_for_id_clash(res.id, res.rect, "thumbnail image");
+
                             let is_clicked = res.clicked();
                             if is_hover(&res) {
                                 next_hover = Some(item.path.clone());
@@ -267,7 +342,26 @@ impl ThumbnailGrid {
                             if res.is_pointer_button_down_on() {
                                 next_pressing = Some(item.path.clone());
                             }
+                            if res.double_clicked() {
+                                self.double_clicked = true;
+                            }
+                            if res.has_focus() {
+                                info!("has focus: {}", item.path.clone());
+                                self.has_focus = true;
+                                ui.memory_mut(|wr| {
+                                    wr.set_focus_lock_filter(
+                                        id,
+                                        egui::EventFilter {
+                                            tab: true,
+                                            horizontal_arrows: true,
+                                            vertical_arrows: true,
+                                            escape: false,
+                                        },
+                                    )
+                                });
+                            }
 
+                            let mut req_ex_focus = false;
                             if Some(&item.path) == hover_item
                                 || Some(&item.path) == pressing_item
                                 || res.is_pointer_button_down_on()
@@ -294,14 +388,29 @@ impl ThumbnailGrid {
                                         if self.select_mode == SelectMode::Single
                                             && !ui.input(|i| i.modifiers.shift)
                                         {
-                                            drop(check_ref);
-                                            self.checked_items.clear();
-                                            self.checked_items.insert(item.path.clone(), true);
+                                            req_ex_focus = true;
                                         } else {
                                             *check_ref.value_mut() ^= true;
                                         }
                                     }
                                 });
+                            }
+
+                            if req_ex_focus {
+                                ui.memory_mut(|wr| {
+                                    wr.request_focus(id);
+                                    wr.set_focus_lock_filter(
+                                        id,
+                                        egui::EventFilter {
+                                            tab: true,
+                                            horizontal_arrows: true,
+                                            vertical_arrows: true,
+                                            escape: false,
+                                        },
+                                    );
+                                });
+                                self.checked_items.clear();
+                                self.checked_items.insert(item.path.clone(), true);
                             }
                         }
                     }

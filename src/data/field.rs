@@ -198,6 +198,20 @@ macro_rules! define_kinds {
             $( $name $( ( $type ) )? , )*
         }
 
+        impl Value {
+            pub fn get_type(&self) -> KindType {
+                match self {
+                    $(
+                        Self:: $name $(
+                          (_) if std::any::TypeId::of::< $type >()
+                            != std::any::TypeId::of::<()>()
+                        )? => KindType:: $name ,
+                    )*
+                    _ => unreachable!()
+                }
+            }
+        }
+
         $(
             impl_kind!( $name $( , $type )? );
         )*
@@ -270,6 +284,7 @@ impl From<[u8; 3]> for SerialColour {
 pub mod kind {
     use super::SerialColour;
     use crate::errors::AppError;
+    use std::any::TypeId;
 
     pub trait TagKind:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>

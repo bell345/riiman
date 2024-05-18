@@ -10,7 +10,7 @@ use eframe::epaint::{self, ClippedShape, Hsva, HsvaGamma, Primitive};
 use relativetime::RelativeTime;
 
 use crate::data::kind::{KindType, Value};
-use crate::data::{FieldDefinition, FieldStore};
+use crate::data::{FieldDefinition, FieldStore, FieldValue};
 use crate::fields;
 
 pub struct Tag<'a> {
@@ -96,7 +96,7 @@ impl<'a> Tag<'a> {
             Value::Str(s) => s.into(),
             Value::ItemRef(s) => s.into(),
             Value::List(_) => return None,
-            Value::Colour(_) => " ".into(),
+            Value::Colour(_) => "     ".into(),
             Value::Dictionary(_) => return None,
             Value::DateTime(dt) => dt.to_relative(),
         });
@@ -172,7 +172,10 @@ impl<'a> Tag<'a> {
 
         bg = Color32::from(hsva);
 
-        let value_bg = bg.gamma_multiply(0.5).to_opaque();
+        let value_bg = match self.value {
+            Some(FieldValue::Colour(sc)) => (*sc).into(),
+            _ => bg.gamma_multiply(0.5).to_opaque(),
+        };
 
         let fg = if Hsva::from(bg).v > 0.5 {
             BLACK_TEXT

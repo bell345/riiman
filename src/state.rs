@@ -18,7 +18,7 @@ pub(crate) struct AppState {
     dialog_queue: Mutex<Vec<Box<dyn AppModal>>>,
     vaults: DashMap<String, Vault>,
     pub current_vault_name: Option<String>,
-    pub vault_loading: bool,
+    pub vault_loading: Mutex<bool>,
 
     pub filter: FilterExpression,
     pub sorts: Vec<SortExpression>,
@@ -32,7 +32,7 @@ impl Default for AppState {
             dialog_queue: Default::default(),
             vaults: Default::default(),
             current_vault_name: None,
-            vault_loading: false,
+            vault_loading: Default::default(),
             filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
             sorts: vec![SortExpression::Path(SortDirection::Ascending)],
         }
@@ -107,6 +107,25 @@ impl AppState {
 
     pub fn drain_dialogs(&mut self) -> Vec<Box<dyn AppModal>> {
         self.dialog_queue.lock().unwrap().drain(..).collect()
+    }
+
+    pub fn vault_loading(&self) -> bool {
+        *self.vault_loading.lock().unwrap()
+    }
+
+    pub fn set_vault_loading(&self) {
+        *self.vault_loading.lock().unwrap() = true;
+    }
+
+    pub fn reset_vault_loading(&self) {
+        *self.vault_loading.lock().unwrap() = false;
+    }
+
+    pub fn save_current_vault(&self) {
+        *self.vault_loading.lock().unwrap() = true;
+        self.add_task("Save vault".into(), |state, p| {
+            Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
+        });
     }
 }
 

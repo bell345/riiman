@@ -11,6 +11,7 @@ pub use message::MessageDialog;
 pub use new_vault::NewVaultDialog;
 
 pub trait AppModal: Send + Sync + 'static {
+    fn id(&self) -> eframe::egui::Id;
     fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal;
     fn dispose(&mut self, _ctx: &eframe::egui::Context, _state: AppStateRef) {}
     fn is_open(&self) -> bool;

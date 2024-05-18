@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::ui::cloneable_state::CloneableState;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
 use egui_extras::TableBody;
@@ -9,61 +10,70 @@ pub struct ListEdit<
     'a,
     'b,
     T,
-    ItemF: Fn(&mut Ui, &T) + 'a,
+    EditT,
+    CreateT,
+    ItemF: Fn(&mut Ui, &T) -> Option<EditT> + 'a,
     CreateState: Default + Clone + Send + Sync + 'static,
-    CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
+    CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<CreateT> + 'a,
 > {
     items: &'a Vec<T>,
-    result: &'b mut ListEditResult<'a, T>,
+    result: &'b mut ListEditResult<EditT, CreateT>,
     widget_id: egui::Id,
     header_label: String,
     create_label: String,
     item_ui: Option<Box<ItemF>>,
     create_ui: Option<Box<CreateF>>,
-    row_height: f32,
+    row_height: RowHeight<'a>,
     updated: bool,
     _phantom: PhantomData<CreateState>,
 }
 
-#[derive(Debug, Default, Clone)]
+enum RowHeight<'a> {
+    Same(f32),
+    List(&'a [f32], f32),
+}
+
+impl<'a> RowHeight<'a> {
+    fn get(&self, i: usize) -> f32 {
+        match self {
+            RowHeight::Same(v) => *v,
+            RowHeight::List(l, default) => *l.get(i).unwrap_or(default),
+        }
+    }
+}
+
+#[derive(Default, Clone)]
 struct State<CreateState: Default + Clone + Send + Sync + 'static> {
     is_adding: bool,
     create_state: CreateState,
 }
 
-impl<CreateState: Default + Clone + Send + Sync + 'static> State<CreateState> {
-    fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
-        ctx.data(|r| r.get_temp(id))
-    }
+impl<CreateState: Default + Clone + Send + Sync + 'static> CloneableState for State<CreateState> {}
 
-    fn store(self, ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.insert_temp(id, self));
-    }
-
-    fn dispose(ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.remove_temp::<Self>(id));
-    }
-}
-
-pub enum ListEditResult<'a, T> {
+#[derive(Default)]
+pub enum ListEditResult<EditT, CreateT> {
+    #[default]
     None,
-    Add(T),
-    Remove(&'a T),
+    Add(CreateT),
+    Remove(usize),
+    Edit(usize, EditT),
 }
 
 impl<
         'a,
         'b,
         T,
-        ItemF: Fn(&mut Ui, &T) + 'a,
+        EditT,
+        CreateT,
+        ItemF: Fn(&mut Ui, &T) -> Option<EditT> + 'a,
         CreateState: Default + Clone + Send + Sync + 'static,
-        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
-    > ListEdit<'a, 'b, T, ItemF, CreateState, CreateF>
+        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<CreateT> + 'a,
+    > ListEdit<'a, 'b, T, EditT, CreateT, ItemF, CreateState, CreateF>
 {
     pub fn new(
         widget_id: impl std::hash::Hash,
         items: &'a Vec<T>,
-        result: &'b mut ListEditResult<'a, T>,
+        result: &'b mut ListEditResult<EditT, CreateT>,
     ) -> Self {
         Self {
             items,
@@ -73,7 +83,7 @@ impl<
             create_label: "".into(),
             item_ui: None,
             create_ui: None,
-            row_height: 18.0,
+            row_height: RowHeight::Same(18.0),
             updated: false,
             _phantom: Default::default(),
         }
@@ -100,7 +110,12 @@ impl<
     }
 
     pub fn row_height(mut self, row_height: f32) -> Self {
-        self.row_height = row_height;
+        self.row_height = RowHeight::Same(row_height);
+        self
+    }
+
+    pub fn row_height_list(mut self, row_height_list: &'a [f32], default: f32) -> Self {
+        self.row_height = RowHeight::List(row_height_list, default);
         self
     }
 
@@ -110,22 +125,28 @@ impl<
     }
 
     fn body(&mut self, mut body: TableBody, state: &mut State<CreateState>) {
-        for item in self.items {
+        for (i, item) in self.items.iter().enumerate() {
             if let Some(item_ui) = self.item_ui.as_ref() {
-                body.row(self.row_height, |mut row| {
+                body.row(self.row_height.get(i), |mut row| {
                     row.col(|ui| {
                         if ui.add(egui::Button::new("\u{274c}").frame(false)).clicked() {
-                            *self.result = ListEditResult::Remove(item);
+                            *self.result = ListEditResult::Remove(i);
                         }
                     });
-                    row.col(|ui| item_ui(ui, item));
+                    row.col(|ui| {
+                        ui.push_id(self.widget_id.with(i), |ui| {
+                            if let Some(edited_item) = item_ui(ui, item) {
+                                *self.result = ListEditResult::Edit(i, edited_item);
+                            }
+                        });
+                    });
                 });
             }
         }
 
         if state.is_adding {
             if let Some(create_ui) = self.create_ui.take() {
-                body.row(self.row_height, |mut row| {
+                body.row(self.row_height.get(self.items.len()), |mut row| {
                     row.col(|ui| {
                         if ui.add(egui::Button::new("\u{274c}").frame(false)).clicked() {
                             state.is_adding = false;
@@ -149,10 +170,12 @@ impl<
         'a,
         'b,
         T,
-        ItemF: Fn(&mut Ui, &T) + 'a,
+        EditT,
+        CreateT,
+        ItemF: Fn(&mut Ui, &T) -> Option<EditT> + 'a,
         CreateState: Default + Clone + Send + Sync + 'static,
-        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<T> + 'a,
-    > Widget for ListEdit<'a, 'b, T, ItemF, CreateState, CreateF>
+        CreateF: FnOnce(&mut Ui, &mut CreateState) -> Option<CreateT> + 'a,
+    > Widget for ListEdit<'a, 'b, T, EditT, CreateT, ItemF, CreateState, CreateF>
 {
     fn ui(mut self, ui: &mut Ui) -> Response {
         *self.result = ListEditResult::None;

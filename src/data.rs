@@ -9,6 +9,7 @@ pub use field::FieldValue;
 pub use field::KnownField;
 pub use field::SerialColour;
 pub use field_store::FieldStore;
+pub use field_store::SimpleFieldStore;
 pub use item::Item;
 pub use vault::Vault;
 

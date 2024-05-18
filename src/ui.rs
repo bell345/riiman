@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::data::FieldStore;
 use eframe::egui;
 use poll_promise::Promise;
 use tracing::info;
@@ -15,11 +15,15 @@ use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, Progress
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
 use crate::ui::item_cache::ItemCache;
+use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::ThumbnailCacheItem;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
 
+mod cloneable_state;
+mod input;
 mod item_cache;
+mod item_panel;
 mod modals;
 mod stepwise_range;
 mod theme;
@@ -40,7 +44,7 @@ pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
 
-    modal_dialogs: Vec<Box<dyn AppModal>>,
+    modal_dialogs: HashMap<egui::Id, Box<dyn AppModal>>,
 
     item_list_cache: ItemCache,
     thumbnail_grid: ThumbnailGrid,
@@ -51,12 +55,14 @@ pub(crate) struct App {
     search_text: String,
 
     expand_right_panel: bool,
+    focused: Option<egui::Id>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AppStorage {
     current_vault_file_path: Option<String>,
     thumbnail_row_height: f32,
+    checked_items: Vec<String>,
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
 }
@@ -92,7 +98,8 @@ impl App {
     }
 
     fn add_modal_dialog(&mut self, dialog: impl AppModal + 'static) {
-        self.modal_dialogs.push(Box::new(dialog));
+        let b = Box::new(dialog);
+        self.modal_dialogs.insert(b.id(), b);
     }
 
     fn error(&mut self, message: String) {
@@ -112,18 +119,22 @@ impl App {
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
         if let Some(path) = stored_state.current_vault_file_path {
-            self.state.blocking_write().vault_loading = true;
+            self.state.blocking_read().set_vault_loading();
             self.add_task("Load vault".into(), move |s, p| {
                 Promise::spawn_async(crate::tasks::vault::load_vault_from_path(path, s, p))
             });
         }
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
+        self.thumbnail_grid
+            .set_selected_paths(&stored_state.checked_items);
+
         {
             let mut wr = self.state.blocking_write();
             wr.filter = stored_state.filter;
             wr.sorts = stored_state.sorts;
         }
+
         Some(())
     }
 
@@ -147,14 +158,24 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(f) = self.focused.take() {
+            ctx.memory_mut(|m| m.request_focus(f));
+        }
+
         let errors = self.state.blocking_write().drain_errors();
         for error in errors {
             self.error(format!("{}", error));
         }
+
+        for new_dialog in self.state.blocking_write().drain_dialogs() {
+            if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
+                old_dialog.dispose(ctx, self.state.clone());
+            }
+            self.modal_dialogs.insert(new_dialog.id(), new_dialog);
+        }
+
         self.modal_dialogs
-            .extend(self.state.blocking_write().drain_dialogs());
-        self.modal_dialogs
-            .retain_mut(|dialog| dialog.update_or_dispose(ctx, self.state.clone()));
+            .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 
         self.add_queued_tasks();
 
@@ -164,9 +185,9 @@ impl eframe::App for App {
                 Ok(VaultLoaded(name)) => {
                     let mut wr = self.state.blocking_write();
                     wr.current_vault_name = Some(name);
-                    wr.vault_loading = false;
+                    wr.reset_vault_loading();
                 }
-                Ok(VaultSaved(_)) => self.state.blocking_write().vault_loading = false,
+                Ok(VaultSaved(_)) => self.state.blocking_read().reset_vault_loading(),
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -192,7 +213,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Vault", |ui| {
-                    let vault_loading = self.state.blocking_read().vault_loading;
+                    let vault_loading = self.state.blocking_read().vault_loading();
                     if ui
                         .add_enabled(!vault_loading, egui::Button::new("New"))
                         .clicked()
@@ -209,7 +230,7 @@ impl eframe::App for App {
                     {
                         info!("Open vault clicked!");
 
-                        self.state.blocking_write().vault_loading = true;
+                        self.state.blocking_read().set_vault_loading();
                         self.add_task("Load vault".into(), |s, p| {
                             Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p))
                         });
@@ -224,10 +245,7 @@ impl eframe::App for App {
                     {
                         info!("Save vault clicked!");
 
-                        self.state.blocking_write().vault_loading = true;
-                        self.add_task("Save vault".into(), |state, p| {
-                            Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
-                        });
+                        self.state.blocking_read().save_current_vault();
 
                         ui.close_menu();
                     }
@@ -255,7 +273,11 @@ impl eframe::App for App {
                     });
 
                     ui.menu_button("Tags", |ui| {
-                        if ui.button("Edit tag").clicked() {
+                        if ui.button("New").clicked() {
+                            self.add_modal_dialog(EditTagDialog::create());
+                            ui.close_menu();
+                        }
+                        if ui.button("Edit").clicked() {
                             self.add_modal_dialog(EditTagDialog::select());
                             ui.close_menu();
                         }
@@ -297,14 +319,17 @@ impl eframe::App for App {
                     }
 
                     if self.sort_type == SortType::Field {
-                        ui.add(
-                            widgets::FindTag::new(
-                                "sort_field",
-                                &mut self.sort_field_id,
-                                self.state.clone(),
-                            )
-                            .show_tag(true),
-                        );
+                        let state = self.state.blocking_read();
+                        if let Some(vault) = state.current_vault_opt() {
+                            ui.add(
+                                widgets::FindTag::new(
+                                    "sort_field",
+                                    &mut self.sort_field_id,
+                                    &vault,
+                                )
+                                .show_tag(true),
+                            );
+                        };
                     }
 
                     egui::ComboBox::from_label("Sort by")
@@ -413,27 +438,12 @@ impl eframe::App for App {
                                 self.item_list_cache.resolve_refs(&vault, paths)
                             });
 
-                            if items.len() == 1 {
-                                let item = items.first().unwrap();
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(item.path())
-                                            .text_style(egui::TextStyle::Heading),
-                                    );
-
-                                    for def in item.iter_fields_with_defs(&vault) {
-                                        ui.add(
-                                            widgets::Tag::new(def.definition()).value(def.value()),
-                                        );
-                                    }
-                                });
-                            } else {
-                                ui.label(format!(
-                                    "{} item{}",
-                                    items.len(),
-                                    if items.len() == 1 { "" } else { "s" }
-                                ));
-                            }
+                            ui.add(ItemPanel::new(
+                                "item_panel",
+                                &items,
+                                &vault,
+                                self.state.clone(),
+                            ));
                         });
                 },
             );
@@ -465,13 +475,18 @@ impl eframe::App for App {
                 })
                 .inner;
 
-            const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(16.0, 16.0);
+            if self.thumbnail_grid.double_clicked {
+                self.expand_right_panel ^= true;
+            }
+
+            const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
             const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
-                ne: 0.0,
                 nw: 0.0,
-                se: 0.0,
-                sw: 4.0,
+                ne: 0.0,
+                sw: 8.0,
+                se: 8.0,
             };
+            const EXPAND_BTN_MARGIN: egui::Vec2 = egui::vec2(16.0, 0.0);
 
             let btn_text = if self.expand_right_panel {
                 // right pointing triangle
@@ -481,16 +496,27 @@ impl eframe::App for App {
                 "\u{25c0}"
             };
             let expand_btn = egui::Button::new(
-                egui::RichText::new(btn_text).line_height(Some(EXPAND_BTN_SIZE.y)),
+                egui::RichText::new(btn_text).text_style(egui::TextStyle::Heading),
             )
             .rounding(EXPAND_BTN_ROUNDING)
             .min_size(EXPAND_BTN_SIZE);
 
-            let btn_rect = egui::Align2::RIGHT_TOP
-                .align_size_within_rect(EXPAND_BTN_SIZE, scroll_area_rect.unwrap_or(ui.min_rect()));
+            let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
+                EXPAND_BTN_SIZE,
+                scroll_area_rect
+                    .unwrap_or(ui.min_rect())
+                    .shrink2(EXPAND_BTN_MARGIN),
+            );
 
             if ui.put(btn_rect, expand_btn).clicked() {
                 self.expand_right_panel ^= true;
+            }
+        });
+
+        self.focused = ctx.memory(|m| m.focused());
+        self.thumbnail_grid.view_selected_paths(|paths| {
+            if self.focused.is_none() && paths.len() == 1 {
+                self.focused = Some(egui::Id::new(paths.first().unwrap()));
             }
         });
     }
@@ -500,6 +526,9 @@ impl eframe::App for App {
         let stored_state = AppStorage {
             current_vault_file_path: self.get_current_vault_file_path(),
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
+            checked_items: self
+                .thumbnail_grid
+                .view_selected_paths(|paths| paths.into_iter().cloned().collect()),
             sorts: state.sorts.clone(),
             filter: state.filter.clone(),
         };

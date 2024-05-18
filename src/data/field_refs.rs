@@ -1,28 +1,27 @@
 use crate::data::{FieldDefinition, FieldValue, Vault};
+use dashmap::mapref::multiple::RefMulti;
+use dashmap::mapref::one::Ref;
 use std::ops::Deref;
 use uuid::Uuid;
 
-pub struct FieldDefValueRef<'a> {
-    inner: dashmap::mapref::multiple::RefMulti<'a, Uuid, FieldValue>,
-    definition: dashmap::mapref::one::Ref<'a, Uuid, FieldDefinition>,
+pub struct FieldDefValueRef<Def: Deref<Target = FieldDefinition>, Value: Deref<Target = FieldValue>>
+{
+    definition: Def,
+    value: Value,
 }
 
-impl<'a> FieldDefValueRef<'a> {
-    pub fn try_new<'b: 'a>(
-        inner: dashmap::mapref::multiple::RefMulti<'a, Uuid, FieldValue>,
-        vault: &'b Vault,
-    ) -> Option<Self> {
-        Some(Self {
-            definition: vault.get_definition(inner.key())?,
-            inner,
-        })
+impl<'a, Def: Deref<Target = FieldDefinition> + 'a, Value: Deref<Target = FieldValue> + 'a>
+    FieldDefValueRef<Def, Value>
+{
+    pub fn new(definition: Def, value: Value) -> Self {
+        Self { definition, value }
     }
 
-    pub fn definition(&self) -> &(impl Deref<Target = FieldDefinition> + 'a) {
+    pub fn definition(&self) -> &FieldDefinition {
         &self.definition
     }
 
     pub fn value(&self) -> &FieldValue {
-        self.inner.value()
+        &self.value
     }
 }

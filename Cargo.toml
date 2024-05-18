@@ -18,12 +18,12 @@ built = { version = "0.7.2", features = ["chrono"] }
 thiserror = "1.0"
 paste = "1.0"
 derive_more = { version = "0.99.17", features = ["display"] }
-itertools = "0.12.1"
+itertools = "0.13.0"
 ordered-float = { version = "4.2", features = ["serde"] }
 
 # gui
 eframe = { version = "0.27.2", features = ["persistence"] }
-egui_extras = { version = "0.27.2", features = ["svg"] }
+egui_extras = { version = "0.27.2", features = ["svg", "datepicker"] }
 egui-modal = "0.3.6"
 rfd = "0.14.1"
 

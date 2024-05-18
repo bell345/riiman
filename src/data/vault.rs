@@ -144,10 +144,7 @@ impl Vault {
             .to_string())
     }
 
-    pub fn get_item<'a>(
-        &'a self,
-        path: &Path,
-    ) -> anyhow::Result<Option<impl Deref<Target = Item> + 'a>> {
+    pub fn get_item(&self, path: &Path) -> anyhow::Result<Option<Ref<String, Item>>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self.items.get(rel_path))
     }

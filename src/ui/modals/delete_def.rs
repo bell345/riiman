@@ -1,8 +1,8 @@
 use crate::data::FieldDefinition;
 use crate::state::AppStateRef;
+use crate::ui::cloneable_state::CloneableState;
 use crate::ui::{widgets, AppModal};
-use eframe::egui;
-use eframe::egui::Context;
+use eframe::egui::{Context, Id};
 use egui_modal::Modal;
 
 #[derive(Default)]
@@ -19,14 +19,6 @@ impl DeleteDefinition {
             ..Default::default()
         }
     }
-
-    pub fn id_source() -> &'static str {
-        "delete_def_modal"
-    }
-
-    pub fn id() -> egui::Id {
-        Self::id_source().into()
-    }
 }
 
 #[derive(Clone, Default)]
@@ -34,26 +26,18 @@ struct State {
     n_items: Option<usize>,
 }
 
-impl State {
-    fn load(ctx: &egui::Context, id: egui::Id) -> Option<Self> {
-        ctx.data(|r| r.get_temp(id))
-    }
-
-    fn store(self, ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.insert_temp(id, self));
-    }
-
-    fn dispose(ctx: &egui::Context, id: egui::Id) {
-        ctx.data_mut(|wr| wr.remove_temp::<Self>(id));
-    }
-}
+impl CloneableState for State {}
 
 impl AppModal for DeleteDefinition {
+    fn id(&self) -> Id {
+        "delete_def_modal".into()
+    }
+
     fn update(&mut self, ctx: &Context, app_state: AppStateRef) -> &mut dyn AppModal {
-        let modal = Modal::new(ctx, Self::id_source());
+        let modal = Modal::new(ctx, self.id().value());
 
         modal.show(|ui| {
-            let mut state = State::load(ctx, Self::id()).unwrap_or_default();
+            let mut state = State::load(ctx, self.id()).unwrap_or_default();
 
             modal.title(ui, "Delete tag");
             modal.frame(ui, |ui| {
@@ -105,7 +89,7 @@ impl AppModal for DeleteDefinition {
                 modal.button(ui, "Cancel");
             });
 
-            state.store(ctx, Self::id());
+            state.store(ctx, self.id());
         });
 
         if !self.opened {
@@ -118,7 +102,7 @@ impl AppModal for DeleteDefinition {
     }
 
     fn dispose(&mut self, ctx: &Context, _state: AppStateRef) {
-        State::dispose(ctx, Self::id());
+        State::dispose(ctx, self.id());
     }
 
     fn is_open(&self) -> bool {
