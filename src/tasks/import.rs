@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::data::FieldStore;
+use crate::data::{FieldStore, Item};
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use magick_rust::MagickWand;
@@ -25,11 +25,7 @@ async fn import_single_image(
 ) -> SingleImportResult {
     let path: Box<Path> = entry.path().into();
 
-    let r = state.read().await;
-    let vault = r.current_vault()?;
-
-    let mut item_ref = vault.ensure_item_mut(&path)?;
-    let item = item_ref.value_mut();
+    let mut item = state.read().await.current_vault()?.ensure_item(&path)?;
 
     let mime_type = item
         .get_known_field_value(fields::general::MEDIA_TYPE)?
@@ -77,6 +73,12 @@ async fn import_single_image(
         let height = wand.get_image_height() as u64;
         item.set_known_field_value(fields::image::HEIGHT, height);
         item.set_known_field_value(fields::image::WIDTH, width);
+    }
+
+    {
+        let r = state.read().await;
+        let vault = r.current_vault()?;
+        vault.update_item(&path, item)?;
     }
 
     Ok(path)
@@ -150,9 +152,6 @@ pub async fn import_images_recursively(
         if let Ok(path) = &task_res {
             let msg = path.to_str().unwrap_or("").to_string();
             import_progress.send(ProgressState::DeterminateWithMessage(p, msg));
-        } else {
-            info!("unknown result: {task_res:?}");
-            import_progress.send(ProgressState::Determinate(p));
         }
 
         results.push(task_res);

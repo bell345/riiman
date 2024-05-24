@@ -2,6 +2,7 @@ use crate::data::{Item, Vault};
 use crate::state::AppStateRef;
 use crate::tasks::filter::FilterExpression;
 use crate::tasks::sort::{get_filtered_and_sorted_items, SortExpression};
+use chrono::{DateTime, Utc};
 use dashmap::mapref::one::Ref;
 use std::collections::HashSet;
 use std::path::Path;
@@ -9,6 +10,7 @@ use std::path::Path;
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ItemCacheParams {
     pub(crate) vault_name: String,
+    pub(crate) last_updated: DateTime<Utc>,
     pub(crate) sorts: Vec<SortExpression>,
     pub(crate) filter: FilterExpression,
 }
@@ -26,6 +28,7 @@ impl ItemCache {
 
         let params = ItemCacheParams {
             vault_name: current_vault.name.to_string(),
+            last_updated: current_vault.last_updated(),
             filter: state.filter.clone(),
             sorts: state.sorts.clone(),
         };
@@ -58,7 +61,7 @@ impl ItemCache {
         paths
             .into_iter()
             .filter(|p| existing_items.contains(*p))
-            .filter_map(|p| vault.get_item(Path::new(p)).expect("valid path"))
+            .filter_map(|p| vault.get_item(Path::new(p)).ok().flatten())
             .collect()
     }
 

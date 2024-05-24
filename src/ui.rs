@@ -195,6 +195,8 @@ impl eframe::App for App {
                         "Import of {} complete. {success}/{total} images imported successfully.",
                         path.display()
                     );
+                    // update thumbnail grid
+                    self.thumbnail_grid.params.container_width = 0.0;
                     self.success("Import complete".to_string(), body);
                 }
                 Ok(ThumbnailLoaded { params, image }) => {

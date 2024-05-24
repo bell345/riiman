@@ -14,7 +14,7 @@ use crate::data::{FieldDefinition, FieldKind, FieldValue, FieldValueKind, Vault}
 use crate::errors::AppError;
 use crate::fields;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     path: String,
     fields: DashMap<Uuid, FieldValue>,

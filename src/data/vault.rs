@@ -1,7 +1,9 @@
 use anyhow::Context;
+use chrono::{DateTime, TimeZone, Utc};
 use std::collections::{HashSet, VecDeque};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::{Ref, RefMut};
@@ -22,6 +24,7 @@ pub struct Vault {
     definitions: DashMap<Uuid, FieldDefinition>,
     fields: DashMap<Uuid, FieldValue>,
     items: DashMap<String, Item>,
+    last_updated: Mutex<Option<DateTime<Utc>>>,
 
     #[serde(skip)]
     pub file_path: Option<Box<Path>>,
@@ -45,6 +48,7 @@ impl Vault {
     pub fn new(name: String) -> Vault {
         Vault {
             name,
+            last_updated: Some(Utc::now()).into(),
             ..Default::default()
         }
         .with_standard_defs()
@@ -72,6 +76,17 @@ impl Vault {
             .into())
     }
 
+    pub fn last_updated(&self) -> DateTime<Utc> {
+        self.last_updated
+            .lock()
+            .unwrap()
+            .unwrap_or(Utc.timestamp_nanos(0))
+    }
+
+    fn set_last_updated(&self) {
+        *self.last_updated.lock().unwrap() = Some(Utc::now());
+    }
+
     pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
         self.definitions.get(def_id)
     }
@@ -88,6 +103,7 @@ impl Vault {
             }
         }
         self.definitions.insert(definition.id, definition);
+        self.set_last_updated();
     }
 
     pub fn remove_definition(&self, id: &Uuid) {
@@ -104,11 +120,14 @@ impl Vault {
             for desc_id in desc_ids {
                 self.remove_definition(&desc_id);
             }
+
+            self.set_last_updated();
         }
     }
 
     pub fn set_file_path(&mut self, path: &Path) {
         self.file_path = Some(path.into());
+        self.set_last_updated();
     }
 
     pub fn resolve_rel_path<'a>(&self, path: &'a Path) -> anyhow::Result<&'a str> {
@@ -149,12 +168,30 @@ impl Vault {
         Ok(self.items.get(rel_path))
     }
 
-    pub fn ensure_item_mut(&self, path: &Path) -> anyhow::Result<RefMut<String, Item>> {
+    pub fn ensure_item(&self, path: &Path) -> anyhow::Result<Item> {
         let rel_path = self.resolve_rel_path(path)?.to_string();
         Ok(self
             .items
             .entry(rel_path.clone())
-            .or_insert_with(|| Item::new(rel_path)))
+            .or_insert_with(|| Item::new(rel_path))
+            .value()
+            .clone())
+    }
+
+    pub fn update_item(&self, path: &Path, item: Item) -> anyhow::Result<()> {
+        let rel_path = self.resolve_rel_path(path)?.to_string();
+        self.items
+            .entry(rel_path.clone())
+            .and_modify(|it| {
+                for r in item.iter_fields() {
+                    it.set_field_value(*r.key(), r.value().clone());
+                }
+            })
+            .or_insert(item);
+
+        self.set_last_updated();
+
+        Ok(())
     }
 
     pub fn len_items(&self) -> usize {
