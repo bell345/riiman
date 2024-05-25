@@ -32,7 +32,8 @@ mod thumb_grid;
 mod widgets;
 
 pub use crate::ui::modals::AppModal;
-use crate::ui::modals::{EditTagDialog, MessageDialog, NewVaultDialog};
+pub use crate::ui::modals::MessageDialog;
+use crate::ui::modals::{EditTagDialog, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -60,7 +61,8 @@ pub(crate) struct App {
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AppStorage {
-    current_vault_file_path: Option<String>,
+    vault_name_to_file_paths: HashMap<String, String>,
+    current_vault_name: Option<String>,
     thumbnail_row_height: f32,
     checked_items: Vec<String>,
     sorts: Vec<SortExpression>,
@@ -91,9 +93,15 @@ impl App {
 
     fn add_queued_tasks(&mut self) {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
-        for (name, task_factory) in self.state.blocking_write().drain_tasks(capacity) {
-            self.tasks
-                .add(name, |tx| task_factory(self.state.clone(), tx));
+        for (name, task_factory, is_request) in self.state.blocking_write().drain_tasks(capacity) {
+            match is_request {
+                true => self
+                    .tasks
+                    .add_request(name, |tx| task_factory(self.state.clone(), tx)),
+                false => self
+                    .tasks
+                    .add(name, |tx| task_factory(self.state.clone(), tx)),
+            }
         }
     }
 
@@ -118,10 +126,19 @@ impl App {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
-        if let Some(path) = stored_state.current_vault_file_path {
-            self.state.blocking_read().set_vault_loading();
-            self.add_task("Load vault".into(), move |s, p| {
-                Promise::spawn_async(crate::tasks::vault::load_vault_from_path(path, s, p))
+        for (name, path) in stored_state.vault_name_to_file_paths.into_iter() {
+            let set_as_current = stored_state.current_vault_name.as_ref() == Some(&path);
+            if set_as_current {
+                self.state.blocking_read().set_vault_loading();
+            }
+
+            self.add_task(format!("Load vault {name}"), move |s, p| {
+                Promise::spawn_async(crate::tasks::vault::load_vault_from_path(
+                    path,
+                    s,
+                    p,
+                    set_as_current,
+                ))
             });
         }
 
@@ -141,18 +158,6 @@ impl App {
     fn setup(&mut self, ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) {
         ctx.style_mut(|style| style.animation_time = 0.0);
         self.load_persistent_state(storage);
-    }
-
-    fn get_current_vault_file_path(&self) -> Option<String> {
-        Some(
-            self.state
-                .blocking_read()
-                .current_vault_opt()?
-                .file_path
-                .as_ref()?
-                .to_str()?
-                .to_string(),
-        )
     }
 }
 
@@ -179,14 +184,25 @@ impl eframe::App for App {
 
         self.add_queued_tasks();
 
-        for result in self.tasks.iter_ready() {
+        let (results, request_results) = self.tasks.iter_ready();
+        for result in results {
             match result {
                 Ok(AsyncTaskResult::None) => {}
-                Ok(VaultLoaded(name)) => {
-                    let mut wr = self.state.blocking_write();
-                    wr.current_vault_name = Some(name);
-                    wr.reset_vault_loading();
+                Ok(VaultLoaded {
+                    name,
+                    set_as_current,
+                }) if set_as_current => {
+                    let r = self.state.blocking_read();
+                    if r.set_current_vault_name(name.clone()).is_err() {
+                        r.reset_vault_loading();
+                        drop(r);
+                        self.error(format!(
+                            "Failed to set current vault with name '{name}' \
+                             as it could not be found"
+                        ));
+                    }
                 }
+                Ok(VaultLoaded { .. }) => {}
                 Ok(VaultSaved(_)) => self.state.blocking_read().reset_vault_loading(),
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
@@ -204,6 +220,7 @@ impl eframe::App for App {
                     self.thumbnail_grid
                         .commit(params, ThumbnailCacheItem::Loaded(hndl));
                 }
+                Ok(AsyncTaskResult::FoundGalleryDl { .. }) => {}
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented".to_string())
                 }
@@ -212,12 +229,16 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
 
+        self.state
+            .blocking_read()
+            .push_request_results(request_results);
+
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Vault", |ui| {
                     let vault_loading = self.state.blocking_read().vault_loading();
                     if ui
-                        .add_enabled(!vault_loading, egui::Button::new("New"))
+                        .add_enabled(!vault_loading, egui::Button::new("New..."))
                         .clicked()
                     {
                         info!("New vault clicked!");
@@ -227,14 +248,16 @@ impl eframe::App for App {
                         ui.close_menu();
                     }
                     if ui
-                        .add_enabled(!vault_loading, egui::Button::new("Open"))
+                        .add_enabled(!vault_loading, egui::Button::new("Open..."))
                         .clicked()
                     {
                         info!("Open vault clicked!");
 
                         self.state.blocking_read().set_vault_loading();
                         self.add_task("Load vault".into(), |s, p| {
-                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p))
+                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
+                                s, p, true,
+                            ))
                         });
 
                         ui.close_menu();
@@ -261,7 +284,17 @@ impl eframe::App for App {
 
                 if self.state().current_vault().is_ok() {
                     ui.menu_button("Import", |ui| {
-                        if ui.button("Import all").clicked() {
+                        if ui.button("Import...").clicked() {
+                            self.add_task("Import one".into(), |state, p| {
+                                Promise::spawn_async(crate::tasks::import::select_and_import_one(
+                                    state, p,
+                                ))
+                            });
+
+                            ui.close_menu();
+                        }
+
+                        if ui.button("Import all files").clicked() {
                             info!("Import all clicked!");
 
                             self.add_task("Import to vault".into(), |state, p| {
@@ -272,17 +305,28 @@ impl eframe::App for App {
 
                             ui.close_menu();
                         }
+
+                        if ui.button("Download...").clicked() {
+                            self.add_modal_dialog(modals::Download::default());
+
+                            ui.close_menu();
+                        }
                     });
 
                     ui.menu_button("Tags", |ui| {
-                        if ui.button("New").clicked() {
+                        if ui.button("New...").clicked() {
                             self.add_modal_dialog(EditTagDialog::create());
                             ui.close_menu();
                         }
-                        if ui.button("Edit").clicked() {
+                        if ui.button("Edit...").clicked() {
                             self.add_modal_dialog(EditTagDialog::select());
                             ui.close_menu();
                         }
+                    });
+
+                    ui.menu_button("Link", |ui| {
+                        if ui.button("Other Vault...").clicked() {}
+                        if ui.button("Sidecars...").clicked() {}
                     });
                 }
 
@@ -526,7 +570,8 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let state = self.state.blocking_read();
         let stored_state = AppStorage {
-            current_vault_file_path: self.get_current_vault_file_path(),
+            current_vault_name: state.current_vault_name().map(|s| s.to_string()),
+            vault_name_to_file_paths: state.vault_name_to_file_paths(),
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
             checked_items: self
                 .thumbnail_grid

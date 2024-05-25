@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::data::{kind, FieldDefinition, FieldStore, FieldType, FieldValue};
 use crate::state::AppStateRef;
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
@@ -39,7 +39,7 @@ impl Default for State {
     }
 }
 
-impl CloneableState for State {}
+impl CloneableTempState for State {}
 
 impl EditTagDialog {
     pub fn select() -> Self {

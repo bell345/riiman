@@ -20,10 +20,14 @@ paste = "1.0"
 derive_more = { version = "0.99.17", features = ["display"] }
 itertools = "0.13.0"
 ordered-float = { version = "4.2", features = ["serde"] }
+strum = { version = "0.26.2", features = ["derive"] }
+
+# running scripts
+tempfile = "3.10"
 
 # gui
 eframe = { version = "0.27.2", features = ["persistence"] }
-egui_extras = { version = "0.27.2", features = ["svg", "datepicker"] }
+egui_extras = { version = "0.27.2", features = ["svg", "datepicker", "syntect"] }
 egui-modal = "0.3.6"
 rfd = "0.14.1"
 
@@ -42,6 +46,7 @@ sha2 = "0.10.8"
 indexmap = "2.2"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 relativetime = { version = "0.1.4", features = ["chrono"] }
+url = "2.5"
 
 # text manip
 nucleo-matcher = "0.3.1"

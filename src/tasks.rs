@@ -1,18 +1,20 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use eframe::egui::ColorImage;
 use poll_promise::Promise;
 
-use crate::state::AppStateRef;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
 
+use crate::state::AppStateRef;
 pub use crate::tasks::compute::ThumbnailGridInfo;
 pub use crate::tasks::compute::ThumbnailGridParams;
 use crate::tasks::image::ThumbnailParams;
 
 pub(crate) mod compute;
+pub(crate) mod download;
 pub(crate) mod filter;
 pub(crate) mod image;
 pub(crate) mod import;
@@ -23,7 +25,10 @@ pub(crate) mod vault;
 #[derive(Debug)]
 pub enum AsyncTaskResult {
     None,
-    VaultLoaded(String),
+    VaultLoaded {
+        name: String,
+        set_as_current: bool,
+    },
     VaultSaved(String),
     ImportComplete {
         path: Box<Path>,
@@ -32,6 +37,10 @@ pub enum AsyncTaskResult {
     ThumbnailLoaded {
         params: ThumbnailParams,
         image: ColorImage,
+    },
+    FoundGalleryDl {
+        path: String,
+        version: String,
     },
 }
 
@@ -82,6 +91,7 @@ impl Task {
 #[derive(Default)]
 pub(crate) struct TaskState {
     running_tasks: Vec<Task>,
+    requests: HashSet<String>,
 }
 
 impl TaskState {
@@ -93,22 +103,39 @@ impl TaskState {
         self.running_tasks.push(Task::with_progress(name, factory));
     }
 
+    pub fn add_request(
+        &mut self,
+        name: String,
+        factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
+    ) {
+        if self.requests.insert(name.clone()) {
+            self.add(name, factory);
+        }
+    }
+
     pub fn running_tasks_count(&self) -> usize {
         self.running_tasks.len()
     }
 
-    pub fn iter_ready(&mut self) -> Vec<AsyncTaskReturn> {
+    pub fn iter_ready(&mut self) -> (Vec<AsyncTaskReturn>, Vec<(String, AsyncTaskReturn)>) {
         let mut results = vec![];
+        let mut request_results = vec![];
         let mut still_running_tasks = vec![];
         for task in self.running_tasks.drain(..) {
+            let name = task.name.clone();
             match task.try_take_result() {
-                Ok(result) => results.push(result),
+                Ok(result) => match self.requests.remove(&name) {
+                    true => request_results.push((name, result)),
+                    false => {
+                        results.push(result);
+                    }
+                },
                 Err(task) => still_running_tasks.push(task),
             }
         }
 
         self.running_tasks = still_running_tasks;
-        results
+        (results, request_results)
     }
 
     pub fn iter_progress(&self) -> Vec<(String, ProgressState)> {

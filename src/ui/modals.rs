@@ -1,11 +1,13 @@
 use crate::state::AppStateRef;
 
 mod delete_def;
+mod download;
 mod edit_tag;
 mod message;
 mod new_vault;
 
 pub use delete_def::DeleteDefinition;
+pub use download::Download;
 pub use edit_tag::EditTagDialog;
 pub use message::MessageDialog;
 pub use new_vault::NewVaultDialog;

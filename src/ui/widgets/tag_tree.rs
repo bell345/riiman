@@ -2,7 +2,7 @@ use crate::data::FieldDefinition;
 use crate::shortcut;
 use crate::state::AppStateRef;
 use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult, TextSearchQuery};
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Vec2, Widget};
@@ -160,7 +160,7 @@ struct State {
     focused: bool,
 }
 
-impl CloneableState for State {}
+impl CloneableTempState for State {}
 
 impl State {
     fn search_results_count(&self) -> usize {

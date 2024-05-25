@@ -17,14 +17,22 @@ pub enum AppError {
     VaultNoParent,
     #[error("vault has no file path")]
     VaultNoPath,
-    #[error("wrong field type, expected {expected:?}, got {got:?}")]
+    #[error("vault with name {name} does not exist")]
+    VaultDoesNotExist { name: String },
+    #[error("wrong field type; expected {expected:?}, got {got:?}")]
     WrongFieldType { expected: KindType, got: FieldValue },
-    #[error("wrong mime type, expected {expected:?}, got {got:?}")]
+    #[error("wrong mime type; expected {expected}, got {got}")]
     WrongMimeType { expected: String, got: String },
     #[error("missing field definition with ID {id}")]
     MissingFieldDefinition { id: Uuid },
     #[error("found infinite loop that contains field ID {field_id}")]
     FieldTreeLoop { field_id: Uuid },
+    #[error("error when executing command {command}: {error}")]
+    CommandError { command: String, error: String },
+    #[error("missing executable; expected {expected}")]
+    MissingExecutable { expected: String },
+    #[error("unexpected executable; expected {expected}, got {got}")]
+    UnexpectedExecutable { expected: String, got: String },
 }
 
 impl AppError {

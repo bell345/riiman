@@ -49,7 +49,6 @@ impl AppModal for NewVaultDialog {
                                 p,
                             ))
                         });
-                        modal.close();
                     }
                 }
                 modal.button(ui, "Cancel");

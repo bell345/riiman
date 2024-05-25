@@ -11,7 +11,7 @@ use crate::data::{
 };
 use crate::shortcut;
 use crate::state::AppStateRef;
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTagDialog;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
@@ -34,7 +34,7 @@ struct State {
     quick_create_state: CreateState,
 }
 
-impl CloneableState for State {}
+impl CloneableTempState for State {}
 
 #[derive(Debug, Clone)]
 struct CreateState {

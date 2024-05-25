@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::data::{FieldStore, Item};
+use crate::data::FieldStore;
 use anyhow::{anyhow, Context};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
 use tokio::task::JoinSet;
 use tracing::info;
@@ -20,11 +20,9 @@ const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 
 async fn import_single_image(
     state: AppStateRef,
-    entry: tokio::fs::DirEntry,
-    metadata: std::fs::Metadata,
+    path: Box<Path>,
+    last_modified: DateTime<Utc>,
 ) -> SingleImportResult {
-    let path: Box<Path> = entry.path().into();
-
     let mut item = state.read().await.current_vault()?.ensure_item(&path)?;
 
     let mime_type = item
@@ -43,21 +41,19 @@ async fn import_single_image(
     }
     item.set_known_field_value(fields::general::MEDIA_TYPE, mime_type);
 
-    let file_modified = metadata.modified().map(|m| m.into()).unwrap_or(Utc::now());
-
     if let Some(item_modified) = item.get_known_field_value(fields::general::LAST_MODIFIED)? {
-        if file_modified <= item_modified {
+        if last_modified <= item_modified {
             return Ok(path);
         }
     }
 
-    item.set_known_field_value(fields::general::LAST_MODIFIED, file_modified);
+    item.set_known_field_value(fields::general::LAST_MODIFIED, last_modified);
 
     commit_thumbnail_to_fs(
         state.clone(),
         &ThumbnailParams {
             path: path.clone(),
-            last_modified: Some(file_modified),
+            last_modified: Some(last_modified),
             height: THUMBNAIL_LOW_QUALITY_HEIGHT,
         },
     )
@@ -84,6 +80,44 @@ async fn import_single_image(
     Ok(path)
 }
 
+pub async fn select_and_import_one(
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let dialog =
+        rfd::AsyncFileDialog::new().add_filter("Image file", &["jpeg", "jpg", "png", "gif"]);
+
+    progress.send(ProgressState::Indeterminate);
+    let Some(fp) = dialog.pick_file().await else {
+        return Ok(AsyncTaskResult::None);
+    };
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use crate::tasks::TaskError::WasmNotImplemented;
+        return Err(WasmNotImplemented);
+    }
+
+    let path = fp.path();
+    let last_modified = fp
+        .path()
+        .metadata()
+        .and_then(|m| m.modified())
+        .map(|m| m.into())
+        .unwrap_or(Utc::now());
+
+    progress.send(ProgressState::DeterminateWithMessage(
+        0.0,
+        path.display().to_string(),
+    ));
+    let res = import_single_image(state.clone(), path.into(), last_modified).await;
+
+    Ok(AsyncTaskResult::ImportComplete {
+        path: path.into(),
+        results: vec![res],
+    })
+}
+
 pub async fn import_images_recursively(
     state: AppStateRef,
     progress: ProgressSenderRef,
@@ -99,7 +133,7 @@ pub async fn import_images_recursively(
     let scan_progress = progress.sub_task("Scan", 0.05);
     scan_progress.send(ProgressState::Indeterminate);
 
-    let mut entries: Vec<(tokio::fs::DirEntry, std::fs::Metadata)> = vec![];
+    let mut entries: Vec<_> = vec![];
     let mut dir_queue: Vec<PathBuf> = vec![root_dir.clone()];
 
     while let Some(dir_path) = dir_queue.pop() {
@@ -119,7 +153,13 @@ pub async fn import_images_recursively(
             if metadata.is_dir() {
                 dir_queue.push(item.path());
             } else if metadata.is_file() {
-                entries.push((item, metadata));
+                entries.push((
+                    item.path().into_boxed_path(),
+                    metadata
+                        .modified()
+                        .map(|m| -> DateTime<Utc> { m.into() })
+                        .unwrap_or(Utc::now()),
+                ));
             }
         }
     }
@@ -135,8 +175,8 @@ pub async fn import_images_recursively(
     let mut join_set = JoinSet::new();
 
     while join_set.len() < CONCURRENT_TASKS_LIMIT {
-        if let Some((entry, metadata)) = entries.pop() {
-            join_set.spawn(import_single_image(state.clone(), entry, metadata));
+        if let Some((path, last_modified)) = entries.pop() {
+            join_set.spawn(import_single_image(state.clone(), path, last_modified));
         } else {
             break;
         }
@@ -156,8 +196,8 @@ pub async fn import_images_recursively(
 
         results.push(task_res);
 
-        if let Some((entry, metadata)) = entries.pop() {
-            join_set.spawn(import_single_image(state.clone(), entry, metadata));
+        if let Some((path, last_modified)) = entries.pop() {
+            join_set.spawn(import_single_image(state.clone(), path, last_modified));
         }
     }
 

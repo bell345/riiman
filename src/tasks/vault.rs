@@ -9,6 +9,7 @@ use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, Progress
 pub async fn choose_and_load_vault(
     state: AppStateRef,
     progress: ProgressSenderRef,
+    set_as_current: bool,
 ) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
@@ -38,6 +39,7 @@ pub async fn choose_and_load_vault(
                 .to_string(),
             state,
             progress,
+            set_as_current,
         )
         .await
     }
@@ -47,6 +49,7 @@ pub async fn load_vault_from_path(
     path: String,
     state: AppStateRef,
     progress: ProgressSenderRef,
+    set_as_current: bool,
 ) -> AsyncTaskReturn {
     progress.send(ProgressState::Determinate(0.5));
 
@@ -62,7 +65,10 @@ pub async fn load_vault_from_path(
     let name = vault.name.clone();
     state.write().await.load_vault(vault);
 
-    Ok(AsyncTaskResult::VaultLoaded(name))
+    Ok(AsyncTaskResult::VaultLoaded {
+        name,
+        set_as_current,
+    })
 }
 
 pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> AsyncTaskReturn {
@@ -111,7 +117,10 @@ pub async fn save_new_vault(
     let name = vault.name.clone();
     state.write().await.load_vault(vault);
 
-    Ok(AsyncTaskResult::VaultLoaded(name))
+    Ok(AsyncTaskResult::VaultLoaded {
+        name,
+        set_as_current: false,
+    })
 }
 
 pub async fn save_current_vault(

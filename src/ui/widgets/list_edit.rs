@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
 use egui_extras::TableBody;
@@ -48,7 +48,10 @@ struct State<CreateState: Default + Clone + Send + Sync + 'static> {
     create_state: CreateState,
 }
 
-impl<CreateState: Default + Clone + Send + Sync + 'static> CloneableState for State<CreateState> {}
+impl<CreateState: Default + Clone + Send + Sync + 'static> CloneableTempState
+    for State<CreateState>
+{
+}
 
 #[derive(Default)]
 pub enum ListEditResult<EditT, CreateT> {

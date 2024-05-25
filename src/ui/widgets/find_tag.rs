@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::tasks::filter::{
     evaluate_field_search, FieldMatchResult, MergedFieldMatchResult, TextSearchQuery,
 };
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
 
 pub struct FindTag<'a, 'b> {
@@ -43,7 +43,7 @@ struct State {
     focused: bool,
 }
 
-impl CloneableState for State {}
+impl CloneableTempState for State {}
 
 impl State {
     fn update_index(

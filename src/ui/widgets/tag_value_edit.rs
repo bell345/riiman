@@ -7,7 +7,7 @@ use ordered_float::OrderedFloat;
 
 use crate::data::kind::KindType;
 use crate::data::{FieldType, FieldValue};
-use crate::ui::cloneable_state::CloneableState;
+use crate::ui::cloneable_state::CloneableTempState;
 
 pub struct TagValueEdit<'a> {
     id: egui::Id,
@@ -34,7 +34,7 @@ struct State {
     typed_value: String,
 }
 
-impl CloneableState for State {}
+impl CloneableTempState for State {}
 
 impl<'a> Widget for TagValueEdit<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
