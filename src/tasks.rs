@@ -18,6 +18,7 @@ pub(crate) mod download;
 pub(crate) mod filter;
 pub(crate) mod image;
 pub(crate) mod import;
+pub(crate) mod link;
 mod progress;
 pub(crate) mod sort;
 pub(crate) mod vault;

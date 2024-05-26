@@ -25,6 +25,8 @@ pub enum AppError {
     WrongMimeType { expected: String, got: String },
     #[error("missing field definition with ID {id}")]
     MissingFieldDefinition { id: Uuid },
+    #[error("missing item with path {path}")]
+    MissingItem { path: String },
     #[error("found infinite loop that contains field ID {field_id}")]
     FieldTreeLoop { field_id: Uuid },
     #[error("error when executing command {command}: {error}")]
@@ -33,6 +35,8 @@ pub enum AppError {
     MissingExecutable { expected: String },
     #[error("unexpected executable; expected {expected}, got {got}")]
     UnexpectedExecutable { expected: String, got: String },
+    #[error("unexpected format for JSON sidecar with path {path}, error: {error:?}")]
+    UnexpectedJsonSidecar { path: String, error: Option<String> },
 }
 
 impl AppError {

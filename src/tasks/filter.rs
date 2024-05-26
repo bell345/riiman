@@ -270,8 +270,13 @@ pub fn evaluate_filter(
                     KindType::ItemRef => {
                         matches(&String::from(kind::ItemRef::try_from(v.clone())?))
                     }
-                    KindType::List => return Err(AppError::NotImplemented.into()),
-                    KindType::Dictionary => return Err(AppError::NotImplemented.into()),
+                    KindType::List => kind::List::try_from(v.clone())?
+                        .iter()
+                        .filter_map(|v| v.as_string_opt())
+                        .any(matches),
+                    KindType::Dictionary => kind::Dictionary::try_from(v.clone())?
+                        .iter()
+                        .any(|(k, v)| v.as_string_opt().map(matches).unwrap_or(matches(k))),
                     _ => false,
                 } {
                     return Ok(true);

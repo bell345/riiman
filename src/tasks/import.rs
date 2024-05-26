@@ -1,9 +1,12 @@
+use std::fs::Metadata;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use crate::data::FieldStore;
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
+use tokio::fs::DirEntry;
 use tokio::task::JoinSet;
 use tracing::info;
 
@@ -124,23 +127,15 @@ pub async fn select_and_import_one(
     })
 }
 
-pub async fn import_images_recursively(
-    state: AppStateRef,
+pub async fn scan_recursively<T>(
+    root_dir: &Path,
     progress: ProgressSenderRef,
-) -> AsyncTaskReturn {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use crate::tasks::TaskError::WasmNotImplemented;
-        return Err(WasmNotImplemented);
-    }
-
-    let root_dir = state.read().await.current_vault()?.root_dir()?;
-
-    let scan_progress = progress.sub_task("Scan", 0.05);
-    scan_progress.send(ProgressState::Indeterminate);
+    process_file: impl Fn(DirEntry, Metadata) -> Option<T>,
+) -> anyhow::Result<Vec<T>> {
+    progress.send(ProgressState::Indeterminate);
 
     let mut entries: Vec<_> = vec![];
-    let mut dir_queue: Vec<PathBuf> = vec![root_dir.clone()];
+    let mut dir_queue: Vec<PathBuf> = vec![root_dir.to_owned()];
 
     while let Some(dir_path) = dir_queue.pop() {
         let mut read_dir = tokio::fs::read_dir(dir_path)
@@ -159,13 +154,9 @@ pub async fn import_images_recursively(
             if metadata.is_dir() {
                 dir_queue.push(item.path());
             } else if metadata.is_file() {
-                entries.push((
-                    item.path().into_boxed_path(),
-                    metadata
-                        .modified()
-                        .map(|m| -> DateTime<Utc> { m.into() })
-                        .unwrap_or(Utc::now()),
-                ));
+                if let Some(x) = process_file(item, metadata) {
+                    entries.push(x);
+                }
             }
         }
     }
@@ -173,39 +164,99 @@ pub async fn import_images_recursively(
     entries.reverse();
     let total = entries.len();
 
-    scan_progress.send(ProgressState::Completed);
+    progress.send(ProgressState::Completed);
     info!("completed scan: {} items", total);
 
-    const CONCURRENT_TASKS_LIMIT: usize = 16;
+    Ok(entries)
+}
 
+pub async fn process_many<
+    EntryT,
+    ResultT: Send + 'static,
+    FutureT: Future<Output = ResultT> + Send + 'static,
+>(
+    mut entries: Vec<EntryT>,
+    progress: ProgressSenderRef,
+    task_factory: impl Fn(EntryT) -> FutureT,
+    on_result: impl Fn(&ResultT, &ProgressSenderRef, f32),
+    concurrency_limit: usize,
+) -> anyhow::Result<Vec<ResultT>> {
+    let total = entries.len();
     let mut join_set = JoinSet::new();
 
-    while join_set.len() < CONCURRENT_TASKS_LIMIT {
-        if let Some((path, last_modified)) = entries.pop() {
-            join_set.spawn(import_single_image(state.clone(), path, last_modified));
+    while join_set.len() < concurrency_limit {
+        if let Some(entry) = entries.pop() {
+            join_set.spawn(task_factory(entry));
         } else {
             break;
         }
     }
 
-    let import_progress = progress.sub_task("Import", 0.90);
     let mut results = vec![];
     while let Some(res) = join_set.join_next().await {
-        let task_res = res
-            .with_context(|| format!("awaiting import within directory {}", root_dir.display()))?;
+        let task_res = res?;
 
         let p = results.len() as f32 / total as f32;
-        if let Ok(path) = &task_res {
-            let msg = path.to_str().unwrap_or("").to_string();
-            import_progress.send(ProgressState::DeterminateWithMessage(p, msg));
-        }
+        on_result(&task_res, &progress, p);
 
         results.push(task_res);
 
-        if let Some((path, last_modified)) = entries.pop() {
-            join_set.spawn(import_single_image(state.clone(), path, last_modified));
+        if let Some(entry) = entries.pop() {
+            join_set.spawn(task_factory(entry));
         }
     }
+
+    Ok(results)
+}
+
+pub fn on_import_result_send_progress(
+    result: &SingleImportResult,
+    progress: &ProgressSenderRef,
+    p: f32,
+) {
+    if let Ok(path) = result {
+        let msg = path.to_str().unwrap_or("").to_string();
+        progress.send(ProgressState::DeterminateWithMessage(p, msg));
+    }
+}
+
+pub async fn import_images_recursively(
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use crate::tasks::TaskError::WasmNotImplemented;
+        return Err(WasmNotImplemented);
+    }
+
+    let root_dir = state.read().await.current_vault()?.root_dir()?;
+
+    let entries = scan_recursively(
+        root_dir.as_path(),
+        progress.sub_task("Scan", 0.05),
+        |item, metadata| {
+            Some((
+                item.path().into_boxed_path(),
+                metadata
+                    .modified()
+                    .map(|m| -> DateTime<Utc> { m.into() })
+                    .unwrap_or(Utc::now()),
+            ))
+        },
+    )
+    .await?;
+
+    const CONCURRENT_TASKS_LIMIT: usize = 16;
+
+    let results = process_many(
+        entries,
+        progress.sub_task("Import", 0.90),
+        |(path, last_modified)| import_single_image(state.clone(), path, last_modified),
+        on_import_result_send_progress,
+        CONCURRENT_TASKS_LIMIT,
+    )
+    .await?;
 
     {
         let r = state.read().await;

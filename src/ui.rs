@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use eframe::egui;
+use eframe::egui::{FontData, FontDefinitions, FontTweak};
+use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use tracing::info;
 use uuid::Uuid;
@@ -326,7 +328,12 @@ impl eframe::App for App {
 
                     ui.menu_button("Link", |ui| {
                         if ui.button("Other Vault...").clicked() {}
-                        if ui.button("Sidecars...").clicked() {}
+                        if ui.button("Sidecars...").clicked() {
+                            self.add_task("Link sidecars".into(), |state, p| {
+                                Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
+                            });
+                            ui.close_menu();
+                        }
                     });
                 }
 
@@ -460,6 +467,7 @@ impl eframe::App for App {
                 |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, true])
+                        .max_width(350.0)
                         .show_viewport(ui, |ui, _vp| {
                             ui.horizontal(|ui| {
                                 ui.label("Select: ");
@@ -599,6 +607,109 @@ impl App {
             options,
             Box::new(|cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
+
+                let mut fonts = FontDefinitions::default();
+
+                const M_PLUS_ROUNDED: &str = "MPLUSRounded1c-Regular";
+                const JETBRAINS_MONO: &str = "JetBrainsMono-Regular";
+                const INTER: &str = "Inter-Regular";
+                const NOTO_SANS: &str = "NotoSans-Regular";
+                const NOTO_SANS_SC: &str = "NotoSansSC-Regular";
+                const NOTO_SANS_TC: &str = "NotoSansTC-Regular";
+                const NOTO_SANS_KR: &str = "NotoSansKR-Regular";
+                const NOTO_SANS_SYMBOLS: &str = "NotoSansSymbols-Regular";
+                const NOTO_SANS_SYMBOLS_2: &str = "NotoSansSymbols2-Regular";
+                const NOTO_SANS_MATH: &str = "NotoSansMath-Regular";
+                const NOTO_EMOJI: &str = "NotoEmoji-Regular";
+
+                fonts.font_data.insert(
+                    M_PLUS_ROUNDED.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/MPLUSRounded1c/MPLUSRounded1c-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    JETBRAINS_MONO.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/JetBrainsMono/JetBrainsMono-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    INTER.to_owned(),
+                    FontData::from_static(include_bytes!("../res/font/Inter/Inter-Regular.ttf")),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSans/NotoSans-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_SC.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansSC/NotoSansSC-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_TC.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansTC/NotoSansTC-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_KR.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansKR/NotoSansKR-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_SYMBOLS.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansSymbols/NotoSansSymbols-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_SYMBOLS_2.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansSymbols2/NotoSansSymbols2-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_SANS_MATH.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoSansMath/NotoSansMath-Regular.ttf"
+                    )),
+                );
+                fonts.font_data.insert(
+                    NOTO_EMOJI.to_owned(),
+                    FontData::from_static(include_bytes!(
+                        "../res/font/NotoEmoji/NotoEmoji-Regular.ttf"
+                    )),
+                );
+
+                {
+                    let prop = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
+                    // pushing to front (so highest priority is at the end here)
+                    prop.insert(0, NOTO_SANS_KR.to_owned());
+                    prop.insert(0, NOTO_SANS_TC.to_owned());
+                    prop.insert(0, NOTO_SANS_SC.to_owned());
+                    prop.insert(0, M_PLUS_ROUNDED.to_owned());
+                    prop.insert(0, INTER.to_owned());
+
+                    // fallback symbols
+                    prop.push(NOTO_SANS_SYMBOLS.to_owned());
+                    prop.push(NOTO_SANS_SYMBOLS_2.to_owned());
+                    prop.push(NOTO_SANS_MATH.to_owned());
+                    prop.push(NOTO_EMOJI.to_owned());
+                }
+
+                {
+                    let mono = fonts.families.get_mut(&FontFamily::Monospace).unwrap();
+                    mono.insert(0, JETBRAINS_MONO.to_owned());
+                }
+
+                cc.egui_ctx.set_fonts(fonts);
+
                 self.setup(&cc.egui_ctx, cc.storage);
                 Box::new(self)
             }),

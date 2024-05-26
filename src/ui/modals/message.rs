@@ -23,6 +23,7 @@ pub enum MessageType {
 
 impl MessageDialog {
     pub fn error(message: String) -> Self {
+        tracing::error!(message);
         Self {
             id: Uuid::new_v4(),
             message,
@@ -32,6 +33,7 @@ impl MessageDialog {
     }
 
     pub fn info(message: String) -> Self {
+        tracing::info!(message);
         Self {
             id: Uuid::new_v4(),
             message,
@@ -41,6 +43,7 @@ impl MessageDialog {
     }
 
     pub fn success(message: String) -> Self {
+        tracing::info!(message);
         Self {
             id: Uuid::new_v4(),
             message,

@@ -56,7 +56,7 @@ const SELECTED_STROKE_WIDTH: f32 = 1.0;
 const SELECTED_COLOUR: Color32 = Color32::from_rgb(255, 255, 255);
 
 impl<'a> Tag<'a> {
-    fn text_to_galley(&self, ui: &Ui, text: WidgetText) -> Arc<Galley> {
+    fn text_to_galley(&self, ui: &Ui, text: WidgetText, container_width: f32) -> Arc<Galley> {
         let mut layout_job = text.into_layout_job(
             ui.style(),
             if self.use_small {
@@ -67,18 +67,28 @@ impl<'a> Tag<'a> {
             ui.layout().vertical_align(),
         );
 
-        layout_job.wrap.max_width = f32::INFINITY;
+        layout_job.wrap.max_width = container_width;
         layout_job.halign = ui.layout().horizontal_placement();
         layout_job.justify = ui.layout().horizontal_justify();
 
         ui.fonts(|f| f.layout_job(layout_job))
     }
 
-    fn galley(&self, ui: &Ui) -> Arc<Galley> {
-        self.text_to_galley(ui, WidgetText::from(&self.definition.name))
+    fn line_height(&self, ui: &Ui) -> f32 {
+        self.text_to_galley(ui, WidgetText::from("i"), f32::INFINITY)
+            .size()
+            .y
     }
 
-    fn value_galley(&self, ui: &Ui) -> Option<Arc<Galley>> {
+    fn galley(&self, ui: &Ui) -> Arc<Galley> {
+        self.text_to_galley(
+            ui,
+            WidgetText::from(&self.definition.name),
+            ui.available_width(),
+        )
+    }
+
+    fn value_galley(&self, ui: &Ui, label_width: f32) -> Option<Arc<Galley>> {
         let value = self.value.as_ref()?;
 
         let text = WidgetText::from(match value {
@@ -101,29 +111,43 @@ impl<'a> Tag<'a> {
             Value::DateTime(dt) => dt.to_relative(),
         });
 
-        Some(self.text_to_galley(ui, text))
+        let hanger_width = self.line_height(ui) + 2.0 * TAG_PADDING.y;
+        let padding = 2.0 * TAG_PADDING.x;
+        Some(self.text_to_galley(
+            ui,
+            text,
+            ui.available_width() - label_width - padding - hanger_width - padding,
+        ))
     }
 
     /// returns hanger size, label size, value size, total size
     fn sizes(
         &self,
+        line_height: f32,
         galley: &Arc<Galley>,
         value_galley: &Option<Arc<Galley>>,
     ) -> (Vec2, Vec2, Vec2, Vec2) {
-        let label_size = galley.size() + 2.0 * TAG_PADDING;
+        let mut inner_height = galley.size().y;
+        if let Some(value_height) = value_galley.as_ref().map(|g| g.size().y) {
+            inner_height = inner_height.max(value_height);
+        }
+        let outer_height = inner_height + 2.0 * TAG_PADDING.y;
+        let outer_line_height = line_height + 2.0 * TAG_PADDING.y;
+
+        let label_size = vec2(galley.size().x, inner_height) + 2.0 * TAG_PADDING;
         let mut total_size = label_size;
 
         let hanger_size = match self.definition.field_type {
-            KindType::Tag => vec2(label_size.y / 2.0, label_size.y),
+            KindType::Tag => vec2(outer_line_height / 2.0, outer_height),
             KindType::Container => vec2(0.0, 0.0),
-            _ => vec2(label_size.y, label_size.y),
+            _ => vec2(outer_line_height, outer_height),
         };
         let hanger_offset = vec2(hanger_size.x, 0.0);
         total_size += hanger_offset;
 
         let mut value_size = Vec2::ZERO;
         if let Some(value_galley) = value_galley.as_ref() {
-            value_size = value_galley.size() + 2.0 * TAG_PADDING;
+            value_size = vec2(value_galley.size().x, inner_height) + 2.0 * TAG_PADDING;
             let value_offset = vec2(value_size.x, 0.0);
             total_size += value_offset;
         }
@@ -140,15 +164,22 @@ impl<'a> Tag<'a> {
     }
 
     pub fn size(&self, ui: &Ui) -> Vec2 {
-        self.sizes(&self.galley(ui), &self.value_galley(ui)).3
+        let galley = self.galley(ui);
+        self.sizes(
+            self.line_height(ui),
+            &galley,
+            &self.value_galley(ui, galley.size().x),
+        )
+        .3
     }
 
     pub fn paint(&self, ui: &Ui, rect: Rect, response: Option<Response>) {
         let p = ui.painter_at(rect.expand(SELECTED_STROKE_WIDTH));
         let galley = self.galley(ui);
-        let value_galley = self.value_galley(ui);
+        let value_galley = self.value_galley(ui, galley.size().x);
         let has_value = value_galley.is_some();
-        let (hanger_size, label_size, value_size, total_size) = self.sizes(&galley, &value_galley);
+        let (hanger_size, label_size, value_size, total_size) =
+            self.sizes(self.line_height(ui), &galley, &value_galley);
 
         let visuals = ui.style().visuals.widgets.inactive;
         let mut bg = self
@@ -251,7 +282,7 @@ impl<'a> Tag<'a> {
                 };
 
                 let hanger_bg = Color32::from_rgb(r, g, b);
-                let hanger_galley = self.text_to_galley(ui, text.into());
+                let hanger_galley = self.text_to_galley(ui, text.into(), f32::INFINITY);
 
                 p.add(epaint::RectShape::filled(
                     hanger_bbox,
@@ -325,9 +356,9 @@ impl<'a> Tag<'a> {
 impl<'a> Widget for Tag<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         let galley = self.galley(ui);
-        let value_galley = self.value_galley(ui);
+        let value_galley = self.value_galley(ui, galley.size().x);
 
-        let (_, _, _, total_size) = self.sizes(&galley, &value_galley);
+        let (_, _, _, total_size) = self.sizes(self.line_height(ui), &galley, &value_galley);
 
         let (rect, res) = ui.allocate_exact_size(total_size, Sense::click_and_drag());
 
