@@ -168,14 +168,13 @@ impl Vault {
         Ok(self.items.get(rel_path))
     }
 
-    pub fn ensure_item(&self, path: &Path) -> anyhow::Result<Item> {
+    pub fn get_cloned_item_or_default(&self, path: &Path) -> anyhow::Result<Item> {
         let rel_path = self.resolve_rel_path(path)?.to_string();
         Ok(self
             .items
-            .entry(rel_path.clone())
-            .or_insert_with(|| Item::new(rel_path))
-            .value()
-            .clone())
+            .get(&rel_path)
+            .map(|i| i.value().clone())
+            .unwrap_or_else(|| Item::new(rel_path)))
     }
 
     pub fn update_item(&self, path: &Path, item: Item) -> anyhow::Result<()> {
@@ -190,6 +189,13 @@ impl Vault {
             .or_insert(item);
 
         self.set_last_updated();
+
+        Ok(())
+    }
+
+    pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
+        let rel_path = self.resolve_rel_path(path)?.to_string();
+        self.items.remove(&rel_path);
 
         Ok(())
     }

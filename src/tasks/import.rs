@@ -23,7 +23,11 @@ async fn import_single_image(
     path: Box<Path>,
     last_modified: DateTime<Utc>,
 ) -> SingleImportResult {
-    let mut item = state.read().await.current_vault()?.ensure_item(&path)?;
+    let mut item = state
+        .read()
+        .await
+        .current_vault()?
+        .get_cloned_item_or_default(&path)?;
 
     let mime_type = item
         .get_known_field_value(fields::general::MEDIA_TYPE)?
@@ -33,6 +37,8 @@ async fn import_single_image(
                 .to_string()
         });
     if !mime_type.starts_with("image/") {
+        state.read().await.current_vault()?.remove_item(&path)?;
+
         return Err(AppError::WrongMimeType {
             expected: "image/*".to_string(),
             got: mime_type,

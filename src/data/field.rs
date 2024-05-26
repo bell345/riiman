@@ -328,11 +328,7 @@ pub mod kind {
 
     impl Value {
         pub fn as_str_opt(&self) -> Option<&str> {
-            match self {
-                Value::Str(x) => Some(x.as_str()),
-                Value::ItemRef(x) => Some(x.as_str()),
-                _ => None,
-            }
+            self.as_string_opt().map(|s| s.as_str())
         }
 
         pub fn as_str(&self) -> Result<&str, AppError> {
@@ -340,6 +336,13 @@ pub mod kind {
                 expected: KindType::Str,
                 got: self.clone(),
             })
+        }
+
+        pub fn as_string_opt(&self) -> Option<&String> {
+            match self {
+                Value::Str(x) | Value::ItemRef(x) => Some(x),
+                _ => None,
+            }
         }
     }
 

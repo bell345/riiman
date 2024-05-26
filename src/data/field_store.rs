@@ -119,6 +119,10 @@ pub trait FieldStore {
             None => Ok(None),
         }
     }
+    
+    fn get_field_value_as_str(&self, field_id: &Uuid) -> Option<impl Deref<Target = String>> {
+        self.get_field_value(field_id)?.try_map(|v| v.as_string_opt()).ok()
+    }
 
     fn get_field_with_def<'a, 'b: 'a>(&'a self, field_id: &Uuid, vault: &'b Vault) -> Option<FieldDefValueRef<Ref<'b, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
         Some(FieldDefValueRef::new(vault.get_definition(field_id)?, self.get_field_value(field_id)?))

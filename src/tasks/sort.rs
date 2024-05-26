@@ -60,6 +60,18 @@ impl From<SortExpression> for SortType {
     }
 }
 
+fn cmp_option_refs<Ref: Deref<Target = T>, T: Ord>(
+    val1: Option<Ref>,
+    val2: Option<Ref>,
+) -> Ordering {
+    match (val1, val2) {
+        (Some(x), Some(y)) => (*x).cmp(&*y),
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
 fn cmp_by_field(
     item1: &Item,
     item2: &Item,
@@ -67,29 +79,34 @@ fn cmp_by_field(
     field_def: &FieldDefinition,
 ) -> Option<Ordering> {
     let id = &field_def.id;
+
     macro_rules! cmp_typed {
-        ($t:ty, $kind:ident) => {
-            item1
+        ($t:ty, $kind:ident) => {{
+            let val1 = item1
                 .get_field_value_typed::<$t, kind::$kind>(id)
-                .ok()??
-                .cmp(&item2.get_field_value_typed::<$t, kind::$kind>(id).ok()??)
-        };
+                .ok()
+                .flatten();
+            let val2 = item2
+                .get_field_value_typed::<$t, kind::$kind>(id)
+                .ok()
+                .flatten();
+            val1.cmp(&val2)
+        }};
     }
     Some(match field_def.field_type {
-        KindType::Container => return None,
-        KindType::Tag => item1
+        KindType::Container | KindType::Tag => item1
             .has_tag(vault, id)
-            .unwrap_or(false)
-            .cmp(&item2.has_tag(vault, id).ok()?),
+            .ok()
+            .cmp(&item2.has_tag(vault, id).ok()),
         KindType::Boolean => cmp_typed!(bool, Boolean),
         KindType::Int => cmp_typed!(i64, Int),
         KindType::UInt => cmp_typed!(u64, UInt),
         KindType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
         KindType::Colour => cmp_typed!(SerialColour, Colour),
-        KindType::Str | KindType::ItemRef => item1
-            .get_field_value(id)?
-            .as_str_opt()?
-            .cmp(item2.get_field_value(id)?.as_str_opt()?),
+        KindType::Str | KindType::ItemRef => cmp_option_refs(
+            item1.get_field_value_as_str(id),
+            item2.get_field_value_as_str(id),
+        ),
         KindType::DateTime => cmp_typed!(chrono::DateTime<chrono::Utc>, DateTime),
         KindType::List => Ordering::Equal,
         KindType::Dictionary => Ordering::Equal,
