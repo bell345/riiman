@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use eframe::egui;
-use eframe::egui::{FontData, FontDefinitions, FontTweak};
+use eframe::egui::{FontData, FontDefinitions};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
+use regex::Regex;
 use tracing::info;
 use uuid::Uuid;
 
@@ -38,6 +39,10 @@ pub use crate::ui::modals::MessageDialog;
 use crate::ui::modals::{EditTagDialog, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
+static EXACT_TEXT_REGEX: OnceLock<Regex> = OnceLock::new();
+fn exact_text_regex() -> &'static Regex {
+    EXACT_TEXT_REGEX.get_or_init(|| Regex::new("\"(.+)\"").unwrap())
+}
 
 const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const MAX_RUNNING_TASKS: usize = 16;
@@ -195,8 +200,8 @@ impl eframe::App for App {
                     set_as_current,
                 }) if set_as_current => {
                     let r = self.state.blocking_read();
+                    r.reset_vault_loading();
                     if r.set_current_vault_name(name.clone()).is_err() {
-                        r.reset_vault_loading();
                         drop(r);
                         self.error(format!(
                             "Failed to set current vault with name '{name}' \
@@ -204,8 +209,8 @@ impl eframe::App for App {
                         ));
                     }
                 }
-                Ok(VaultLoaded { .. }) => {}
-                Ok(VaultSaved(_)) => self.state.blocking_read().reset_vault_loading(),
+                Ok(VaultLoaded { .. }) => self.state().reset_vault_loading(),
+                Ok(VaultSaved(_)) => self.state().reset_vault_loading(),
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -237,8 +242,14 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Vault", |ui| {
-                    let vault_loading = self.state.blocking_read().vault_loading();
+                let vault_text = if self.state().has_unresolved_vaults() {
+                    egui::RichText::new("Vault \u{ff01}").color(theme::ERROR_TEXT)
+                } else {
+                    egui::RichText::new("Vault")
+                };
+
+                ui.menu_button(vault_text, |ui| {
+                    let vault_loading = self.state().vault_loading();
                     if ui
                         .add_enabled(!vault_loading, egui::Button::new("New..."))
                         .clicked()
@@ -255,7 +266,7 @@ impl eframe::App for App {
                     {
                         info!("Open vault clicked!");
 
-                        self.state.blocking_read().set_vault_loading();
+                        self.state().set_vault_loading();
                         self.add_task("Load vault".into(), |s, p| {
                             Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
                                 s, p, true,
@@ -273,6 +284,22 @@ impl eframe::App for App {
                         info!("Save vault clicked!");
 
                         self.state.blocking_read().save_current_vault();
+
+                        ui.close_menu();
+                    }
+
+                    let manage_text = if self.state().has_unresolved_vaults() {
+                        egui::RichText::new("Manage... \u{ff01}").color(theme::ERROR_TEXT)
+                    } else {
+                        egui::RichText::new("Manage...")
+                    };
+
+                    if !self.state().vault_names().is_empty()
+                        && ui
+                            .add_enabled(!vault_loading, egui::Button::new(manage_text))
+                            .clicked()
+                    {
+                        self.add_modal_dialog(modals::ManageVaults::default());
 
                         ui.close_menu();
                     }
@@ -419,7 +446,15 @@ impl eframe::App for App {
                                 }
                             }
                         };
-                        wr.filter = FilterExpression::TextSearch(self.search_text.clone().into());
+
+                        wr.filter = if let Some((_, [text])) = exact_text_regex()
+                            .captures(self.search_text.as_str())
+                            .map(|c| c.extract())
+                        {
+                            FilterExpression::ExactTextSearch(text.into())
+                        } else {
+                            FilterExpression::TextSearch(self.search_text.clone().into())
+                        };
                     }
                 });
             });

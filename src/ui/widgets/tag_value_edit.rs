@@ -6,7 +6,7 @@ use eframe::egui::{Response, Ui, Widget};
 use ordered_float::OrderedFloat;
 
 use crate::data::kind::KindType;
-use crate::data::{FieldType, FieldValue};
+use crate::data::{kind, FieldType, FieldValue};
 use crate::ui::cloneable_state::CloneableTempState;
 
 pub struct TagValueEdit<'a> {
@@ -65,7 +65,7 @@ impl<'a> Widget for TagValueEdit<'a> {
                         Some(i64::try_from(*u).unwrap_or(if *u > 0 { i64::MAX } else { i64::MIN }))
                     }
                     Some(FieldValue::Float(OrderedFloat(f))) => Some(*f as i64),
-                    Some(FieldValue::Str(s)) => i64::from_str(s).ok(),
+                    Some(FieldValue::String(s)) => i64::from_str(s).ok(),
                     _ => None,
                 } {
                     state.typed_value = i.to_string();
@@ -82,7 +82,7 @@ impl<'a> Widget for TagValueEdit<'a> {
                     Some(FieldValue::Int(i)) => Some(u64::try_from(*i).unwrap_or(0)),
                     Some(FieldValue::UInt(u)) => Some(*u),
                     Some(FieldValue::Float(OrderedFloat(f))) => Some(*f as u64),
-                    Some(FieldValue::Str(s)) => u64::from_str(s).ok(),
+                    Some(FieldValue::String(s)) => u64::from_str(s).ok(),
                     _ => None,
                 } {
                     state.typed_value = u.to_string();
@@ -99,7 +99,7 @@ impl<'a> Widget for TagValueEdit<'a> {
                     Some(FieldValue::Int(i)) => Some(*i as f64),
                     Some(FieldValue::UInt(u)) => Some(*u as f64),
                     Some(FieldValue::Float(OrderedFloat(f))) => Some(*f),
-                    Some(FieldValue::Str(s)) => f64::from_str(s).ok(),
+                    Some(FieldValue::String(s)) => f64::from_str(s).ok(),
                     _ => None,
                 } {
                     state.typed_value = f.to_string();
@@ -115,13 +115,13 @@ impl<'a> Widget for TagValueEdit<'a> {
                         .map(|f| FieldValue::Float(OrderedFloat(f)))
                 }
             }
-            KindType::Str | KindType::ItemRef => {
+            KindType::String | KindType::ItemRef => {
                 if let Some(s) = match self.value {
                     Some(FieldValue::Int(i)) => Some(i.to_string()),
                     Some(FieldValue::UInt(u)) => Some(u.to_string()),
                     Some(FieldValue::Float(OrderedFloat(f))) => Some(f.to_string()),
-                    Some(FieldValue::Str(s)) => Some(s.to_string()),
-                    Some(FieldValue::ItemRef(r)) => Some(r.to_string()),
+                    Some(FieldValue::String(s)) => Some(s.to_string()),
+                    Some(FieldValue::ItemRef(r)) => Some(format!("{}:{}", r.0, r.1)),
                     _ => None,
                 } {
                     state.typed_value = s;
@@ -129,8 +129,13 @@ impl<'a> Widget for TagValueEdit<'a> {
 
                 res = ui.text_edit_singleline(&mut state.typed_value);
                 *self.value = Some(match self.field_type {
-                    KindType::Str => FieldValue::Str(state.typed_value.to_string()),
-                    KindType::ItemRef => FieldValue::ItemRef(state.typed_value.to_string()),
+                    KindType::String => FieldValue::String(state.typed_value.to_string()),
+                    KindType::ItemRef => state
+                        .typed_value
+                        .to_string()
+                        .parse::<kind::ItemRef>()
+                        .unwrap_or(kind::ItemRef::from(("".to_string(), "".to_string())))
+                        .into(),
                     _ => unreachable!(),
                 });
             }

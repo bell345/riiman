@@ -12,6 +12,7 @@ use relativetime::RelativeTime;
 use crate::data::kind::{KindType, Value};
 use crate::data::{FieldDefinition, FieldStore, FieldValue};
 use crate::fields;
+use crate::ui::theme;
 
 pub struct Tag<'a> {
     definition: &'a FieldDefinition,
@@ -47,8 +48,6 @@ impl<'a> Tag<'a> {
 }
 
 const TAG_PADDING: Vec2 = vec2(4.0, 4.0);
-const WHITE_TEXT: Color32 = Color32::from_rgb(240, 240, 240);
-const BLACK_TEXT: Color32 = Color32::from_rgb(20, 20, 20);
 
 const BORDER_RADIUS: f32 = 4.0;
 
@@ -103,8 +102,8 @@ impl<'a> Tag<'a> {
             Value::Int(i) => format!("{i}"),
             Value::UInt(i) => format!("{i}"),
             Value::Float(f) => format!("{f}"),
-            Value::Str(s) => s.into(),
-            Value::ItemRef(s) => s.into(),
+            Value::String(s) => s.into(),
+            Value::ItemRef((v, p)) => format!("{v}:{p}"),
             Value::List(_) => return None,
             Value::Colour(_) => "     ".into(),
             Value::Dictionary(_) => return None,
@@ -209,9 +208,9 @@ impl<'a> Tag<'a> {
         };
 
         let fg = if Hsva::from(bg).v > 0.5 {
-            BLACK_TEXT
+            theme::BLACK_TEXT
         } else {
-            WHITE_TEXT
+            theme::WHITE_TEXT
         };
 
         // hanger
@@ -273,7 +272,7 @@ impl<'a> Tag<'a> {
                     KindType::Int => ("#", (0, 127, 255)),
                     KindType::UInt => ("#", (0, 127, 255)),
                     KindType::Float => ("%", (0, 255, 0)),
-                    KindType::Str => ("$", (255, 0, 0)),
+                    KindType::String => ("$", (255, 0, 0)),
                     KindType::ItemRef => ("&", (128, 0, 0)),
                     KindType::List => ("[]", (255, 127, 0)),
                     KindType::Colour => ("\u{1f308}", (127, 127, 255)),
@@ -297,7 +296,7 @@ impl<'a> Tag<'a> {
                 p.add(epaint::TextShape::new(
                     self.galley_pos(&hanger_bbox, &hanger_galley, Some(Align::Center)),
                     hanger_galley,
-                    WHITE_TEXT,
+                    theme::WHITE_TEXT,
                 ));
             }
         }

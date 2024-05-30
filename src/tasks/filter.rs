@@ -1,17 +1,19 @@
-use crate::data::kind::KindType;
-use crate::data::{
-    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour, Vault,
-};
-use crate::errors::AppError;
-use crate::fields;
-use serde::{Deserializer, Serializer};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserializer, Serializer};
 use uuid::Uuid;
+
+use crate::data::kind::KindType;
+use crate::data::{
+    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour, Vault,
+};
+use crate::errors::AppError;
+use crate::fields;
 
 pub fn new_matcher() -> nucleo_matcher::Matcher {
     nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths())
@@ -73,9 +75,9 @@ impl Clone for TextSearchQuery {
     }
 }
 
-impl From<String> for TextSearchQuery {
-    fn from(value: String) -> Self {
-        Self::new(value)
+impl<T: Into<String>> From<T> for TextSearchQuery {
+    fn from(value: T) -> Self {
+        Self::new(value.into())
     }
 }
 
@@ -151,12 +153,78 @@ pub enum FilterExpression {
     #[default]
     None,
     TextSearch(TextSearchQuery),
+    ExactTextSearch(ExactTextSearchQuery),
     FolderMatch(Box<Path>),
     TagMatch(Uuid),
     FieldMatch(Uuid, ValueMatchExpression),
     Not(Box<FilterExpression>),
     Or(Box<FilterExpression>, Box<FilterExpression>),
     And(Box<FilterExpression>, Box<FilterExpression>),
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ExactTextSearchQuery {
+    original: String,
+    lowercase: Vec<char>,
+    char_len: usize,
+}
+
+impl<T: Into<String>> From<T> for ExactTextSearchQuery {
+    fn from(value: T) -> Self {
+        Self::new(value.into())
+    }
+}
+
+impl PartialEq for ExactTextSearchQuery {
+    fn eq(&self, other: &Self) -> bool {
+        self.original == other.original
+    }
+}
+
+impl Eq for ExactTextSearchQuery {}
+
+impl serde::Serialize for ExactTextSearchQuery {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.original.serialize(serializer)
+    }
+}
+
+impl<'a> serde::Deserialize<'a> for ExactTextSearchQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'a>,
+    {
+        Ok(Self::new(String::deserialize(deserializer)?))
+    }
+}
+
+impl ExactTextSearchQuery {
+    pub fn new(query: String) -> Self {
+        let lowercase: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
+        Self {
+            char_len: lowercase.len(),
+            lowercase,
+            original: query,
+        }
+    }
+
+    pub fn matches(&self, haystack: &str) -> bool {
+        let mut scan_idx = 0;
+        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+            if scan_idx == self.char_len {
+                return true;
+            }
+
+            scan_idx = match c == self.lowercase[scan_idx] {
+                true => scan_idx + 1,
+                false => 0,
+            }
+        }
+        scan_idx == self.char_len
+    }
 }
 
 fn evaluate_match_expression_string(
@@ -223,8 +291,11 @@ fn evaluate_match_expression(
         FieldValue::Colour(v) => {
             evaluate_match_expression_typed::<SerialColour, kind::Colour>(v, expr)?
         }
-        FieldValue::Str(v) => evaluate_match_expression_string(v, expr)?,
-        FieldValue::ItemRef(v) => evaluate_match_expression_string(v, expr)?,
+        FieldValue::String(v) => evaluate_match_expression_string(v, expr)?,
+        FieldValue::ItemRef(v) => {
+            evaluate_match_expression_string(&v.0, expr)?
+                || evaluate_match_expression_string(&v.1, expr)?
+        }
         FieldValue::List(list) => list
             .iter()
             .map(|v| evaluate_match_expression(v, expr))
@@ -247,6 +318,43 @@ fn evaluate_match_expression(
     })
 }
 
+fn generic_string_match(
+    item: &Item,
+    vault: &Vault,
+    matches: impl Fn(&String) -> bool,
+) -> anyhow::Result<bool> {
+    if matches(item.path_string()) {
+        return Ok(true);
+    }
+
+    for r in item.iter_fields_with_defs(vault) {
+        let def = r.definition();
+        let v = r.value();
+        if match def.field_type {
+            KindType::Tag | KindType::Container => matches(&def.name),
+            KindType::String => matches(v.as_string()?),
+            KindType::ItemRef => {
+                let (v, p) = v.as_itemref()?;
+                matches(v) || matches(p)
+            }
+            KindType::List => v
+                .as_list()?
+                .iter()
+                .filter_map(|v| v.as_string_opt())
+                .any(&matches),
+            KindType::Dictionary => v
+                .as_dictionary()?
+                .iter()
+                .any(|(k, v)| v.as_string_opt().map(&matches).unwrap_or(matches(k))),
+            _ => false,
+        } {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 pub fn evaluate_filter(
     item: &Item,
     vault: &Vault,
@@ -255,35 +363,10 @@ pub fn evaluate_filter(
     Ok(match filter {
         FilterExpression::None => true,
         FilterExpression::TextSearch(query) => {
-            if query.matches(item.path()) {
-                return Ok(true);
-            }
-
-            let matches = |s: &String| query.matches(s.as_str());
-
-            for r in item.iter_fields_with_defs(vault) {
-                let def = r.definition();
-                let v = r.value();
-                if match def.field_type {
-                    KindType::Tag | KindType::Container => matches(&def.name),
-                    KindType::Str => matches(&String::from(kind::Str::try_from(v.clone())?)),
-                    KindType::ItemRef => {
-                        matches(&String::from(kind::ItemRef::try_from(v.clone())?))
-                    }
-                    KindType::List => kind::List::try_from(v.clone())?
-                        .iter()
-                        .filter_map(|v| v.as_string_opt())
-                        .any(matches),
-                    KindType::Dictionary => kind::Dictionary::try_from(v.clone())?
-                        .iter()
-                        .any(|(k, v)| v.as_string_opt().map(matches).unwrap_or(matches(k))),
-                    _ => false,
-                } {
-                    return Ok(true);
-                }
-            }
-
-            false
+            generic_string_match(item, vault, |s| query.matches(s))?
+        }
+        FilterExpression::ExactTextSearch(query) => {
+            generic_string_match(item, vault, |s| query.matches(s))?
         }
         FilterExpression::FolderMatch(x) => Path::new(item.path()).starts_with(x),
         FilterExpression::TagMatch(id) => item.has_tag(vault, id)?,
@@ -353,15 +436,6 @@ impl FieldMatchResult {
             FieldMatchResult::Alias { id, .. } => *id,
             FieldMatchResult::ParentName { id, .. } => *id,
             FieldMatchResult::ParentAlias { id, .. } => *id,
-        }
-    }
-
-    fn score(&self) -> u32 {
-        match self {
-            FieldMatchResult::Name { score, .. } => *score,
-            FieldMatchResult::Alias { score, .. } => *score,
-            FieldMatchResult::ParentName { score, .. } => *score,
-            FieldMatchResult::ParentAlias { score, .. } => *score,
         }
     }
 
@@ -555,4 +629,36 @@ pub fn evaluate_field_search(
     }
 
     Ok(merged_results)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_exact_text_search_query_matches() {
+        let query = ExactTextSearchQuery::from("");
+        assert!(query.matches(""));
+        assert!(query.matches("this is a test string"));
+
+        let query = ExactTextSearchQuery::from("cat dog");
+        assert!(!query.matches("dog"));
+        assert!(!query.matches("cat"));
+        assert!(query.matches("cat dog"));
+        assert!(query.matches("CAT DOG"));
+        assert!(!query.matches("cat dgogg cast dog cat do"));
+        assert!(query.matches("cat dgogg cast dog cat dog"));
+        assert!(query.matches("there once was a Cat Dog in the street"));
+        assert!(query.matches("ends with cat dog"));
+        assert!(!query.matches("dog cat"));
+
+        let query = ExactTextSearchQuery::from("crème brûlée");
+        assert!(!query.matches("creme brulee"));
+        assert!(!query.matches("creme brulee"));
+        assert!(query.matches("Crème Brûlée"));
+        assert!(query.matches("CRÈME BRÛLÉE"));
+        assert!(query.matches("👌👌👌CRÈME BRÛLÉE👌👌👌"));
+        assert!(query.matches("CRÈME BRÛLÉE👌👌👌"));
+        assert!(query.matches("👌👌👌CRÈME BRÛLÉE"));
+    }
 }

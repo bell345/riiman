@@ -89,11 +89,13 @@ field_defs! {
     #[id("59589bd3-f9b9-49c1-9969-1d3714fa68db")]
     general {
         #[id("cd1bbe33-c7b0-49a8-a3c4-901ca3ea01fd")]
-        media_type: Str,
+        media_type: String,
         #[id("2ee79ce5-9ddc-4115-8f95-e7c028cf495f")]
         last_modified: DateTime,
         #[id("26b71e5f-6397-479d-ae85-bab8a47c0ab4")]
-        sidecar_last_updated: DateTime
+        sidecar_last_updated: DateTime,
+        #[id("7bb22e14-0ae3-481a-a85b-b5b826384297")]
+        link: ItemRef
     },
     #[id("49b61dab-ce73-4ac9-ac3a-fb20f928e1e3")]
     meta {
@@ -102,20 +104,20 @@ field_defs! {
         #[id("be17c008-c9ba-4691-8e15-44bf76a28a8b")]
         aliases: List
     },
-    #[id("49b61dab-ce73-4ac9-ac3a-fb20f928e1e3")]
+    #[id("f194b5a3-d623-4a28-a91a-c6ed6affff53")]
     tweet {
         #[id("b3515371-db8e-42e5-9f78-a55dfb682be1")]
         id: UInt,
         #[id("dd8e96dd-375a-48a5-b1b7-7b5aecfdbc53")]
-        content: Str,
+        content: String,
         #[id("49d87b9c-bf8c-4560-a745-eaa64b7af965")]
         hashtags: List,
         #[id("f0c1b538-53b5-408a-bf90-c9d169f4f13d")]
         author_id: UInt,
         #[id("3daf7d4d-a889-41c7-8ad2-91e4f1cd0a1d")]
-        author_handle: Str,
+        author_handle: String,
         #[id("50297d00-681d-4351-bce1-5fa64dbea128")]
-        author_name: Str,
+        author_name: String,
         #[id("4e2153e5-df69-45f4-8e6a-acb1040eecec")]
         post_date: DateTime,
         #[id("f1e6c489-e023-4945-bba2-85467b373100")]

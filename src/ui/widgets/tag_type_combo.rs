@@ -50,7 +50,7 @@ impl<'a> Widget for TagTypeCombo<'a> {
                 option!(UInt);
                 option!(Float);
                 option!(Colour);
-                option!(Str);
+                option!(String);
                 option!(ItemRef);
                 option!(List);
                 option!(Dictionary);

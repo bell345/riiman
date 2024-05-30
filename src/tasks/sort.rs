@@ -103,7 +103,7 @@ fn cmp_by_field(
         KindType::UInt => cmp_typed!(u64, UInt),
         KindType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
         KindType::Colour => cmp_typed!(SerialColour, Colour),
-        KindType::Str | KindType::ItemRef => cmp_option_refs(
+        KindType::String | KindType::ItemRef => cmp_option_refs(
             item1.get_field_value_as_str(id),
             item2.get_field_value_as_str(id),
         ),

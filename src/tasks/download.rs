@@ -1,10 +1,8 @@
 use std::env::consts::EXE_EXTENSION;
-use std::os::windows::process::ExitStatusExt;
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumDiscriminants};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -264,9 +262,7 @@ pub async fn perform_gallery_dl_download(
     let stdout = proc.stdout.take().unwrap();
     let stderr = proc.stderr.take().unwrap();
     let stdout_tee: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-    let stdout_tee2 = stdout_tee.clone();
     let stderr_tee: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-    let stderr_tee2 = stderr_tee.clone();
 
     join_set.spawn(async move { Ok(Some(proc.wait().await?)) });
     join_set.spawn(async move {

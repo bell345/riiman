@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use dashmap::mapref::one::Ref;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use poll_promise::Promise;
 
-use crate::data::Vault;
+use crate::data::{FieldStore, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::tasks::filter::FilterExpression;
@@ -19,6 +19,7 @@ pub(crate) struct AppState {
     error_queue: Mutex<Vec<anyhow::Error>>,
     dialog_queue: Mutex<Vec<Box<dyn AppModal>>>,
     vaults: DashMap<String, Vault>,
+    unresolved_vaults: DashSet<String>,
     pub current_vault_name: Mutex<Option<String>>,
     pub vault_loading: Mutex<bool>,
 
@@ -34,6 +35,7 @@ impl Default for AppState {
             error_queue: Default::default(),
             dialog_queue: Default::default(),
             vaults: Default::default(),
+            unresolved_vaults: Default::default(),
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
             filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
@@ -45,7 +47,17 @@ impl Default for AppState {
 impl AppState {
     pub fn load_vault(&self, vault: Vault) {
         let name = vault.name.clone();
-        self.vaults.insert(vault.name.clone(), vault);
+
+        for item in vault.iter_items() {
+            if let Ok(Some((ref_name, _))) = item.get_known_field_value(fields::general::LINK) {
+                if !self.vaults.contains_key(&ref_name) && ref_name != name {
+                    self.unresolved_vaults.insert(ref_name);
+                }
+            }
+        }
+
+        self.unresolved_vaults.remove(&name);
+        self.vaults.insert(name.clone(), vault);
         self.set_current_vault_name(name)
             .expect("vault we just added should exist");
     }
@@ -73,6 +85,18 @@ impl AppState {
         *l = Some(name);
 
         Ok(())
+    }
+
+    pub fn has_unresolved_vaults(&self) -> bool {
+        !self.unresolved_vaults.is_empty()
+    }
+
+    pub fn vault_names(&self) -> Vec<String> {
+        self.vaults
+            .iter()
+            .map(|v| v.name.clone())
+            .chain(self.unresolved_vaults.iter().map(|n| n.clone()))
+            .collect()
     }
 
     pub fn vault_name_to_file_paths(&self) -> HashMap<String, String> {

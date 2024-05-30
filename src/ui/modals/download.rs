@@ -16,6 +16,7 @@ use crate::tasks::download::{
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::modals::AppModal;
+use crate::ui::theme;
 
 #[derive(Default)]
 pub struct Download {
@@ -53,18 +54,14 @@ impl Download {
             });
             row.col(|ui| {
                 if self.loading_find {
-                    ui.label(
-                        egui::RichText::new("Detecting...").color(Color32::from_rgb(80, 160, 255)),
-                    );
+                    ui.label(egui::RichText::new("Detecting...").color(theme::PROGRESS_TEXT));
                 } else if self.params.location.is_none() || self.params.version.is_none() {
-                    ui.label(
-                        egui::RichText::new("Not found").color(Color32::from_rgb(255, 80, 80)),
-                    );
+                    ui.label(egui::RichText::new("Not found").color(theme::ERROR_TEXT));
                     if ui.button("Select...").clicked() {
                         self.select_gallery_dl(state.clone());
                     }
                 } else {
-                    ui.label(egui::RichText::new("Found").color(Color32::from_rgb(80, 255, 80)));
+                    ui.label(egui::RichText::new("Found").color(theme::SUCCESS_TEXT));
                     ui.label(format!(" ({})", self.params.version.as_ref().unwrap()));
                     if ui.button("Edit...").clicked() {
                         self.select_gallery_dl(state.clone());

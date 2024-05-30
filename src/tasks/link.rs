@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 
-use crate::data::{kind, FieldStore, FieldValue};
+use crate::data::{FieldStore, FieldValue};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
@@ -63,10 +63,7 @@ async fn link_single_sidecar(
 
     if let Some(hashtags) = dom.get("hashtags").and_then(|c| c.as_array()).map(|a| {
         a.iter()
-            .filter_map(|ht| {
-                ht.as_str()
-                    .map(|s| FieldValue::from(kind::Str::from(s.to_string())))
-            })
+            .filter_map(|ht| ht.as_str().map(|s| FieldValue::string(s.to_string())))
             .collect_vec()
     }) {
         item.set_known_field_value(fields::tweet::HASHTAGS, hashtags);
@@ -135,11 +132,11 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     let mut path_to_last_modified_map: HashMap<PathBuf, DateTime<Utc>> = HashMap::from_iter(
         entries
             .iter()
-            .map(|(path, last_modified)| (path.to_path_buf(), last_modified.clone())),
+            .map(|(path, last_modified)| (path.to_path_buf(), *last_modified)),
     );
     let entries_with_sidecars = entries
         .into_iter()
-        .filter_map(|(path, date)| {
+        .filter_map(|(path, _date)| {
             if path.extension() == Some(json_ext) {
                 return None;
             }

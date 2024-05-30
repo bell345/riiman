@@ -2,7 +2,7 @@ use eframe::egui;
 use eframe::egui::{Color32, Widget};
 use uuid::Uuid;
 
-use crate::data::{kind, FieldDefinition, FieldStore, FieldType, FieldValue};
+use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue};
 use crate::state::AppStateRef;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
@@ -345,11 +345,11 @@ impl EditTagDialog {
                     let mut new_aliases = vec![];
                     for alias in aliases {
                         if Some(&alias) == removed_alias.as_ref() {
-                            new_aliases.push(FieldValue::from(kind::Str::from(alias)));
+                            new_aliases.push(FieldValue::string(alias));
                         }
                     }
                     if let Some(alias) = added_alias {
-                        new_aliases.push(FieldValue::from(kind::Str::from(alias)));
+                        new_aliases.push(FieldValue::string(alias));
                     }
 
                     def.set_known_field_value(fields::meta::ALIASES, new_aliases);

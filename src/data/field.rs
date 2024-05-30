@@ -154,6 +154,28 @@ macro_rules! impl_kind {
                 &self.0
             }
         }
+
+        paste::paste! {
+            impl Value {
+                pub fn [<$name:lower>](x: $type) -> Self {
+                    Self::from($name (x))
+                }
+
+                pub fn [<as_ $name:lower _opt>] (&self) -> Option<& $type > {
+                    match self {
+                        Self::$name (x) => Some(x),
+                        _ => None
+                    }
+                }
+
+                pub fn [<as_ $name:lower>] (&self) -> Result<& $type , AppError> {
+                    self.[<as_ $name:lower _opt>]().ok_or_else(|| AppError::WrongFieldType {
+                        expected: $name ::get_type(),
+                        got: self.clone()
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -161,6 +183,7 @@ macro_rules! define_kinds {
     {
         $(
             $( #[display( $display:literal )] )?
+            $( #[alias ( $alias:literal )] )?
             $name:ident $( ( $type:ty ) )?
         ),*
     } => {
@@ -179,6 +202,7 @@ macro_rules! define_kinds {
         pub enum KindType {
             $(
                 $( #[display(fmt = $display )] )?
+                $( #[serde(alias = $alias )] )?
                 $name ,
             )*
         }
@@ -195,7 +219,10 @@ macro_rules! define_kinds {
 
         #[derive(std::fmt::Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
         pub enum Value {
-            $( $name $( ( $type ) )? , )*
+            $(
+                $( #[serde(alias = $alias )] )?
+                $name $( ( $type ) )? ,
+            )*
         }
 
         impl Value {
@@ -284,7 +311,9 @@ impl From<[u8; 3]> for SerialColour {
 pub mod kind {
     use super::SerialColour;
     use crate::errors::AppError;
+    use itertools::Itertools;
     use std::any::TypeId;
+    use std::str::FromStr;
 
     pub trait TagKind:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
@@ -311,19 +340,31 @@ pub mod kind {
         Float(ordered_float::OrderedFloat<f64>),
 
         #[display("String")]
-        Str(String),
+        #[alias("Str")]
+        String(std::string::String),
 
         #[display("Item Reference")]
-        ItemRef(String),
+        ItemRef((std::string::String, std::string::String)),
 
         List(Vec<Value>),
 
         Colour(SerialColour),
 
-        Dictionary(Vec<(String, Value)>),
+        Dictionary(Vec<(std::string::String, Value)>),
 
         #[display("Date and Time")]
         DateTime(chrono::DateTime<chrono::Utc>)
+    }
+
+    impl FromStr for ItemRef {
+        type Err = ();
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s.splitn(2, ':').collect_tuple() {
+                Some((vault, path)) => Ok(Self((vault.to_string(), path.to_string()))),
+                None => Err(()),
+            }
+        }
     }
 
     impl Value {
@@ -333,16 +374,9 @@ pub mod kind {
 
         pub fn as_str(&self) -> Result<&str, AppError> {
             self.as_str_opt().ok_or_else(|| AppError::WrongFieldType {
-                expected: KindType::Str,
+                expected: KindType::String,
                 got: self.clone(),
             })
-        }
-
-        pub fn as_string_opt(&self) -> Option<&String> {
-            match self {
-                Value::Str(x) | Value::ItemRef(x) => Some(x),
-                _ => None,
-            }
         }
     }
 

@@ -26,3 +26,9 @@ pub fn get_accent_color() -> Color32 {
         }
     })
 }
+
+pub const ERROR_TEXT: Color32 = Color32::from_rgb(255, 80, 80);
+pub const SUCCESS_TEXT: Color32 = Color32::from_rgb(80, 255, 80);
+pub const PROGRESS_TEXT: Color32 = Color32::from_rgb(80, 160, 255);
+pub const WHITE_TEXT: Color32 = Color32::from_rgb(240, 240, 240);
+pub const BLACK_TEXT: Color32 = Color32::from_rgb(20, 20, 20);
