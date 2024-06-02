@@ -131,3 +131,13 @@ pub async fn save_current_vault(
     let vault = r.current_vault()?;
     save_vault(&vault, progress).await
 }
+
+pub async fn save_vault_by_name(
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+    name: String,
+) -> AsyncTaskReturn {
+    let r = state.read().await;
+    let vault = r.get_vault(&name)?;
+    save_vault(&vault, progress).await
+}

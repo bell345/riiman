@@ -13,7 +13,7 @@ use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::filter::FilterExpression;
-use crate::tasks::AsyncTaskResult::{ImportComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
+use crate::tasks::AsyncTaskResult::{ImportComplete, LinkComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
@@ -36,7 +36,7 @@ mod widgets;
 
 pub use crate::ui::modals::AppModal;
 pub use crate::ui::modals::MessageDialog;
-use crate::ui::modals::{EditTagDialog, NewVaultDialog};
+use crate::ui::modals::{EditTagDialog, LinkVault, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 static EXACT_TEXT_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -199,6 +199,17 @@ impl App {
                     self.thumbnail_grid.params.container_width = 0.0;
                     self.success("Import complete".to_string(), body);
                 }
+                Ok(LinkComplete { other_vault_name, results }) => {
+                    self.state().save_current_vault();
+                    self.state().save_vault_by_name(other_vault_name.clone());
+                    
+                    let total = results.len();
+                    let success = results.iter().filter(|r| r.is_ok()).count();
+                    let body = format!(
+                        "Link to vault {other_vault_name} complete. {success}/{total} images linked successfully.",
+                    );
+                    self.success("Link complete".to_string(), body);
+                }
                 Ok(ThumbnailLoaded { params, image }) => {
                     let hndl =
                         ctx.load_texture(params.tex_name(), image, egui::TextureOptions::default());
@@ -330,7 +341,10 @@ impl App {
 
     fn link_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Link", |ui| {
-            if ui.button("Other Vault...").clicked() {}
+            if ui.button("Other Vault...").clicked() {
+                self.add_modal_dialog(LinkVault::default());
+                ui.close_menu();
+            }
             if ui.button("Sidecars...").clicked() {
                 self.add_task("Link sidecars".into(), |state, p| {
                     Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
@@ -569,13 +583,14 @@ impl eframe::App for App {
 
                     let mut update =
                         || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
-                            let is_new_item_list =
+                            let (is_new_item_list, vault_is_new) =
                                 self.item_list_cache.update(self.state.clone())?;
                             self.thumbnail_grid.update(
                                 ui,
                                 self.state.clone(),
                                 &self.item_list_cache,
                                 is_new_item_list,
+                                vault_is_new,
                             )
                         };
 

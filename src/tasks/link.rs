@@ -1,18 +1,24 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
+use tracing::info;
 
-use crate::data::{FieldStore, FieldValue};
+use crate::data::{FieldStore, FieldValue, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::tasks::import::{on_import_result_send_progress, process_many, scan_recursively};
 use crate::tasks::vault::save_vault;
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, SingleImportResult};
+use crate::tasks::{
+    AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
+};
+
+const CONCURRENT_TASKS_LIMIT: usize = 16;
 
 async fn link_single_sidecar(
     state: AppStateRef,
@@ -25,7 +31,7 @@ async fn link_single_sidecar(
         .read()
         .await
         .current_vault()?
-        .get_item(&path)?
+        .get_item_opt(&path)?
         .ok_or(anyhow!(AppError::MissingItem {
             path: path.to_string_lossy().into()
         }))?
@@ -104,7 +110,13 @@ async fn link_single_sidecar(
     {
         let r = state.read().await;
         let vault = r.current_vault()?;
+        let link_ref = item.link_ref()?;
+
         vault.update_item(&path, item)?;
+        if let Some((other_vault_name, _)) = link_ref {
+            let other_vault = r.get_vault(&other_vault_name)?;
+            vault.update_link(&path, &other_vault)?;
+        }
     }
 
     Ok(path.into_boxed_path())
@@ -156,8 +168,6 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
         })
         .collect_vec();
 
-    const CONCURRENT_TASKS_LIMIT: usize = 16;
-
     process_many(
         entries_with_sidecars,
         progress.sub_task("Import", 0.90),
@@ -176,14 +186,61 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     Ok(AsyncTaskResult::None)
 }
 
-pub async fn link_vaults(
+async fn link_single_item(
+    state: AppStateRef,
+    other_vault_name: Arc<String>,
+    path: PathBuf,
+) -> SingleImportResult {
+    let r = state.read().await;
+    let vault = r.current_vault()?;
+    let other_vault = r.get_vault(&other_vault_name)?;
+
+    {
+        let item = vault.get_item(&path)?;
+        let other_item = other_vault.get_item(&path)?;
+        item.set_known_field_value(
+            fields::general::LINK,
+            (
+                other_vault_name.to_string(),
+                other_item.path_string().clone(),
+            ),
+        );
+        other_item.set_known_field_value(
+            fields::general::LINK,
+            (vault.name.to_string(), path.to_string_lossy().into()),
+        );
+    }
+    vault.update_link(&path, &other_vault)?;
+
+    Ok(path.into_boxed_path())
+}
+
+pub async fn link_vaults_by_path(
     other_vault_name: String,
     state: AppStateRef,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    let r = state.read().await;
-    let curr_vault = r.current_vault()?;
-    let other_vault = r.get_vault(&other_vault_name)?;
+    let other_name_arc = Arc::new(other_vault_name.clone());
 
-    Ok(AsyncTaskResult::None)
+    let paths: Vec<PathBuf> = state
+        .read()
+        .await
+        .current_vault()?
+        .iter_items()
+        .map(|i| i.path_string().into())
+        .collect();
+
+    let results = process_many(
+        paths,
+        progress,
+        |path| link_single_item(state.clone(), other_name_arc.clone(), path),
+        on_import_result_send_progress,
+        4,
+    )
+    .await?;
+
+    Ok(AsyncTaskResult::LinkComplete {
+        other_vault_name,
+        results,
+    })
 }

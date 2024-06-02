@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::{HashSet, VecDeque};
 use std::ops::Deref;
@@ -10,10 +10,13 @@ use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use uuid::Uuid;
 
-use crate::data::{FieldStore, FieldValue};
+use crate::data::{kind, FieldStore, FieldValue};
 use crate::errors::{AppError, HierarchyError};
+use crate::fields;
+use crate::state::AppStateRef;
 
 use super::field::FieldDefinition;
 use super::item::Item;
@@ -60,7 +63,7 @@ impl Vault {
     }
 
     pub fn with_standard_defs(self) -> Self {
-        for def in crate::fields::defs() {
+        for def in fields::defs() {
             self.set_definition((*def).clone());
         }
         self
@@ -89,6 +92,10 @@ impl Vault {
 
     pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
         self.definitions.get(def_id)
+    }
+
+    pub fn has_definition(&self, def_id: &Uuid) -> bool {
+        self.get_definition(def_id).is_some()
     }
 
     pub fn set_definition(&self, definition: FieldDefinition) {
@@ -163,9 +170,16 @@ impl Vault {
             .to_string())
     }
 
-    pub fn get_item(&self, path: &Path) -> anyhow::Result<Option<Ref<String, Item>>> {
+    pub fn get_item_opt(&self, path: &Path) -> anyhow::Result<Option<Ref<String, Item>>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self.items.get(rel_path))
+    }
+
+    pub fn get_item(&self, path: &Path) -> anyhow::Result<Ref<String, Item>> {
+        self.get_item_opt(path)?
+            .ok_or(anyhow!(AppError::MissingItem {
+                path: path.to_string_lossy().into_owned()
+            }))
     }
 
     pub fn get_cloned_item_or_default(&self, path: &Path) -> anyhow::Result<Item> {
@@ -191,6 +205,53 @@ impl Vault {
         self.set_last_updated();
 
         Ok(())
+    }
+
+    pub fn update_link(
+        &self,
+        path: &Path,
+        other_vault: &Vault,
+    ) -> anyhow::Result<Option<kind::ItemRef>> {
+        let item = self.get_item(path)?;
+
+        let Some(link_val) = item.get_field_value(&fields::general::LINK.id) else {
+            return Ok(None);
+        };
+
+        let (other_vault_name, other_path) = link_val.as_itemref()?.clone();
+        drop(link_val);
+
+        let other_item = other_vault.get_item(Path::new(&other_path))?;
+
+        for field in item.iter_fields_with_defs(self) {
+            if field.definition().has_field(&fields::meta::NO_LINK.id) {
+                continue;
+            }
+
+            other_vault.set_definition(field.definition().clone());
+            other_item.set_field_value(field.definition().id, field.value().clone());
+        }
+
+        let mut fields_to_remove = vec![];
+        for field in other_item.iter_fields_with_defs(other_vault) {
+            let id = field.definition().id;
+            if field.definition().has_field(&fields::meta::NO_LINK.id) {
+                continue;
+            }
+
+            if !item.has_field(&id) {
+                fields_to_remove.push(id);
+            }
+        }
+
+        for id in fields_to_remove {
+            other_item.remove_field(&id);
+        }
+
+        Ok(Some(kind::ItemRef((
+            other_vault_name.clone(),
+            other_path.clone(),
+        ))))
     }
 
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
@@ -297,7 +358,7 @@ impl Vault {
                     children.insert(*id);
                 }
                 HierarchyWalkPosition::FromChild { id, .. } => {
-                    if children.contains(&id) {
+                    if children.contains(id) {
                         return Err(HierarchyError::FieldTreeLoop { field_id: *id });
                     }
                     parents.insert(*id);

@@ -152,6 +152,7 @@ impl ThumbnailGrid {
         state: AppStateRef,
         item_cache: &ItemCache,
         item_cache_is_new: bool,
+        vault_is_new: bool,
     ) -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
         let state = state.blocking_read();
         let current_vault = state.current_vault()?;
@@ -180,6 +181,11 @@ impl ThumbnailGrid {
             for path in to_remove {
                 self.checked_items.remove(&path);
             }
+        }
+
+        if vault_is_new {
+            self.cache.clear();
+            self.lq_cache.clear();
         }
 
         Ok(Some(

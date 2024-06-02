@@ -233,8 +233,10 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
             if ui.button("OK").clicked() {
                 item.clear();
                 item.update(&self.state.field_store);
+                if item.blocking_update_link(self.app_state.clone()).is_err() {
+                    return;
+                }
                 self.state.is_editing = false;
-                self.app_state.blocking_read().save_current_vault();
             }
         });
     }
@@ -253,9 +255,10 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
             let mut create_state = self.state.quick_create_state.clone();
             if let Some((k, v)) = self.create_ui(ui, &mut create_state, 200.0, &existing_ids) {
                 item.set_field_value(k, v);
+                if item.blocking_update_link(self.app_state.clone()).is_err() {
+                    return;
+                }
                 self.state.is_adding = false;
-
-                self.app_state.blocking_read().save_current_vault();
             }
             if create_state.cancelled {
                 self.state.is_adding = false;

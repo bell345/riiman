@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub trait FieldStore {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
 
-    fn set_known_field<T: FieldKind>(&mut self, field: KnownField<T>, value: T) {
+    fn set_known_field<T: FieldKind>(&self, field: KnownField<T>, value: T) {
         *self
             .fields()
             .entry(field.id)
@@ -54,7 +54,7 @@ pub trait FieldStore {
     }
 
     fn get_or_insert_known_field_value<V, T: FieldValueKind<V>>(
-        &mut self,
+        &self,
         field: KnownField<T>,
         default_value: V,
     ) -> anyhow::Result<V>
@@ -70,7 +70,7 @@ pub trait FieldStore {
             .with_context(|| format!("while retrieving field {}", field.name))
     }
 
-    fn set_known_field_value<V, T: FieldValueKind<V>>(&mut self, field: KnownField<T>, value: V) {
+    fn set_known_field_value<V, T: FieldValueKind<V>>(&self, field: KnownField<T>, value: V) {
         *self
             .fields()
             .entry(field.id)

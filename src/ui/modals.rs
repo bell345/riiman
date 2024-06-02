@@ -11,6 +11,7 @@ mod new_vault;
 pub use delete_def::DeleteDefinition;
 pub use download::Download;
 pub use edit_tag::EditTagDialog;
+pub use link_vault::LinkVault;
 pub use manage_vaults::ManageVaults;
 pub use message::MessageDialog;
 pub use new_vault::NewVaultDialog;

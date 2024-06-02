@@ -71,6 +71,11 @@ impl ThumbnailCache {
 
         requests
     }
+
+    pub fn clear(&mut self) {
+        self.cache.invalidate_all();
+        self.next_load_utc = None;
+    }
 }
 
 impl Default for ThumbnailCache {

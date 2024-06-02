@@ -41,6 +41,11 @@ impl FieldDefinition {
         self
     }
 
+    pub fn with_tag_id(self, tag_id: Uuid) -> Self {
+        self.fields.insert(tag_id, FieldValue::Tag);
+        self
+    }
+
     pub fn iter_parent_ids(&self) -> impl Iterator<Item = impl Deref<Target = Uuid> + '_> {
         self.parents.iter()
     }
@@ -105,7 +110,7 @@ macro_rules! impl_kind {
     };
     { $name:ident , $type:ty } => {
         #[derive(Default, std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
-        pub struct $name ( $type );
+        pub struct $name ( pub $type );
 
         impl TagKind for $name {
             fn get_type() -> KindType {

@@ -22,7 +22,7 @@ pub struct ItemCache {
 }
 
 impl ItemCache {
-    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<bool> {
+    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<(bool, bool)> {
         let state = state.blocking_read();
         let current_vault = state.current_vault()?;
 
@@ -35,20 +35,21 @@ impl ItemCache {
 
         let new_item_list = self.params != params;
         if !new_item_list {
-            return Ok(false);
+            return Ok((false, false));
         }
+        let vault_is_new = self.params.vault_name == params.vault_name;
 
         let items = get_filtered_and_sorted_items(&current_vault, &state.filter, &state.sorts)?;
         self.params = params;
         self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
 
-        Ok(true)
+        Ok((true, vault_is_new))
     }
 
     pub fn resolve_all_refs<'a, 'b: 'a>(&'a self, vault: &'b Vault) -> Vec<Ref<String, Item>> {
         self.item_paths
             .iter()
-            .filter_map(|p| vault.get_item(Path::new(p)).expect("valid path"))
+            .filter_map(|p| vault.get_item_opt(Path::new(p)).expect("valid path"))
             .collect()
     }
 
@@ -61,7 +62,7 @@ impl ItemCache {
         paths
             .into_iter()
             .filter(|p| existing_items.contains(*p))
-            .filter_map(|p| vault.get_item(Path::new(p)).ok().flatten())
+            .filter_map(|p| vault.get_item_opt(Path::new(p)).ok().flatten())
             .collect()
     }
 

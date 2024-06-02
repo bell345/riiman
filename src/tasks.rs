@@ -35,6 +35,10 @@ pub enum AsyncTaskResult {
         path: Box<Path>,
         results: Vec<SingleImportResult>,
     },
+    LinkComplete {
+        other_vault_name: String,
+        results: Vec<SingleImportResult>,
+    },
     ThumbnailLoaded {
         params: ThumbnailParams,
         image: ColorImage,

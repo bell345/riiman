@@ -26,15 +26,16 @@ impl LinkVault {
 }
 
 impl AppModal for LinkVault {
-    fn id(&self) -> eframe::egui::Id {
+    fn id(&self) -> egui::Id {
         "link_vault_modal".into()
     }
 
-    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &egui::Context, state: AppStateRef) -> &mut dyn AppModal {
         let request_name = "link_vault_modal_load_request".to_string();
         let modal = Modal::new(ctx, self.id().value());
 
         let r = state.blocking_read();
+        let curr_name = r.current_vault_name().expect("vault to be loaded");
         let vault_names = r.valid_vault_names();
         match r.try_take_request_result(&request_name) {
             None => {}
@@ -53,35 +54,51 @@ impl AppModal for LinkVault {
         modal.show(|ui| {
             modal.title(ui, "Link vault");
             modal.frame(ui, |ui| {
-                ui.label("Choose loaded vault:");
-                egui::ComboBox::new(self.id().with("choose_box"), "")
-                    .selected_text(&self.selected_vault_name)
-                    .show_ui(ui, |ui| {
-                        let v = &mut self.selected_vault_name;
-                        ui.selectable_value(v, String::from(""), "--");
-                        for vault_name in vault_names {
-                            ui.selectable_value(v, vault_name.clone(), vault_name);
-                        }
-                    });
-                ui.label("-- or --");
-                if ui.button("Load a vault...").clicked() {
-                    state
-                        .blocking_read()
-                        .add_task_request(request_name, |s, p| {
-                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
-                                s, p, true,
-                            ))
+                ui.vertical(|ui| {
+                    ui.label("Choose loaded vault:");
+                    egui::ComboBox::new(self.id().with("choose_box"), "")
+                        .selected_text(&self.selected_vault_name)
+                        .show_ui(ui, |ui| {
+                            let v = &mut self.selected_vault_name;
+                            ui.selectable_value(v, String::from(""), "--");
+                            for vault_name in vault_names {
+                                if vault_name != curr_name {
+                                    ui.selectable_value(v, vault_name.clone(), vault_name);
+                                }
+                            }
                         });
-                }
+                    ui.label("-- or --");
+                    if ui.button("Load a vault...").clicked() {
+                        state
+                            .blocking_read()
+                            .add_task_request(request_name, |s, p| {
+                                Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
+                                    s, p, true,
+                                ))
+                            });
+                    }
 
-                if let Some(msg) = &self.error_message {
-                    ui.colored_label(Color32::RED, msg);
-                }
+                    if let Some(msg) = &self.error_message {
+                        ui.colored_label(Color32::RED, msg);
+                    }
+                });
             });
             modal.buttons(ui, |ui| {
                 if modal.suggested_button(ui, "Link").clicked() {
                     match self.verify() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            let other_vault_name = self.selected_vault_name.clone();
+                            state.blocking_read().add_task(
+                                format!("Link with {}", other_vault_name),
+                                |s, p| {
+                                    Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
+                                        other_vault_name,
+                                        s,
+                                        p,
+                                    ))
+                                },
+                            );
+                        }
                         Err(e) => {
                             self.error_message = Some(e);
                             modal.open();

@@ -221,6 +221,12 @@ impl AppState {
             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
         });
     }
+
+    pub fn save_vault_by_name(&self, name: String) {
+        self.add_task(format!("Save {name} vault"), |state, p| {
+            Promise::spawn_async(crate::tasks::vault::save_vault_by_name(state, p, name))
+        });
+    }
 }
 
 pub type AppStateRef = Arc<tokio::sync::RwLock<AppState>>;
