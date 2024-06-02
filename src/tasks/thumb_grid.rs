@@ -37,7 +37,7 @@ pub struct ThumbnailGridInfo {
     pub thumbnails: Vec<ThumbnailPosition>,
 }
 
-pub fn compute_thumbnails_grid(
+pub fn compute(
     params: ThumbnailGridParams,
     items: &[impl Deref<Target = Item>],
 ) -> anyhow::Result<ThumbnailGridInfo> {

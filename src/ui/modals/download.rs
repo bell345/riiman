@@ -175,9 +175,9 @@ impl Download {
         }
 
         match &mut self.params.login {
-            GalleryDLLogin::None => {}
-            GalleryDLLogin::FirefoxCookies => {}
-            GalleryDLLogin::ChromeCookies => {}
+            GalleryDLLogin::None
+            | GalleryDLLogin::FirefoxCookies
+            | GalleryDLLogin::ChromeCookies => {}
             GalleryDLLogin::UsernamePassword { username, password } => {
                 body.row(ROW_HEIGHT, |mut row| {
                     row.col(|ui| {

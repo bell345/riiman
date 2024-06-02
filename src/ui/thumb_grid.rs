@@ -1,7 +1,7 @@
 use crate::shortcut;
 use crate::state::AppStateRef;
-use crate::tasks::compute::{compute_thumbnails_grid, ThumbnailPosition};
 use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
+use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
 use crate::tasks::{ThumbnailGridInfo, ThumbnailGridParams};
 use crate::ui::item_cache::ItemCache;
 use crate::ui::theme::get_accent_color;
@@ -166,7 +166,7 @@ impl ThumbnailGrid {
 
             let items = item_cache.resolve_all_refs(&current_vault);
 
-            self.info = compute_thumbnails_grid(params, &items)?;
+            self.info = compute(params, &items)?;
         }
 
         if item_cache_is_new {

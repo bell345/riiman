@@ -68,3 +68,6 @@ windows = { version = "0.56.0", features = ["UI_ViewManagement"] }
 
 [build-dependencies]
 built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }
+
+[lints.clippy]
+redundant_closure_for_method_calls = "allow"

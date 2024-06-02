@@ -175,3 +175,15 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
 
     Ok(AsyncTaskResult::None)
 }
+
+pub async fn link_vaults(
+    other_vault_name: String,
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let r = state.read().await;
+    let curr_vault = r.current_vault()?;
+    let other_vault = r.get_vault(&other_vault_name)?;
+
+    Ok(AsyncTaskResult::None)
+}

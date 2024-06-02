@@ -62,6 +62,12 @@ impl AppState {
             .expect("vault we just added should exist");
     }
 
+    pub fn get_vault(&self, name: &String) -> Result<Ref<'_, String, Vault>, AppError> {
+        self.vaults
+            .get(name)
+            .ok_or(AppError::VaultDoesNotExist { name: name.clone() })
+    }
+
     pub fn current_vault_name(&self) -> Option<String> {
         self.current_vault_name.lock().unwrap().clone()
     }
@@ -91,7 +97,11 @@ impl AppState {
         !self.unresolved_vaults.is_empty()
     }
 
-    pub fn vault_names(&self) -> Vec<String> {
+    pub fn valid_vault_names(&self) -> Vec<String> {
+        self.vaults.iter().map(|v| v.name.clone()).collect()
+    }
+
+    pub fn known_vault_names(&self) -> Vec<String> {
         self.vaults
             .iter()
             .map(|v| v.name.clone())

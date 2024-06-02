@@ -86,7 +86,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
                 state.cancelled = true;
             }
 
-            let res = ui.add(
+            let result = ui.add(
                 widgets::FindTag::new(self.id.with("new_tag"), &mut state.tag_id, self.vault)
                     .desired_width(desired_width)
                     .show_tag(true)
@@ -96,7 +96,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
             );
 
             if state.focused {
-                res.request_focus();
+                result.request_focus();
                 state.focused = false;
             }
 
@@ -145,146 +145,148 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
         ret
     }
 
+    pub fn edit_ui(&mut self, ui: &mut Ui, item: &Item) {
+        let mut fields: Vec<_> = self
+            .state
+            .field_store
+            .iter_fields_with_defs(self.vault)
+            .collect();
+        fields.sort_by_key(|r| r.definition().name.clone());
+
+        let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
+
+        let mut result = ListEditResult::None;
+        let widest_tag_width = Mutex::new(self.state.widest_tag_width);
+        while self.state.row_heights.len() < fields.len() {
+            self.state.row_heights.push(22.0);
+        }
+        let existing_row_heights = self.state.row_heights.clone();
+        let new_row_heights = DashMap::new();
+        let app_state = self.app_state.clone();
+        ui.add(
+            widgets::ListEdit::new(self.id.with("list_edit"), &fields, &mut result)
+                .row_height_list(&existing_row_heights, 22.0)
+                .item_ui(|ui, item| {
+                    let mut res = None;
+                    ui.horizontal(|ui| {
+                        let tag_res = ui.add(widgets::Tag::new(item.definition()));
+                        if tag_res.clicked() {
+                            let r = app_state.blocking_read();
+                            r.add_dialog(EditTagDialog::edit(item.definition()));
+                        }
+
+                        let tag_space = tag_res.rect.width();
+                        let mut l = widest_tag_width.lock().unwrap();
+                        if tag_space < *l {
+                            ui.add_space(*l - tag_space);
+                        } else {
+                            *l = tag_space;
+                        }
+
+                        let mut value = Some(item.value().clone());
+                        let value_res = ui.add(widgets::TagValueEdit::new(
+                            ui.id().with("value_edit"),
+                            item.definition().field_type,
+                            &mut value,
+                        ));
+                        new_row_heights.insert(item.definition().id, value_res.rect.height());
+                        if let Some(v) = value {
+                            if v.get_type() == item.definition().field_type && &v != item.value() {
+                                res = Some(v);
+                            }
+                        }
+                    });
+                    res
+                })
+                .create_label("Add tag".into())
+                .create_ui(|ui, state: &mut CreateState| {
+                    let res =
+                        self.create_ui(ui, state, *widest_tag_width.lock().unwrap(), &existing_ids);
+                    state.focused = false;
+                    res
+                }),
+        );
+        drop(fields);
+
+        self.state.row_heights = existing_ids
+            .iter()
+            .map(|id| new_row_heights.get(id).map(|v| *v).unwrap_or(22.0) + 6.0)
+            .collect();
+        self.state.widest_tag_width = widest_tag_width.into_inner().unwrap();
+
+        match result {
+            ListEditResult::None => {}
+            ListEditResult::Add((id, v)) => self.state.field_store.set_field_value(id, v),
+            ListEditResult::Remove(i) => {
+                self.state.field_store.remove_field(&existing_ids[i]);
+            }
+            ListEditResult::Edit(i, v) => {
+                self.state.field_store.set_field_value(existing_ids[i], v)
+            }
+        };
+
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                self.state.is_editing = false;
+            }
+
+            if ui.button("OK").clicked() {
+                item.clear();
+                item.update(&self.state.field_store);
+                self.state.is_editing = false;
+                self.app_state.blocking_read().save_current_vault();
+            }
+        });
+    }
+
+    pub fn view_ui(&mut self, ui: &mut Ui, item: &Item) {
+        let mut fields: Vec<_> = item.iter_fields_with_defs(self.vault).collect();
+        fields.sort_by_key(|r| r.definition().name.clone());
+
+        let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
+
+        for def in fields {
+            ui.add(widgets::Tag::new(def.definition()).value(def.value()));
+        }
+
+        if self.state.is_adding {
+            let mut create_state = self.state.quick_create_state.clone();
+            if let Some((k, v)) = self.create_ui(ui, &mut create_state, 200.0, &existing_ids) {
+                item.set_field_value(k, v);
+                self.state.is_adding = false;
+
+                self.app_state.blocking_read().save_current_vault();
+            }
+            if create_state.cancelled {
+                self.state.is_adding = false;
+            }
+            self.state.quick_create_state = create_state;
+        }
+
+        let is_viewing = !self.state.is_editing && !self.state.is_adding;
+
+        if ui.button("Edit tags").clicked() || (is_viewing && shortcut!(ui, E)) {
+            self.state.is_editing = true;
+            self.state.widest_tag_width = 100.0;
+            self.state.field_store.clear();
+            self.state.field_store.update(item);
+        }
+
+        if !self.state.is_adding && ui.button("Add tag").clicked()
+            || (is_viewing && shortcut!(ui, A))
+        {
+            self.state.is_adding = true;
+            self.state.quick_create_state = Default::default();
+        }
+    }
+
     pub fn single_ui(&mut self, ui: &mut Ui, item: &Item) {
         ui.label(egui::RichText::new(item.path()).text_style(egui::TextStyle::Heading));
 
         if self.state.is_editing {
-            let mut fields: Vec<_> = self
-                .state
-                .field_store
-                .iter_fields_with_defs(self.vault)
-                .collect();
-            fields.sort_by_key(|r| r.definition().name.clone());
-
-            let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
-
-            let mut result = ListEditResult::None;
-            let widest_tag_width = Mutex::new(self.state.widest_tag_width);
-            while self.state.row_heights.len() < fields.len() {
-                self.state.row_heights.push(22.0);
-            }
-            let existing_row_heights = self.state.row_heights.clone();
-            let new_row_heights = DashMap::new();
-            let app_state = self.app_state.clone();
-            ui.add(
-                widgets::ListEdit::new(self.id.with("list_edit"), &fields, &mut result)
-                    .row_height_list(&existing_row_heights, 22.0)
-                    .item_ui(|ui, item| {
-                        let mut res = None;
-                        ui.horizontal(|ui| {
-                            let tag_res = ui.add(widgets::Tag::new(item.definition()));
-                            if tag_res.clicked() {
-                                let r = app_state.blocking_read();
-                                r.add_dialog(EditTagDialog::edit(item.definition()));
-                            }
-
-                            let tag_space = tag_res.rect.width();
-                            let mut l = widest_tag_width.lock().unwrap();
-                            if tag_space < *l {
-                                ui.add_space(*l - tag_space);
-                            } else {
-                                *l = tag_space;
-                            }
-
-                            let mut value = Some(item.value().clone());
-                            let value_res = ui.add(widgets::TagValueEdit::new(
-                                ui.id().with("value_edit"),
-                                item.definition().field_type,
-                                &mut value,
-                            ));
-                            new_row_heights.insert(item.definition().id, value_res.rect.height());
-                            if let Some(v) = value {
-                                if v.get_type() == item.definition().field_type
-                                    && &v != item.value()
-                                {
-                                    res = Some(v);
-                                }
-                            }
-                        });
-                        res
-                    })
-                    .create_label("Add tag".into())
-                    .create_ui(|ui, state: &mut CreateState| {
-                        let res = self.create_ui(
-                            ui,
-                            state,
-                            *widest_tag_width.lock().unwrap(),
-                            &existing_ids,
-                        );
-                        state.focused = false;
-                        res
-                    }),
-            );
-            drop(fields);
-
-            self.state.row_heights = existing_ids
-                .iter()
-                .map(|id| new_row_heights.get(id).map(|v| *v).unwrap_or(22.0) + 6.0)
-                .collect();
-            self.state.widest_tag_width = widest_tag_width.into_inner().unwrap();
-
-            match result {
-                ListEditResult::None => {}
-                ListEditResult::Add((id, v)) => self.state.field_store.set_field_value(id, v),
-                ListEditResult::Remove(i) => {
-                    self.state.field_store.remove_field(&existing_ids[i]);
-                }
-                ListEditResult::Edit(i, v) => {
-                    self.state.field_store.set_field_value(existing_ids[i], v)
-                }
-            };
-
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    self.state.is_editing = false;
-                }
-
-                if ui.button("OK").clicked() {
-                    item.clear();
-                    item.update(&self.state.field_store);
-                    self.state.is_editing = false;
-                    self.app_state.blocking_read().save_current_vault();
-                }
-            });
+            self.edit_ui(ui, item);
         } else {
-            let mut fields: Vec<_> = item.iter_fields_with_defs(self.vault).collect();
-            fields.sort_by_key(|r| r.definition().name.clone());
-
-            let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
-
-            for def in fields {
-                ui.add(widgets::Tag::new(def.definition()).value(def.value()));
-            }
-
-            if self.state.is_adding {
-                let mut create_state = self.state.quick_create_state.clone();
-                if let Some((k, v)) = self.create_ui(ui, &mut create_state, 200.0, &existing_ids) {
-                    item.set_field_value(k, v);
-                    self.state.is_adding = false;
-
-                    self.app_state.blocking_read().save_current_vault();
-                }
-                if create_state.cancelled {
-                    self.state.is_adding = false;
-                }
-                self.state.quick_create_state = create_state;
-            }
-
-            let is_viewing = !self.state.is_editing && !self.state.is_adding;
-
-            if ui.button("Edit tags").clicked() || (is_viewing && shortcut!(ui, E)) {
-                self.state.is_editing = true;
-                self.state.widest_tag_width = 100.0;
-                self.state.field_store.clear();
-                self.state.field_store.update(item);
-            }
-
-            if !self.state.is_adding && ui.button("Add tag").clicked()
-                || (is_viewing && shortcut!(ui, A))
-            {
-                self.state.is_adding = true;
-                self.state.quick_create_state = Default::default();
-            }
+            self.view_ui(ui, item);
         }
     }
 

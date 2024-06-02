@@ -93,7 +93,7 @@ impl Default for GalleryDLParams {
 impl GalleryDLParams {
     pub fn task_name(&self) -> String {
         match &self.source {
-            GalleryDLSource::None => "".to_string(),
+            GalleryDLSource::None => String::new(),
             GalleryDLSource::TwitterLikes { username } => {
                 format!("Downloading Twitter likes of @{username} using gallery-dl")
             }
@@ -105,7 +105,7 @@ impl GalleryDLParams {
 
     pub fn source_url(&self) -> String {
         match &self.source {
-            GalleryDLSource::None => "".to_string(),
+            GalleryDLSource::None => String::new(),
             GalleryDLSource::TwitterLikes { username } => {
                 format!("https://twitter.com/{username}/likes")
             }
@@ -256,15 +256,15 @@ pub async fn perform_gallery_dl_download(
 
     let cmd_debug = format!("{cmd:?}");
 
-    let mut proc = cmd.spawn()?;
+    let mut child_process = cmd.spawn()?;
     let mut join_set: JoinSet<std::io::Result<Option<ExitStatus>>> = JoinSet::new();
 
-    let stdout = proc.stdout.take().unwrap();
-    let stderr = proc.stderr.take().unwrap();
+    let stdout = child_process.stdout.take().unwrap();
+    let stderr = child_process.stderr.take().unwrap();
     let stdout_tee: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
     let stderr_tee: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
 
-    join_set.spawn(async move { Ok(Some(proc.wait().await?)) });
+    join_set.spawn(async move { Ok(Some(child_process.wait().await?)) });
     join_set.spawn(async move {
         produce_lines_as_progress(stdout, dl_progress, stdout_tee).await?;
         Ok(None)

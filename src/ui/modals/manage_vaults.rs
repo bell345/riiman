@@ -121,7 +121,7 @@ impl ManageVaults {
 
             self.widget_state.current_name = r.current_vault_name();
 
-            let vault_names = r.vault_names();
+            let vault_names = r.known_vault_names();
             for name in vault_names.iter() {
                 let error_message = self
                     .widget_state

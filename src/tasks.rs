@@ -9,11 +9,10 @@ use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
 
 use crate::state::AppStateRef;
-pub use crate::tasks::compute::ThumbnailGridInfo;
-pub use crate::tasks::compute::ThumbnailGridParams;
 use crate::tasks::image::ThumbnailParams;
+pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
+pub use crate::tasks::thumb_grid::ThumbnailGridParams;
 
-pub(crate) mod compute;
 pub(crate) mod download;
 pub(crate) mod filter;
 pub(crate) mod image;
@@ -21,6 +20,7 @@ pub(crate) mod import;
 pub(crate) mod link;
 mod progress;
 pub(crate) mod sort;
+pub(crate) mod thumb_grid;
 pub(crate) mod vault;
 
 #[derive(Debug)]

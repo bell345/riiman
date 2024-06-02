@@ -41,7 +41,7 @@ use crate::ui::modals::{EditTagDialog, NewVaultDialog};
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 static EXACT_TEXT_REGEX: OnceLock<Regex> = OnceLock::new();
 fn exact_text_regex() -> &'static Regex {
-    EXACT_TEXT_REGEX.get_or_init(|| Regex::new("\"(.+)\"").unwrap())
+    EXACT_TEXT_REGEX.get_or_init(|| Regex::new(r#""(.+)""#).unwrap())
 }
 
 const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
@@ -101,13 +101,12 @@ impl App {
     fn add_queued_tasks(&mut self) {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
         for (name, task_factory, is_request) in self.state.blocking_write().drain_tasks(capacity) {
-            match is_request {
-                true => self
-                    .tasks
-                    .add_request(name, |tx| task_factory(self.state.clone(), tx)),
-                false => self
-                    .tasks
-                    .add(name, |tx| task_factory(self.state.clone(), tx)),
+            if is_request {
+                self.tasks
+                    .add_request(name, |tx| task_factory(self.state.clone(), tx));
+            } else {
+                self.tasks
+                    .add(name, |tx| task_factory(self.state.clone(), tx));
             }
         }
     }
@@ -133,7 +132,7 @@ impl App {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
-        for (name, path) in stored_state.vault_name_to_file_paths.into_iter() {
+        for (name, path) in stored_state.vault_name_to_file_paths {
             let set_as_current = stored_state.current_vault_name.as_ref() == Some(&path);
             if set_as_current {
                 self.state.blocking_read().set_vault_loading();
@@ -166,35 +165,14 @@ impl App {
         ctx.style_mut(|style| style.animation_time = 0.0);
         self.load_persistent_state(storage);
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(f) = self.focused.take() {
-            ctx.memory_mut(|m| m.request_focus(f));
-        }
-
-        let errors = self.state.blocking_write().drain_errors();
-        for error in errors {
-            self.error(format!("{}", error));
-        }
-
-        for new_dialog in self.state.blocking_write().drain_dialogs() {
-            if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
-                old_dialog.dispose(ctx, self.state.clone());
-            }
-            self.modal_dialogs.insert(new_dialog.id(), new_dialog);
-        }
-
-        self.modal_dialogs
-            .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
-
+    fn process_tasks(&mut self, ctx: &egui::Context) {
         self.add_queued_tasks();
 
         let (results, request_results) = self.tasks.iter_ready();
         for result in results {
             match result {
-                Ok(AsyncTaskResult::None) => {}
+                Ok(AsyncTaskResult::None | AsyncTaskResult::FoundGalleryDl { .. }) => {}
                 Ok(VaultLoaded {
                     name,
                     set_as_current,
@@ -209,8 +187,7 @@ impl eframe::App for App {
                         ));
                     }
                 }
-                Ok(VaultLoaded { .. }) => self.state().reset_vault_loading(),
-                Ok(VaultSaved(_)) => self.state().reset_vault_loading(),
+                Ok(VaultLoaded { .. } | VaultSaved(_)) => self.state().reset_vault_loading(),
                 Ok(ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -223,13 +200,13 @@ impl eframe::App for App {
                     self.success("Import complete".to_string(), body);
                 }
                 Ok(ThumbnailLoaded { params, image }) => {
-                    let hndl = ctx.load_texture(params.tex_name(), image, Default::default());
+                    let hndl =
+                        ctx.load_texture(params.tex_name(), image, egui::TextureOptions::default());
                     self.thumbnail_grid
                         .commit(params, ThumbnailCacheItem::Loaded(hndl));
                 }
-                Ok(AsyncTaskResult::FoundGalleryDl { .. }) => {}
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
-                    self.error("Not implemented".to_string())
+                    self.error("Not implemented".to_string());
                 }
                 Err(e) => self.error(format!("{e:#}")),
             }
@@ -239,135 +216,149 @@ impl eframe::App for App {
         self.state
             .blocking_read()
             .push_request_results(request_results);
+    }
 
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                let vault_text = if self.state().has_unresolved_vaults() {
-                    egui::RichText::new("Vault \u{ff01}").color(theme::ERROR_TEXT)
-                } else {
-                    egui::RichText::new("Vault")
-                };
+    fn vault_menu_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        let vault_text = if self.state().has_unresolved_vaults() {
+            egui::RichText::new("Vault \u{ff01}").color(theme::ERROR_TEXT)
+        } else {
+            egui::RichText::new("Vault")
+        };
 
-                ui.menu_button(vault_text, |ui| {
-                    let vault_loading = self.state().vault_loading();
-                    if ui
-                        .add_enabled(!vault_loading, egui::Button::new("New..."))
-                        .clicked()
-                    {
-                        info!("New vault clicked!");
+        ui.menu_button(vault_text, |ui| {
+            let vault_loading = self.state().vault_loading();
+            if ui
+                .add_enabled(!vault_loading, egui::Button::new("New..."))
+                .clicked()
+            {
+                info!("New vault clicked!");
 
-                        self.add_modal_dialog(NewVaultDialog::default());
+                self.add_modal_dialog(NewVaultDialog::default());
 
-                        ui.close_menu();
-                    }
-                    if ui
-                        .add_enabled(!vault_loading, egui::Button::new("Open..."))
-                        .clicked()
-                    {
-                        info!("Open vault clicked!");
+                ui.close_menu();
+            }
+            if ui
+                .add_enabled(!vault_loading, egui::Button::new("Open..."))
+                .clicked()
+            {
+                info!("Open vault clicked!");
 
-                        self.state().set_vault_loading();
-                        self.add_task("Load vault".into(), |s, p| {
-                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
-                                s, p, true,
-                            ))
-                        });
-
-                        ui.close_menu();
-                    }
-
-                    if self.state().current_vault().is_ok()
-                        && ui
-                            .add_enabled(!vault_loading, egui::Button::new("Save"))
-                            .clicked()
-                    {
-                        info!("Save vault clicked!");
-
-                        self.state.blocking_read().save_current_vault();
-
-                        ui.close_menu();
-                    }
-
-                    let manage_text = if self.state().has_unresolved_vaults() {
-                        egui::RichText::new("Manage... \u{ff01}").color(theme::ERROR_TEXT)
-                    } else {
-                        egui::RichText::new("Manage...")
-                    };
-
-                    if !self.state().vault_names().is_empty()
-                        && ui
-                            .add_enabled(!vault_loading, egui::Button::new(manage_text))
-                            .clicked()
-                    {
-                        self.add_modal_dialog(modals::ManageVaults::default());
-
-                        ui.close_menu();
-                    }
-
-                    ui.separator();
-
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                self.state().set_vault_loading();
+                self.add_task("Load vault".into(), |s, p| {
+                    Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                 });
 
+                ui.close_menu();
+            }
+
+            if self.state().current_vault().is_ok()
+                && ui
+                    .add_enabled(!vault_loading, egui::Button::new("Save"))
+                    .clicked()
+            {
+                info!("Save vault clicked!");
+
+                self.state.blocking_read().save_current_vault();
+
+                ui.close_menu();
+            }
+
+            let manage_text = if self.state().has_unresolved_vaults() {
+                egui::RichText::new("Manage... \u{ff01}").color(theme::ERROR_TEXT)
+            } else {
+                egui::RichText::new("Manage...")
+            };
+
+            if !self.state().known_vault_names().is_empty()
+                && ui
+                    .add_enabled(!vault_loading, egui::Button::new(manage_text))
+                    .clicked()
+            {
+                self.add_modal_dialog(modals::ManageVaults::default());
+
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            if ui.button("Quit").clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+
+    fn import_menu_ui(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Import", |ui| {
+            if ui.button("Import...").clicked() {
+                self.add_task("Import one".into(), |state, p| {
+                    Promise::spawn_async(crate::tasks::import::select_and_import_one(state, p))
+                });
+
+                ui.close_menu();
+            }
+
+            if ui.button("Import all files").clicked() {
+                info!("Import all clicked!");
+
+                self.add_task("Import to vault".into(), |state, p| {
+                    Promise::spawn_async(crate::tasks::import::import_images_recursively(state, p))
+                });
+
+                ui.close_menu();
+            }
+
+            if ui.button("Download...").clicked() {
+                self.add_modal_dialog(modals::Download::default());
+
+                ui.close_menu();
+            }
+        });
+    }
+
+    fn tag_menu_ui(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Tags", |ui| {
+            if ui.button("New...").clicked() {
+                self.add_modal_dialog(EditTagDialog::create());
+                ui.close_menu();
+            }
+            if ui.button("Edit...").clicked() {
+                self.add_modal_dialog(EditTagDialog::select());
+                ui.close_menu();
+            }
+        });
+    }
+
+    fn link_menu_ui(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Link", |ui| {
+            if ui.button("Other Vault...").clicked() {}
+            if ui.button("Sidecars...").clicked() {
+                self.add_task("Link sidecars".into(), |state, p| {
+                    Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
+                });
+                ui.close_menu();
+            }
+        });
+    }
+
+    fn top_panel_ui(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                self.vault_menu_ui(ctx, ui);
+
                 if self.state().current_vault().is_ok() {
-                    ui.menu_button("Import", |ui| {
-                        if ui.button("Import...").clicked() {
-                            self.add_task("Import one".into(), |state, p| {
-                                Promise::spawn_async(crate::tasks::import::select_and_import_one(
-                                    state, p,
-                                ))
-                            });
+                    self.import_menu_ui(ui);
 
-                            ui.close_menu();
-                        }
+                    self.tag_menu_ui(ui);
 
-                        if ui.button("Import all files").clicked() {
-                            info!("Import all clicked!");
-
-                            self.add_task("Import to vault".into(), |state, p| {
-                                Promise::spawn_async(
-                                    crate::tasks::import::import_images_recursively(state, p),
-                                )
-                            });
-
-                            ui.close_menu();
-                        }
-
-                        if ui.button("Download...").clicked() {
-                            self.add_modal_dialog(modals::Download::default());
-
-                            ui.close_menu();
-                        }
-                    });
-
-                    ui.menu_button("Tags", |ui| {
-                        if ui.button("New...").clicked() {
-                            self.add_modal_dialog(EditTagDialog::create());
-                            ui.close_menu();
-                        }
-                        if ui.button("Edit...").clicked() {
-                            self.add_modal_dialog(EditTagDialog::select());
-                            ui.close_menu();
-                        }
-                    });
-
-                    ui.menu_button("Link", |ui| {
-                        if ui.button("Other Vault...").clicked() {}
-                        if ui.button("Sidecars...").clicked() {
-                            self.add_task("Link sidecars".into(), |state, p| {
-                                Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
-                            });
-                            ui.close_menu();
-                        }
-                    });
+                    self.link_menu_ui(ui);
                 }
 
                 ui.add_space(16.0);
             });
         });
+    }
 
+    fn search_panel_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("search_panel")
             .max_height(24.0)
             .show(ctx, |ui| {
@@ -458,7 +449,9 @@ impl eframe::App for App {
                     }
                 });
             });
+    }
 
+    fn bottom_panel_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!(
@@ -469,11 +462,11 @@ impl eframe::App for App {
                     crate::built_info::built_time()
                 ));
 
-                let progresses = self.tasks.iter_progress();
-                match &progresses[..] {
+                #[allow(clippy::cast_possible_truncation)]
+                #[allow(clippy::cast_sign_loss)]
+                match &self.tasks.iter_progress()[..] {
                     [] => {}
-                    [(name, ProgressState::NotStarted), ..]
-                    | [(name, ProgressState::Indeterminate), ..] => {
+                    [(name, ProgressState::NotStarted | ProgressState::Indeterminate), ..] => {
                         ui.add(egui::ProgressBar::new(0.0).text(name).animate(true));
                     }
                     [(name, ProgressState::Determinate(progress)), ..] => {
@@ -494,51 +487,86 @@ impl eframe::App for App {
                 };
             });
         });
+    }
+
+    fn right_panel_ui(&mut self, ui: &mut egui::Ui) {
+        egui::SidePanel::right("right_panel").show_animated_inside(
+            ui,
+            self.expand_right_panel,
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .max_width(350.0)
+                    .show_viewport(ui, |ui, _vp| {
+                        ui.horizontal(|ui| {
+                            ui.label("Select: ");
+                            ui.selectable_value(
+                                &mut self.thumbnail_grid.select_mode,
+                                SelectMode::Single,
+                                "Single",
+                            );
+                            ui.selectable_value(
+                                &mut self.thumbnail_grid.select_mode,
+                                SelectMode::Multiple,
+                                "Multiple",
+                            );
+                        });
+
+                        let r = self.state.blocking_read();
+                        let Some(vault) = r.current_vault_opt() else {
+                            return;
+                        };
+
+                        let items = self.thumbnail_grid.view_selected_paths(|paths| {
+                            self.item_list_cache.resolve_refs(&vault, paths)
+                        });
+
+                        ui.add(ItemPanel::new(
+                            "item_panel",
+                            &items,
+                            &vault,
+                            self.state.clone(),
+                        ));
+                    });
+            },
+        );
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(f) = self.focused.take() {
+            ctx.memory_mut(|m| m.request_focus(f));
+        }
+
+        let errors = self.state.blocking_write().drain_errors();
+        for error in errors {
+            self.error(format!("{error}"));
+        }
+
+        for new_dialog in self.state.blocking_write().drain_dialogs() {
+            if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
+                old_dialog.dispose(ctx, self.state.clone());
+            }
+            self.modal_dialogs.insert(new_dialog.id(), new_dialog);
+        }
+
+        self.modal_dialogs
+            .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
+
+        self.process_tasks(ctx);
+
+        self.top_panel_ui(ctx);
+
+        self.search_panel_ui(ctx);
+
+        self.bottom_panel_ui(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::SidePanel::right("right_panel").show_animated_inside(
-                ui,
-                self.expand_right_panel,
-                |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
-                        .max_width(350.0)
-                        .show_viewport(ui, |ui, _vp| {
-                            ui.horizontal(|ui| {
-                                ui.label("Select: ");
-                                ui.selectable_value(
-                                    &mut self.thumbnail_grid.select_mode,
-                                    SelectMode::Single,
-                                    "Single",
-                                );
-                                ui.selectable_value(
-                                    &mut self.thumbnail_grid.select_mode,
-                                    SelectMode::Multiple,
-                                    "Multiple",
-                                );
-                            });
-
-                            let r = self.state.blocking_read();
-                            let Some(vault) = r.current_vault_opt() else {
-                                return;
-                            };
-
-                            let items = self.thumbnail_grid.view_selected_paths(|paths| {
-                                self.item_list_cache.resolve_refs(&vault, paths)
-                            });
-
-                            ui.add(ItemPanel::new(
-                                "item_panel",
-                                &items,
-                                &vault,
-                                self.state.clone(),
-                            ));
-                        });
-                },
-            );
-
             let scroll_area_rect = egui::CentralPanel::default()
                 .show_inside(ui, |ui| {
+                    self.right_panel_ui(ui);
+
                     let mut update =
                         || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
                             let is_new_item_list =
@@ -568,37 +596,39 @@ impl eframe::App for App {
                 self.expand_right_panel ^= true;
             }
 
-            const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
-            const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
-                nw: 0.0,
-                ne: 0.0,
-                sw: 8.0,
-                se: 8.0,
-            };
-            const EXPAND_BTN_MARGIN: egui::Vec2 = egui::vec2(16.0, 0.0);
+            {
+                const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
+                const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
+                    nw: 0.0,
+                    ne: 0.0,
+                    sw: 8.0,
+                    se: 8.0,
+                };
+                const EXPAND_BTN_MARGIN: egui::Vec2 = egui::vec2(16.0, 0.0);
 
-            let btn_text = if self.expand_right_panel {
-                // right pointing triangle
-                "\u{25b6}"
-            } else {
-                // left pointing triangle
-                "\u{25c0}"
-            };
-            let expand_btn = egui::Button::new(
-                egui::RichText::new(btn_text).text_style(egui::TextStyle::Heading),
-            )
-            .rounding(EXPAND_BTN_ROUNDING)
-            .min_size(EXPAND_BTN_SIZE);
+                let btn_text = if self.expand_right_panel {
+                    // right pointing triangle
+                    "\u{25b6}"
+                } else {
+                    // left pointing triangle
+                    "\u{25c0}"
+                };
+                let expand_btn = egui::Button::new(
+                    egui::RichText::new(btn_text).text_style(egui::TextStyle::Heading),
+                )
+                .rounding(EXPAND_BTN_ROUNDING)
+                .min_size(EXPAND_BTN_SIZE);
 
-            let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
-                EXPAND_BTN_SIZE,
-                scroll_area_rect
-                    .unwrap_or(ui.min_rect())
-                    .shrink2(EXPAND_BTN_MARGIN),
-            );
+                let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
+                    EXPAND_BTN_SIZE,
+                    scroll_area_rect
+                        .unwrap_or(ui.min_rect())
+                        .shrink2(EXPAND_BTN_MARGIN),
+                );
 
-            if ui.put(btn_rect, expand_btn).clicked() {
-                self.expand_right_panel ^= true;
+                if ui.put(btn_rect, expand_btn).clicked() {
+                    self.expand_right_panel ^= true;
+                }
             }
         });
 
@@ -630,7 +660,111 @@ impl eframe::App for App {
     }
 }
 
+mod font_names {
+    pub const M_PLUS_ROUNDED: &str = "MPLUSRounded1c-Regular";
+    pub const JETBRAINS_MONO: &str = "JetBrainsMono-Regular";
+    pub const INTER: &str = "Inter-Regular";
+    pub const NOTO_SANS: &str = "NotoSans-Regular";
+    pub const NOTO_SANS_SC: &str = "NotoSansSC-Regular";
+    pub const NOTO_SANS_TC: &str = "NotoSansTC-Regular";
+    pub const NOTO_SANS_KR: &str = "NotoSansKR-Regular";
+    pub const NOTO_SANS_SYMBOLS: &str = "NotoSansSymbols-Regular";
+    pub const NOTO_SANS_SYMBOLS_2: &str = "NotoSansSymbols2-Regular";
+    pub const NOTO_SANS_MATH: &str = "NotoSansMath-Regular";
+    pub const NOTO_EMOJI: &str = "NotoEmoji-Regular";
+}
+
 impl App {
+    fn init_fonts() -> FontDefinitions {
+        let mut fonts = FontDefinitions::default();
+
+        fonts.font_data.insert(
+            font_names::M_PLUS_ROUNDED.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/MPLUSRounded1c/MPLUSRounded1c-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::JETBRAINS_MONO.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/JetBrainsMono/JetBrainsMono-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::INTER.to_owned(),
+            FontData::from_static(include_bytes!("../res/font/Inter/Inter-Regular.ttf")),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS.to_owned(),
+            FontData::from_static(include_bytes!("../res/font/NotoSans/NotoSans-Regular.ttf")),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_SC.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansSC/NotoSansSC-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_TC.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansTC/NotoSansTC-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_KR.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansKR/NotoSansKR-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_SYMBOLS.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansSymbols/NotoSansSymbols-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_SYMBOLS_2.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansSymbols2/NotoSansSymbols2-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_SANS_MATH.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoSansMath/NotoSansMath-Regular.ttf"
+            )),
+        );
+        fonts.font_data.insert(
+            font_names::NOTO_EMOJI.to_owned(),
+            FontData::from_static(include_bytes!(
+                "../res/font/NotoEmoji/NotoEmoji-Regular.ttf"
+            )),
+        );
+
+        {
+            let prop = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
+            // pushing to front (so highest priority is at the end here)
+            prop.insert(0, font_names::NOTO_SANS_KR.to_owned());
+            prop.insert(0, font_names::NOTO_SANS_TC.to_owned());
+            prop.insert(0, font_names::NOTO_SANS_SC.to_owned());
+            prop.insert(0, font_names::M_PLUS_ROUNDED.to_owned());
+            prop.insert(0, font_names::INTER.to_owned());
+
+            // fallback symbols
+            prop.push(font_names::NOTO_SANS_SYMBOLS.to_owned());
+            prop.push(font_names::NOTO_SANS_SYMBOLS_2.to_owned());
+            prop.push(font_names::NOTO_SANS_MATH.to_owned());
+            prop.push(font_names::NOTO_EMOJI.to_owned());
+        }
+
+        {
+            let mono = fonts.families.get_mut(&FontFamily::Monospace).unwrap();
+            mono.insert(0, font_names::JETBRAINS_MONO.to_owned());
+        }
+
+        fonts
+    }
+
     pub(crate) fn run(mut self) -> Result<(), eframe::Error> {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
@@ -643,107 +777,7 @@ impl App {
             Box::new(|cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
 
-                let mut fonts = FontDefinitions::default();
-
-                const M_PLUS_ROUNDED: &str = "MPLUSRounded1c-Regular";
-                const JETBRAINS_MONO: &str = "JetBrainsMono-Regular";
-                const INTER: &str = "Inter-Regular";
-                const NOTO_SANS: &str = "NotoSans-Regular";
-                const NOTO_SANS_SC: &str = "NotoSansSC-Regular";
-                const NOTO_SANS_TC: &str = "NotoSansTC-Regular";
-                const NOTO_SANS_KR: &str = "NotoSansKR-Regular";
-                const NOTO_SANS_SYMBOLS: &str = "NotoSansSymbols-Regular";
-                const NOTO_SANS_SYMBOLS_2: &str = "NotoSansSymbols2-Regular";
-                const NOTO_SANS_MATH: &str = "NotoSansMath-Regular";
-                const NOTO_EMOJI: &str = "NotoEmoji-Regular";
-
-                fonts.font_data.insert(
-                    M_PLUS_ROUNDED.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/MPLUSRounded1c/MPLUSRounded1c-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    JETBRAINS_MONO.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/JetBrainsMono/JetBrainsMono-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    INTER.to_owned(),
-                    FontData::from_static(include_bytes!("../res/font/Inter/Inter-Regular.ttf")),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSans/NotoSans-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_SC.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansSC/NotoSansSC-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_TC.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansTC/NotoSansTC-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_KR.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansKR/NotoSansKR-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_SYMBOLS.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansSymbols/NotoSansSymbols-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_SYMBOLS_2.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansSymbols2/NotoSansSymbols2-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_SANS_MATH.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoSansMath/NotoSansMath-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    NOTO_EMOJI.to_owned(),
-                    FontData::from_static(include_bytes!(
-                        "../res/font/NotoEmoji/NotoEmoji-Regular.ttf"
-                    )),
-                );
-
-                {
-                    let prop = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
-                    // pushing to front (so highest priority is at the end here)
-                    prop.insert(0, NOTO_SANS_KR.to_owned());
-                    prop.insert(0, NOTO_SANS_TC.to_owned());
-                    prop.insert(0, NOTO_SANS_SC.to_owned());
-                    prop.insert(0, M_PLUS_ROUNDED.to_owned());
-                    prop.insert(0, INTER.to_owned());
-
-                    // fallback symbols
-                    prop.push(NOTO_SANS_SYMBOLS.to_owned());
-                    prop.push(NOTO_SANS_SYMBOLS_2.to_owned());
-                    prop.push(NOTO_SANS_MATH.to_owned());
-                    prop.push(NOTO_EMOJI.to_owned());
-                }
-
-                {
-                    let mono = fonts.families.get_mut(&FontFamily::Monospace).unwrap();
-                    mono.insert(0, JETBRAINS_MONO.to_owned());
-                }
-
-                cc.egui_ctx.set_fonts(fonts);
+                cc.egui_ctx.set_fonts(Self::init_fonts());
 
                 self.setup(&cc.egui_ctx, cc.storage);
                 Box::new(self)

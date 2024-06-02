@@ -3,6 +3,7 @@ use crate::state::AppStateRef;
 mod delete_def;
 mod download;
 mod edit_tag;
+mod link_vault;
 mod manage_vaults;
 mod message;
 mod new_vault;
