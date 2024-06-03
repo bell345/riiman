@@ -13,6 +13,8 @@ use crate::tasks::filter::{
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
 
+const MAX_SUGGESTIONS: usize = 10;
+
 pub struct FindTag<'a, 'b> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
@@ -238,7 +240,11 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
                 .collect();
 
             if self.create_req.is_some() && !state.search_text.is_empty() {
-                vec.push(AutocompleteResult::CreateResult);
+                if vec.len() >= MAX_SUGGESTIONS {
+                    vec.insert(9, AutocompleteResult::CreateResult);
+                } else {
+                    vec.push(AutocompleteResult::CreateResult);
+                }
             }
 
             state.search_results = Some(vec);
@@ -249,7 +255,7 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
             down_pressed,
             up_pressed,
             state.search_results.as_ref().unwrap().len(),
-            10,
+            MAX_SUGGESTIONS,
         );
 
         let accepted_by_keyboard = shortcut!(ui, Tab) || shortcut!(ui, Enter);

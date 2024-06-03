@@ -5,14 +5,14 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use crate::data::FieldStore;
+use crate::data::{FieldStore, Utf32CachedString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FieldDefinition {
     pub id: Uuid,
-    pub name: String,
+    pub name: Utf32CachedString,
     pub field_type: kind::KindType,
     parents: DashSet<Uuid>,
     children: DashSet<Uuid>,
@@ -23,7 +23,7 @@ impl FieldDefinition {
     pub fn known<T: kind::TagKind>(known_field: KnownField<T>) -> Self {
         Self {
             id: known_field.id,
-            name: known_field.name.to_string(),
+            name: known_field.name.to_string().into(),
             field_type: T::get_type(),
             ..Default::default()
         }
@@ -346,16 +346,16 @@ pub mod kind {
 
         #[display("String")]
         #[alias("Str")]
-        String(std::string::String),
+        String(crate::data::Utf32CachedString),
 
         #[display("Item Reference")]
-        ItemRef((std::string::String, std::string::String)),
+        ItemRef((crate::data::Utf32CachedString, crate::data::Utf32CachedString)),
 
         List(Vec<Value>),
 
         Colour(SerialColour),
 
-        Dictionary(Vec<(std::string::String, Value)>),
+        Dictionary(Vec<(crate::data::Utf32CachedString, Value)>),
 
         #[display("Date and Time")]
         DateTime(chrono::DateTime<chrono::Utc>)
@@ -366,7 +366,9 @@ pub mod kind {
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             match s.splitn(2, ':').collect_tuple() {
-                Some((vault, path)) => Ok(Self((vault.to_string(), path.to_string()))),
+                Some((vault, path)) => {
+                    Ok(Self((vault.to_string().into(), path.to_string().into())))
+                }
                 None => Err(()),
             }
         }

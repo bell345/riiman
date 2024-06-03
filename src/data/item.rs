@@ -11,21 +11,23 @@ use uuid::Uuid;
 
 use crate::data::field::KnownField;
 use crate::data::field_store::FieldStore;
-use crate::data::{kind, FieldDefinition, FieldKind, FieldValue, FieldValueKind, Vault};
+use crate::data::{
+    kind, FieldDefinition, FieldKind, FieldValue, FieldValueKind, Utf32CachedString, Vault,
+};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
-    path: String,
+    path: Utf32CachedString,
     fields: DashMap<Uuid, FieldValue>,
 }
 
 impl Item {
     pub fn new(path: String) -> Item {
         Item {
-            path,
+            path: path.into(),
             fields: Default::default(),
         }
     }
@@ -34,11 +36,11 @@ impl Item {
         self.path.as_str()
     }
 
-    pub fn path_string(&self) -> &String {
+    pub fn path_string(&self) -> &Utf32CachedString {
         &self.path
     }
 
-    pub fn link_ref(&self) -> anyhow::Result<Option<(String, String)>> {
+    pub fn link_ref(&self) -> anyhow::Result<Option<(Utf32CachedString, Utf32CachedString)>> {
         self.get_known_field_value(fields::general::LINK)
     }
 
@@ -56,7 +58,7 @@ impl Item {
 
         r.save_current_vault();
         if let Some(kind::ItemRef((other_vault_name, _))) = link_res {
-            r.save_vault_by_name(other_vault_name);
+            r.save_vault_by_name(other_vault_name.to_string());
             Ok(true)
         } else {
             Ok(false)

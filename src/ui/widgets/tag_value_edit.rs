@@ -129,12 +129,15 @@ impl<'a> Widget for TagValueEdit<'a> {
 
                 res = ui.text_edit_singleline(&mut state.typed_value);
                 *self.value = Some(match self.field_type {
-                    KindType::String => FieldValue::String(state.typed_value.to_string()),
+                    KindType::String => FieldValue::String(state.typed_value.to_string().into()),
                     KindType::ItemRef => state
                         .typed_value
                         .to_string()
                         .parse::<kind::ItemRef>()
-                        .unwrap_or(kind::ItemRef::from(("".to_string(), "".to_string())))
+                        .unwrap_or(kind::ItemRef::from((
+                            "".to_string().into(),
+                            "".to_string().into(),
+                        )))
                         .into(),
                     _ => unreachable!(),
                 });

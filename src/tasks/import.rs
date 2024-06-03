@@ -38,13 +38,14 @@ async fn import_single_image(
             mime_guess::from_path(&path)
                 .first_or_octet_stream()
                 .to_string()
+                .into()
         });
     if !mime_type.starts_with("image/") {
         state.read().await.current_vault()?.remove_item(&path)?;
 
         return Err(AppError::WrongMimeType {
             expected: "image/*".to_string(),
-            got: mime_type,
+            got: mime_type.to_string(),
         }
         .into());
     }
@@ -261,7 +262,7 @@ pub async fn import_images_recursively(
     {
         let r = state.read().await;
         let curr_vault = r.current_vault()?;
-        save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;
+        save_vault(curr_vault, progress.sub_task("Save", 0.05)).await?;
     }
 
     Ok(AsyncTaskResult::ImportComplete {

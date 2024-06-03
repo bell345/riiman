@@ -22,24 +22,42 @@ pub struct ItemCache {
 }
 
 impl ItemCache {
-    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<(bool, bool)> {
-        let state = state.blocking_read();
-        let current_vault = state.current_vault()?;
+    fn new_params_opt(&self, state: AppStateRef, vault: &Vault) -> Option<ItemCacheParams> {
+        let r = state.blocking_read();
 
-        let params = ItemCacheParams {
-            vault_name: current_vault.name.to_string(),
-            last_updated: current_vault.last_updated(),
-            filter: state.filter.clone(),
-            sorts: state.sorts.clone(),
+        let make_params = || ItemCacheParams {
+            vault_name: vault.name.to_string(),
+            last_updated: vault.last_updated(),
+            filter: r.filter().clone(),
+            sorts: r.sorts().clone(),
         };
 
-        let new_item_list = self.params != params;
-        if !new_item_list {
-            return Ok((false, false));
+        if self.params.vault_name != vault.name {
+            return Some(make_params());
         }
+        if self.params.last_updated != vault.last_updated() {
+            return Some(make_params());
+        }
+        if self.params.filter != *r.filter() {
+            return Some(make_params());
+        }
+        if self.params.sorts != *r.sorts() {
+            return Some(make_params());
+        }
+
+        None
+    }
+
+    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<(bool, bool)> {
+        let r = state.blocking_read();
+        let current_vault = r.current_vault()?;
+
+        let Some(params) = self.new_params_opt(state.clone(), &current_vault) else {
+            return Ok((false, false));
+        };
         let vault_is_new = self.params.vault_name == params.vault_name;
 
-        let items = get_filtered_and_sorted_items(&current_vault, &state.filter, &state.sorts)?;
+        let items = get_filtered_and_sorted_items(&current_vault, &r.filter(), &r.sorts())?;
         self.params = params;
         self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
 
@@ -68,5 +86,9 @@ impl ItemCache {
 
     pub fn item_path_set(&self) -> HashSet<&String> {
         self.item_paths.iter().collect()
+    }
+
+    pub fn len_items(&self) -> usize {
+        self.item_paths.len()
     }
 }

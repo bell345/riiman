@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use dashmap::mapref::one::Ref;
 use dashmap::{DashMap, DashSet};
 use poll_promise::Promise;
 
@@ -18,13 +18,13 @@ pub(crate) struct AppState {
     results: DashMap<String, AsyncTaskReturn>,
     error_queue: Mutex<Vec<anyhow::Error>>,
     dialog_queue: Mutex<Vec<Box<dyn AppModal>>>,
-    vaults: DashMap<String, Vault>,
+    vaults: DashMap<String, Arc<Vault>>,
     unresolved_vaults: DashSet<String>,
-    pub current_vault_name: Mutex<Option<String>>,
-    pub vault_loading: Mutex<bool>,
+    current_vault_name: Mutex<Option<String>>,
+    vault_loading: Mutex<bool>,
 
-    pub filter: FilterExpression,
-    pub sorts: Vec<SortExpression>,
+    filter: Mutex<FilterExpression>,
+    sorts: Mutex<Vec<SortExpression>>,
 }
 
 impl Default for AppState {
@@ -38,33 +38,34 @@ impl Default for AppState {
             unresolved_vaults: Default::default(),
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
-            filter: FilterExpression::TagMatch(fields::image::NAMESPACE.id),
-            sorts: vec![SortExpression::Path(SortDirection::Ascending)],
+            filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
+            sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
         }
     }
 }
 
 impl AppState {
     pub fn load_vault(&self, vault: Vault) {
-        let name = vault.name.clone();
+        let name = vault.name.clone().into();
 
         for item in vault.iter_items() {
             if let Ok(Some((ref_name, _))) = item.get_known_field_value(fields::general::LINK) {
-                if !self.vaults.contains_key(&ref_name) && ref_name != name {
-                    self.unresolved_vaults.insert(ref_name);
+                if !self.vaults.contains_key(ref_name.deref()) && ref_name != name {
+                    self.unresolved_vaults.insert(ref_name.to_string());
                 }
             }
         }
 
-        self.unresolved_vaults.remove(&name);
-        self.vaults.insert(name.clone(), vault);
-        self.set_current_vault_name(name)
+        self.unresolved_vaults.remove(name.deref());
+        self.vaults.insert(name.to_string(), Arc::new(vault));
+        self.set_current_vault_name(name.into())
             .expect("vault we just added should exist");
     }
 
-    pub fn get_vault(&self, name: &String) -> Result<Ref<'_, String, Vault>, AppError> {
+    pub fn get_vault(&self, name: &String) -> Result<Arc<Vault>, AppError> {
         self.vaults
             .get(name)
+            .map(|r| r.clone())
             .ok_or(AppError::VaultDoesNotExist { name: name.clone() })
     }
 
@@ -72,13 +73,13 @@ impl AppState {
         self.current_vault_name.lock().unwrap().clone()
     }
 
-    pub fn current_vault_opt(&self) -> Option<Ref<'_, String, Vault>> {
+    pub fn current_vault_opt(&self) -> Option<Arc<Vault>> {
         let name = self.current_vault_name()?;
         let vault = self.vaults.get(&name)?;
-        Some(vault)
+        Some(vault.clone())
     }
 
-    pub fn current_vault(&self) -> Result<Ref<'_, String, Vault>, AppError> {
+    pub fn current_vault(&self) -> Result<Arc<Vault>, AppError> {
         self.current_vault_opt().ok_or(AppError::NoCurrentVault)
     }
 
@@ -171,7 +172,7 @@ impl AppState {
         }
     }
 
-    pub fn drain_tasks(&mut self, n: usize) -> Vec<(String, TaskFactory, bool)> {
+    pub fn drain_tasks(&self, n: usize) -> Vec<(String, TaskFactory, bool)> {
         let mut l = self.task_queue.lock().unwrap();
         let mut v: Vec<_> = vec![];
         for _ in 0..n {
@@ -185,11 +186,11 @@ impl AppState {
         v
     }
 
-    pub fn drain_errors(&mut self) -> Vec<anyhow::Error> {
+    pub fn drain_errors(&self) -> Vec<anyhow::Error> {
         self.error_queue.lock().unwrap().drain(..).collect()
     }
 
-    pub fn drain_dialogs(&mut self) -> Vec<Box<dyn AppModal>> {
+    pub fn drain_dialogs(&self) -> Vec<Box<dyn AppModal>> {
         self.dialog_queue.lock().unwrap().drain(..).collect()
     }
 
@@ -226,6 +227,19 @@ impl AppState {
         self.add_task(format!("Save {name} vault"), |state, p| {
             Promise::spawn_async(crate::tasks::vault::save_vault_by_name(state, p, name))
         });
+    }
+
+    pub fn filter(&self) -> MutexGuard<'_, FilterExpression> {
+        self.filter.lock().unwrap()
+    }
+
+    pub fn sorts(&self) -> MutexGuard<'_, Vec<SortExpression>> {
+        self.sorts.lock().unwrap()
+    }
+
+    pub fn set_filter_and_sorts(&self, filter: FilterExpression, sorts: Vec<SortExpression>) {
+        *self.filter.lock().unwrap() = filter;
+        *self.sorts.lock().unwrap() = sorts;
     }
 }
 

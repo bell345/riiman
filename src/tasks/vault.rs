@@ -1,5 +1,8 @@
-use anyhow::Context;
 use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::Context;
+use tokio::task::block_in_place;
 
 use crate::data::Vault;
 use crate::errors::AppError;
@@ -71,12 +74,14 @@ pub async fn load_vault_from_path(
     })
 }
 
-pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> AsyncTaskReturn {
-    let data = serde_json::to_vec(vault)?;
+pub async fn save_vault(vault: Arc<Vault>, progress: ProgressSenderRef) -> AsyncTaskReturn {
+    let file_path = vault.file_path.clone();
+    let name = vault.name.clone();
+    let data = block_in_place(move || serde_json::to_vec(&vault))?;
 
     progress.send(ProgressState::Determinate(0.5));
 
-    match &vault.file_path {
+    match file_path {
         Some(path) => tokio::fs::write(path, data).await?,
         None => {
             let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
@@ -98,7 +103,7 @@ pub async fn save_vault(vault: &Vault, progress: ProgressSenderRef) -> AsyncTask
         }
     }
 
-    Ok(AsyncTaskResult::VaultSaved(vault.name.clone()))
+    Ok(AsyncTaskResult::VaultSaved(name))
 }
 
 pub async fn save_new_vault(
@@ -112,10 +117,14 @@ pub async fn save_new_vault(
     let path = fp.path();
     vault.set_file_path(path);
 
-    save_vault(&vault, progress).await?;
+    let vault = Arc::new(vault);
+    save_vault(vault.clone(), progress).await?;
 
     let name = vault.name.clone();
-    state.write().await.load_vault(vault);
+    state
+        .write()
+        .await
+        .load_vault(Arc::into_inner(vault).expect("No other vault references"));
 
     Ok(AsyncTaskResult::VaultLoaded {
         name,
@@ -129,7 +138,7 @@ pub async fn save_current_vault(
 ) -> AsyncTaskReturn {
     let r = state.read().await;
     let vault = r.current_vault()?;
-    save_vault(&vault, progress).await
+    save_vault(vault, progress).await
 }
 
 pub async fn save_vault_by_name(
@@ -139,5 +148,5 @@ pub async fn save_vault_by_name(
 ) -> AsyncTaskReturn {
     let r = state.read().await;
     let vault = r.get_vault(&name)?;
-    save_vault(&vault, progress).await
+    save_vault(vault, progress).await
 }

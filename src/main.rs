@@ -26,6 +26,7 @@ impl Drop for MagickContext {
 }
 
 mod data;
+pub(crate) mod debug;
 mod errors;
 mod fields;
 mod state;

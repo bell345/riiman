@@ -108,7 +108,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
                 if let Some(new_tag_name) = new_tag_name {
                     let mut def = FieldDefinition::new();
                     let id = def.id;
-                    def.name = new_tag_name;
+                    def.name = new_tag_name.into();
                     self.vault.set_definition(def);
                     self.vault.get_definition(&id).unwrap()
                 } else {

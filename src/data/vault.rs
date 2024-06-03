@@ -221,7 +221,7 @@ impl Vault {
         let (other_vault_name, other_path) = link_val.as_itemref()?.clone();
         drop(link_val);
 
-        let other_item = other_vault.get_item(Path::new(&other_path))?;
+        let other_item = other_vault.get_item(Path::new(&other_path.to_string()))?;
 
         for field in item.iter_fields_with_defs(self) {
             if field.definition().has_field(&fields::meta::NO_LINK.id) {

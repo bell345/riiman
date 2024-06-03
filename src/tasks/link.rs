@@ -27,7 +27,7 @@ async fn link_single_sidecar(
     sidecar_date: DateTime<Utc>,
 ) -> SingleImportResult {
     let sc_path_string = sidecar_path.to_string_lossy().to_string();
-    let mut item = state
+    let item = state
         .read()
         .await
         .current_vault()?
@@ -64,12 +64,15 @@ async fn link_single_sidecar(
     }
 
     if let Some(content) = dom.get("content").and_then(|c| c.as_str()) {
-        item.set_known_field_value(fields::tweet::CONTENT, content.to_string());
+        item.set_known_field_value(fields::tweet::CONTENT, content.to_string().into());
     }
 
     if let Some(hashtags) = dom.get("hashtags").and_then(|c| c.as_array()).map(|a| {
         a.iter()
-            .filter_map(|ht| ht.as_str().map(|s| FieldValue::string(s.to_string())))
+            .filter_map(|ht| {
+                ht.as_str()
+                    .map(|s| FieldValue::string(s.to_string().into()))
+            })
             .collect_vec()
     }) {
         item.set_known_field_value(fields::tweet::HASHTAGS, hashtags);
@@ -82,11 +85,14 @@ async fn link_single_sidecar(
     }
 
     if let Some(author_handle) = author.and_then(|a| a.get("name")).and_then(|n| n.as_str()) {
-        item.set_known_field_value(fields::tweet::AUTHOR_HANDLE, author_handle.to_string());
+        item.set_known_field_value(
+            fields::tweet::AUTHOR_HANDLE,
+            author_handle.to_string().into(),
+        );
     }
 
     if let Some(author_name) = author.and_then(|a| a.get("nick")).and_then(|n| n.as_str()) {
-        item.set_known_field_value(fields::tweet::AUTHOR_NAME, author_name.to_string());
+        item.set_known_field_value(fields::tweet::AUTHOR_NAME, author_name.to_string().into());
     }
 
     if let Some(tweet_date) = dom
@@ -180,7 +186,7 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     {
         let r = state.read().await;
         let curr_vault = r.current_vault()?;
-        save_vault(&curr_vault, progress.sub_task("Save", 0.05)).await?;
+        save_vault(curr_vault, progress.sub_task("Save", 0.05)).await?;
     }
 
     Ok(AsyncTaskResult::None)
@@ -201,13 +207,16 @@ async fn link_single_item(
         item.set_known_field_value(
             fields::general::LINK,
             (
-                other_vault_name.to_string(),
+                other_vault_name.to_string().into(),
                 other_item.path_string().clone(),
             ),
         );
         other_item.set_known_field_value(
             fields::general::LINK,
-            (vault.name.to_string(), path.to_string_lossy().into()),
+            (
+                vault.name.to_string().into(),
+                path.to_string_lossy().to_string().into(),
+            ),
         );
     }
     vault.update_link(&path, &other_vault)?;
@@ -227,7 +236,7 @@ pub async fn link_vaults_by_path(
         .await
         .current_vault()?
         .iter_items()
-        .map(|i| i.path_string().into())
+        .map(|i| i.path().into())
         .collect();
 
     let results = process_many(

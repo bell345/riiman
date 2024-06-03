@@ -392,7 +392,7 @@ impl ThumbnailGrid {
                                     // clicked on image but not on checkbox -> select only this imag
                                     if !res.clicked() && is_clicked {
                                         if self.select_mode == SelectMode::Single
-                                            && !ui.input(|i| i.modifiers.shift)
+                                            && !ui.input(|i| i.modifiers.ctrl)
                                         {
                                             req_ex_focus = true;
                                         } else {

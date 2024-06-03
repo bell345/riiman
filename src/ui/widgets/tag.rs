@@ -1,4 +1,5 @@
 use std::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
+use std::ops::Deref;
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -82,7 +83,7 @@ impl<'a> Tag<'a> {
     fn galley(&self, ui: &Ui) -> Arc<Galley> {
         self.text_to_galley(
             ui,
-            WidgetText::from(&self.definition.name),
+            WidgetText::from(self.definition.name.deref()),
             ui.available_width(),
         )
     }
@@ -102,7 +103,7 @@ impl<'a> Tag<'a> {
             Value::Int(i) => format!("{i}"),
             Value::UInt(i) => format!("{i}"),
             Value::Float(f) => format!("{f}"),
-            Value::String(s) => s.into(),
+            Value::String(s) => s.deref().into(),
             Value::ItemRef((v, p)) => format!("{v}:{p}"),
             Value::List(_) => return None,
             Value::Colour(_) => "     ".into(),

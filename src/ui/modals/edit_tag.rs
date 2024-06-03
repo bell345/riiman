@@ -160,7 +160,9 @@ impl EditTagDialog {
                             ui.label("Name: ");
                         });
                         row.col(|ui| {
-                            ui.text_edit_singleline(&mut def.name);
+                            let mut name = def.name.to_string();
+                            ui.text_edit_singleline(&mut name);
+                            def.name = name.into();
                         });
                     });
                     body.row(24.0, |mut row| {
@@ -344,12 +346,12 @@ impl EditTagDialog {
                 if added_alias.is_some() || removed_alias.is_some() {
                     let mut new_aliases = vec![];
                     for alias in aliases {
-                        if Some(&alias) == removed_alias.as_ref() {
-                            new_aliases.push(FieldValue::string(alias));
+                        if Some(&alias) != removed_alias.as_ref() {
+                            new_aliases.push(FieldValue::string(alias.into()));
                         }
                     }
                     if let Some(alias) = added_alias {
-                        new_aliases.push(FieldValue::string(alias));
+                        new_aliases.push(FieldValue::string(alias.into()));
                     }
 
                     def.set_known_field_value(fields::meta::ALIASES, new_aliases);

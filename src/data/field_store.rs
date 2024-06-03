@@ -1,5 +1,5 @@
 use crate::data::field_refs::FieldDefValueRef;
-use crate::data::{FieldDefinition, FieldKind, FieldValue, FieldValueKind, KnownField, Vault};
+use crate::data::{FieldDefinition, FieldKind, FieldValue, FieldValueKind, KnownField, Utf32CachedString, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use anyhow::Context;
@@ -120,7 +120,7 @@ pub trait FieldStore {
         }
     }
     
-    fn get_field_value_as_str(&self, field_id: &Uuid) -> Option<impl Deref<Target = String>> {
+    fn get_field_value_as_str(&self, field_id: &Uuid) -> Option<impl Deref<Target = Utf32CachedString>> {
         self.get_field_value(field_id)?.try_map(|v| v.as_string_opt()).ok()
     }
 

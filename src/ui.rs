@@ -17,6 +17,7 @@ use crate::tasks::AsyncTaskResult::{ImportComplete, LinkComplete, ThumbnailLoade
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
+use crate::time;
 use crate::ui::item_cache::ItemCache;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
@@ -100,7 +101,7 @@ impl App {
 
     fn add_queued_tasks(&mut self) {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
-        for (name, task_factory, is_request) in self.state.blocking_write().drain_tasks(capacity) {
+        for (name, task_factory, is_request) in self.state.blocking_read().drain_tasks(capacity) {
             if is_request {
                 self.tasks
                     .add_request(name, |tx| task_factory(self.state.clone(), tx));
@@ -152,11 +153,7 @@ impl App {
         self.thumbnail_grid
             .set_selected_paths(&stored_state.checked_items);
 
-        {
-            let mut wr = self.state.blocking_write();
-            wr.filter = stored_state.filter;
-            wr.sorts = stored_state.sorts;
-        }
+        self.state.blocking_read().set_filter_and_sorts(stored_state.filter, stored_state.sorts);
 
         Some(())
     }
@@ -202,7 +199,7 @@ impl App {
                 Ok(LinkComplete { other_vault_name, results }) => {
                     self.state().save_current_vault();
                     self.state().save_vault_by_name(other_vault_name.clone());
-                    
+
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
                     let body = format!(
@@ -439,28 +436,27 @@ impl App {
                         widgets::SearchBox::new(&mut self.search_text).desired_width(f32::INFINITY),
                     );
 
-                    {
-                        let mut wr = self.state.blocking_write();
-                        wr.sorts = match self.sort_type {
-                            SortType::Path => vec![SortExpression::Path(self.sort_direction)],
-                            SortType::Field => {
-                                if let Some(field_id) = self.sort_field_id {
-                                    vec![SortExpression::Field(field_id, self.sort_direction)]
-                                } else {
-                                    vec![]
-                                }
+                    let sorts = match self.sort_type {
+                        SortType::Path => vec![SortExpression::Path(self.sort_direction)],
+                        SortType::Field => {
+                            if let Some(field_id) = self.sort_field_id {
+                                vec![SortExpression::Field(field_id, self.sort_direction)]
+                            } else {
+                                vec![]
                             }
-                        };
+                        }
+                    };
 
-                        wr.filter = if let Some((_, [text])) = exact_text_regex()
-                            .captures(self.search_text.as_str())
-                            .map(|c| c.extract())
-                        {
-                            FilterExpression::ExactTextSearch(text.into())
-                        } else {
-                            FilterExpression::TextSearch(self.search_text.clone().into())
-                        };
-                    }
+                    let filter = if let Some((_, [text])) = exact_text_regex()
+                        .captures(self.search_text.as_str())
+                        .map(|c| c.extract())
+                    {
+                        FilterExpression::ExactTextSearch(text.into())
+                    } else {
+                        FilterExpression::TextSearch(self.search_text.clone().into())
+                    };
+                    
+                    self.state.blocking_read().set_filter_and_sorts(filter, sorts);
                 });
             });
     }
@@ -512,6 +508,8 @@ impl App {
                     .auto_shrink([false, true])
                     .max_width(350.0)
                     .show_viewport(ui, |ui, _vp| {
+                        let len = self.item_list_cache.len_items();
+                        ui.label(format!("{} item{}", len, if len == 1 { "" } else {"s"}));
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
                             ui.selectable_value(
@@ -545,53 +543,31 @@ impl App {
             },
         );
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(f) = self.focused.take() {
-            ctx.memory_mut(|m| m.request_focus(f));
-        }
-
-        let errors = self.state.blocking_write().drain_errors();
-        for error in errors {
-            self.error(format!("{error}"));
-        }
-
-        for new_dialog in self.state.blocking_write().drain_dialogs() {
-            if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
-                old_dialog.dispose(ctx, self.state.clone());
-            }
-            self.modal_dialogs.insert(new_dialog.id(), new_dialog);
-        }
-
-        self.modal_dialogs
-            .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
-
-        self.process_tasks(ctx);
-
-        self.top_panel_ui(ctx);
-
-        self.search_panel_ui(ctx);
-
-        self.bottom_panel_ui(ctx);
-
+    fn central_panel_ui(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let scroll_area_rect = egui::CentralPanel::default()
                 .show_inside(ui, |ui| {
-                    self.right_panel_ui(ui);
+                    time!("Right panel UI", {
+                        self.right_panel_ui(ui);
+                    });
 
                     let mut update =
                         || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
                             let (is_new_item_list, vault_is_new) =
-                                self.item_list_cache.update(self.state.clone())?;
-                            self.thumbnail_grid.update(
-                                ui,
-                                self.state.clone(),
-                                &self.item_list_cache,
-                                is_new_item_list,
-                                vault_is_new,
-                            )
+                            time!("Item list update", {
+                                self.item_list_cache.update(self.state.clone())?
+                            });
+
+                            time!("Thumbnail grid update", {
+                                self.thumbnail_grid.update(
+                                    ui,
+                                    self.state.clone(),
+                                    &self.item_list_cache,
+                                    is_new_item_list,
+                                    vault_is_new,
+                                )
+                            })
                         };
 
                     let mut scroll_area_rect: Option<egui::Rect> = None;
@@ -611,7 +587,7 @@ impl eframe::App for App {
                 self.expand_right_panel ^= true;
             }
 
-            {
+            time!("Expand button UI", {
                 const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
                 const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
                     nw: 0.0,
@@ -631,8 +607,8 @@ impl eframe::App for App {
                 let expand_btn = egui::Button::new(
                     egui::RichText::new(btn_text).text_style(egui::TextStyle::Heading),
                 )
-                .rounding(EXPAND_BTN_ROUNDING)
-                .min_size(EXPAND_BTN_SIZE);
+                    .rounding(EXPAND_BTN_ROUNDING)
+                    .min_size(EXPAND_BTN_SIZE);
 
                 let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
                     EXPAND_BTN_SIZE,
@@ -644,8 +620,42 @@ impl eframe::App for App {
                 if ui.put(btn_rect, expand_btn).clicked() {
                     self.expand_right_panel ^= true;
                 }
-            }
+            });
         });
+
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(f) = self.focused.take() {
+            ctx.memory_mut(|m| m.request_focus(f));
+        }
+
+        let errors = self.state.blocking_read().drain_errors();
+        for error in errors {
+            self.error(format!("{error}"));
+        }
+
+        for new_dialog in self.state.blocking_read().drain_dialogs() {
+            if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
+                old_dialog.dispose(ctx, self.state.clone());
+            }
+            self.modal_dialogs.insert(new_dialog.id(), new_dialog);
+        }
+    
+        self.modal_dialogs
+            .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
+
+        self.process_tasks(ctx);
+
+        self.top_panel_ui(ctx);
+
+        self.search_panel_ui(ctx);
+
+        self.bottom_panel_ui(ctx);
+
+        self.central_panel_ui(ctx);
 
         self.focused = ctx.memory(|m| m.focused());
         self.thumbnail_grid.view_selected_paths(|paths| {
@@ -664,8 +674,8 @@ impl eframe::App for App {
             checked_items: self
                 .thumbnail_grid
                 .view_selected_paths(|paths| paths.into_iter().cloned().collect()),
-            sorts: state.sorts.clone(),
-            filter: state.filter.clone(),
+            sorts: state.sorts().clone(),
+            filter: state.filter().clone(),
         };
 
         storage.set_string(

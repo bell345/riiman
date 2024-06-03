@@ -10,10 +10,11 @@ use uuid::Uuid;
 
 use crate::data::kind::KindType;
 use crate::data::{
-    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour, Vault,
+    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour,
+    Utf32CachedString, Vault,
 };
 use crate::errors::AppError;
-use crate::fields;
+use crate::{fields, time_us};
 
 pub fn new_matcher() -> nucleo_matcher::Matcher {
     nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths())
@@ -61,7 +62,6 @@ pub struct TextSearchQuery {
     string: String,
     pattern: nucleo_matcher::pattern::Pattern,
     matcher: OnceLock<Mutex<nucleo_matcher::Matcher>>,
-    temp_char_buf: Mutex<Vec<char>>,
     temp_idx_buf: Mutex<Vec<u32>>,
 }
 
@@ -94,30 +94,34 @@ impl TextSearchQuery {
         }
     }
 
-    pub fn indices(&self, haystack: &str) -> Option<(u32, Vec<u32>)> {
+    pub fn indices(&self, haystack: &Utf32CachedString) -> Option<(u32, Vec<u32>)> {
         let mut l_idx_buf = self.temp_idx_buf.lock().unwrap();
-        let mut l_tmp = self.temp_char_buf.lock().unwrap();
         let mut l_matcher = self
             .matcher
             .get_or_init(|| Mutex::new(new_matcher()))
             .lock()
             .unwrap();
-        let haystack_utf32 = nucleo_matcher::Utf32Str::new(haystack, l_tmp.deref_mut());
         l_idx_buf.deref_mut().clear();
         self.pattern
-            .indices(haystack_utf32, l_matcher.deref_mut(), l_idx_buf.deref_mut())
+            .indices(
+                haystack.utf32().slice(..),
+                l_matcher.deref_mut(),
+                l_idx_buf.deref_mut(),
+            )
             .map(|score| (score, l_idx_buf.deref().clone()))
     }
 
-    pub fn score(&self, haystack: &str) -> Option<u32> {
-        if let Some((score, _)) = self.indices(haystack) {
-            Some(score)
-        } else {
-            None
-        }
+    pub fn score(&self, haystack: &Utf32CachedString) -> Option<u32> {
+        let mut l_matcher = self
+            .matcher
+            .get_or_init(|| Mutex::new(new_matcher()))
+            .lock()
+            .unwrap();
+        self.pattern
+            .score(haystack.utf32().slice(..), l_matcher.deref_mut())
     }
 
-    pub fn matches(&self, haystack: &str) -> bool {
+    pub fn matches(&self, haystack: &Utf32CachedString) -> bool {
         self.score(haystack).is_some()
     }
 }
@@ -211,9 +215,14 @@ impl ExactTextSearchQuery {
         }
     }
 
-    pub fn matches(&self, haystack: &str) -> bool {
+    pub fn matches(&self, haystack: &Utf32CachedString) -> bool {
         let mut scan_idx = 0;
-        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+        for c in haystack
+            .utf32()
+            .slice(..)
+            .chars()
+            .flat_map(|c| c.to_lowercase())
+        {
             if scan_idx == self.char_len {
                 return true;
             }
@@ -321,38 +330,44 @@ fn evaluate_match_expression(
 fn generic_string_match(
     item: &Item,
     vault: &Vault,
-    matches: impl Fn(&String) -> bool,
+    matches: impl Fn(&Utf32CachedString) -> bool,
 ) -> anyhow::Result<bool> {
-    if matches(item.path_string()) {
-        return Ok(true);
-    }
-
-    for r in item.iter_fields_with_defs(vault) {
-        let def = r.definition();
-        let v = r.value();
-        if match def.field_type {
-            KindType::Tag | KindType::Container => matches(&def.name),
-            KindType::String => matches(v.as_string()?),
-            KindType::ItemRef => {
-                let (v, p) = v.as_itemref()?;
-                matches(v) || matches(p)
+    time_us!(
+        format!("Generic string match for item {}", item.path()),
+        100,
+        {
+            if matches(item.path_string()) {
+                return Ok(true);
             }
-            KindType::List => v
-                .as_list()?
-                .iter()
-                .filter_map(|v| v.as_string_opt())
-                .any(&matches),
-            KindType::Dictionary => v
-                .as_dictionary()?
-                .iter()
-                .any(|(k, v)| v.as_string_opt().map(&matches).unwrap_or(matches(k))),
-            _ => false,
-        } {
-            return Ok(true);
-        }
-    }
 
-    Ok(false)
+            for r in item.iter_fields_with_defs(vault) {
+                let def = r.definition();
+                let v = r.value();
+                if match def.field_type {
+                    KindType::Tag | KindType::Container => matches(&def.name),
+                    KindType::String => matches(v.as_string()?),
+                    KindType::ItemRef => {
+                        let (v, p) = v.as_itemref()?;
+                        matches(v) || matches(p)
+                    }
+                    KindType::List => v
+                        .as_list()?
+                        .iter()
+                        .filter_map(|v| v.as_string_opt())
+                        .any(&matches),
+                    KindType::Dictionary => v
+                        .as_dictionary()?
+                        .iter()
+                        .any(|(k, v)| v.as_string_opt().map(&matches).unwrap_or(matches(k))),
+                    _ => false,
+                } {
+                    return Ok(true);
+                }
+            }
+
+            Ok(false)
+        }
+    )
 }
 
 pub fn evaluate_filter(
@@ -493,11 +508,11 @@ fn evaluate_field_search_one(
     }
     if let Some(aliases) = def.get_known_field_value(fields::meta::ALIASES)? {
         for alias in aliases {
-            let alias_str = alias.as_str()?;
+            let alias_str = alias.as_string()?;
             if let Some((score, indices)) = query.indices(alias_str) {
                 results.push(FieldMatchResult::Alias {
                     id: def.id,
-                    alias: alias_str.into(),
+                    alias: alias_str.to_string(),
                     score,
                     indices,
                 })
@@ -637,28 +652,31 @@ mod test {
 
     #[test]
     fn test_exact_text_search_query_matches() {
+        use crate::data::Utf32CachedString;
         let query = ExactTextSearchQuery::from("");
-        assert!(query.matches(""));
-        assert!(query.matches("this is a test string"));
+        assert!(query.matches(&Utf32CachedString::from("")));
+        assert!(query.matches(&Utf32CachedString::from("this is a test string")));
 
         let query = ExactTextSearchQuery::from("cat dog");
-        assert!(!query.matches("dog"));
-        assert!(!query.matches("cat"));
-        assert!(query.matches("cat dog"));
-        assert!(query.matches("CAT DOG"));
-        assert!(!query.matches("cat dgogg cast dog cat do"));
-        assert!(query.matches("cat dgogg cast dog cat dog"));
-        assert!(query.matches("there once was a Cat Dog in the street"));
-        assert!(query.matches("ends with cat dog"));
-        assert!(!query.matches("dog cat"));
+        assert!(!query.matches(&Utf32CachedString::from("dog")));
+        assert!(!query.matches(&Utf32CachedString::from("cat")));
+        assert!(query.matches(&Utf32CachedString::from("cat dog")));
+        assert!(query.matches(&Utf32CachedString::from("CAT DOG")));
+        assert!(!query.matches(&Utf32CachedString::from("cat dgogg cast dog cat do")));
+        assert!(query.matches(&Utf32CachedString::from("cat dgogg cast dog cat dog")));
+        assert!(query.matches(&Utf32CachedString::from(
+            "there once was a Cat Dog in the street"
+        )));
+        assert!(query.matches(&Utf32CachedString::from("ends with cat dog")));
+        assert!(!query.matches(&Utf32CachedString::from("dog cat")));
 
         let query = ExactTextSearchQuery::from("crème brûlée");
-        assert!(!query.matches("creme brulee"));
-        assert!(!query.matches("creme brulee"));
-        assert!(query.matches("Crème Brûlée"));
-        assert!(query.matches("CRÈME BRÛLÉE"));
-        assert!(query.matches("👌👌👌CRÈME BRÛLÉE👌👌👌"));
-        assert!(query.matches("CRÈME BRÛLÉE👌👌👌"));
-        assert!(query.matches("👌👌👌CRÈME BRÛLÉE"));
+        assert!(!query.matches(&Utf32CachedString::from("creme brulee")));
+        assert!(!query.matches(&Utf32CachedString::from("creme brulee")));
+        assert!(query.matches(&Utf32CachedString::from("Crème Brûlée")));
+        assert!(query.matches(&Utf32CachedString::from("CRÈME BRÛLÉE")));
+        assert!(query.matches(&Utf32CachedString::from("👌👌👌CRÈME BRÛLÉE👌👌👌")));
+        assert!(query.matches(&Utf32CachedString::from("CRÈME BRÛLÉE👌👌👌")));
+        assert!(query.matches(&Utf32CachedString::from("👌👌👌CRÈME BRÛLÉE")));
     }
 }
