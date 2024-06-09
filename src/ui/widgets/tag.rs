@@ -3,21 +3,20 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use eframe::egui::{
-    vec2, Align, Color32, FontSelection, Galley, Pos2, Rect, Response, Rounding, Sense, Stroke,
-    TextStyle, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType,
+    vec2, Align, Color32, FontSelection, Galley, Painter, Pos2, Rect, Response, Rounding, Sense,
+    Stroke, TextStyle, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType,
 };
 use eframe::emath::Rot2;
 use eframe::epaint::{self, ClippedShape, Hsva, HsvaGamma, Primitive};
 use relativetime::RelativeTime;
 
-use crate::data::kind::{KindType, Value};
-use crate::data::{FieldDefinition, FieldStore, FieldValue};
+use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue};
 use crate::fields;
 use crate::ui::theme;
 
 pub struct Tag<'a> {
     definition: &'a FieldDefinition,
-    value: Option<&'a Value>,
+    value: Option<&'a FieldValue>,
     use_small: bool,
     selected: bool,
 }
@@ -37,7 +36,7 @@ impl<'a> Tag<'a> {
         self
     }
 
-    pub fn value(mut self, value: &'a Value) -> Self {
+    pub fn value(mut self, value: &'a FieldValue) -> Self {
         self.value = Some(value);
         self
     }
@@ -83,7 +82,7 @@ impl<'a> Tag<'a> {
     fn galley(&self, ui: &Ui) -> Arc<Galley> {
         self.text_to_galley(
             ui,
-            WidgetText::from(self.definition.name.deref()),
+            WidgetText::from(&*self.definition.name),
             ui.available_width(),
         )
     }
@@ -92,23 +91,22 @@ impl<'a> Tag<'a> {
         let value = self.value.as_ref()?;
 
         let text = WidgetText::from(match value {
-            Value::Tag | Value::Container => return None,
-            Value::Boolean(b) => {
+            FieldValue::Tag | FieldValue::Container => return None,
+            FieldValue::Boolean(b) => {
                 if *b {
                     "\u{2714}".into()
                 } else {
                     "\u{274c}".into()
                 }
             }
-            Value::Int(i) => format!("{i}"),
-            Value::UInt(i) => format!("{i}"),
-            Value::Float(f) => format!("{f}"),
-            Value::String(s) => s.deref().into(),
-            Value::ItemRef((v, p)) => format!("{v}:{p}"),
-            Value::List(_) => return None,
-            Value::Colour(_) => "     ".into(),
-            Value::Dictionary(_) => return None,
-            Value::DateTime(dt) => dt.to_relative(),
+            FieldValue::Int(i) => format!("{i}"),
+            FieldValue::UInt(i) => format!("{i}"),
+            FieldValue::Float(f) => format!("{f}"),
+            FieldValue::String(s) => s.deref().into(),
+            FieldValue::ItemRef((v, p)) => format!("{v}:{p}"),
+            FieldValue::Colour(_) => "     ".into(),
+            FieldValue::DateTime(dt) => dt.to_relative(),
+            FieldValue::List(_) | FieldValue::Dictionary(_) => return None,
         });
 
         let hanger_width = self.line_height(ui) + 2.0 * TAG_PADDING.y;
@@ -138,8 +136,8 @@ impl<'a> Tag<'a> {
         let mut total_size = label_size;
 
         let hanger_size = match self.definition.field_type {
-            KindType::Tag => vec2(outer_line_height / 2.0, outer_height),
-            KindType::Container => vec2(0.0, 0.0),
+            FieldType::Tag => vec2(outer_line_height / 2.0, outer_height),
+            FieldType::Container => vec2(0.0, 0.0),
             _ => vec2(outer_line_height, outer_height),
         };
         let hanger_offset = vec2(hanger_size.x, 0.0);
@@ -173,6 +171,79 @@ impl<'a> Tag<'a> {
         .3
     }
 
+    fn paint_hanger(&self, ui: &Ui, p: &Painter, bbox: Rect, bg: Color32, fg: Color32) {
+        match self.definition.field_type {
+            FieldType::Tag => {
+                let rect_width =
+                    FRAC_1_SQRT_2 * bbox.size().y + 2.0 * (1.0 - FRAC_1_SQRT_2) * BORDER_RADIUS;
+                let rect = Rect::from_center_size(bbox.right_center(), Vec2::splat(rect_width));
+                let shape = epaint::RectShape::filled(rect, Rounding::same(BORDER_RADIUS), bg);
+                let prim = ui
+                    .ctx()
+                    .tessellate(
+                        vec![ClippedShape {
+                            shape: shape.into(),
+                            clip_rect: rect,
+                        }],
+                        ui.ctx().pixels_per_point(),
+                    )
+                    .swap_remove(0);
+                let mut mesh = match prim.primitive {
+                    Primitive::Mesh(m) => m,
+                    Primitive::Callback(_) => {
+                        return;
+                    }
+                };
+                mesh.rotate(
+                    Rot2::from_angle(std::f32::consts::FRAC_PI_4),
+                    bbox.right_center(),
+                );
+                p.add(mesh);
+
+                // hanger ring
+                p.add(epaint::CircleShape::filled(
+                    bbox.left_center() + vec2((SQRT_2 + 0.5) * BORDER_RADIUS, 0.0),
+                    BORDER_RADIUS / 2.0,
+                    fg,
+                ));
+            }
+            FieldType::Container => {}
+            typ => {
+                let (text, (r, g, b)) = match typ {
+                    FieldType::Tag | FieldType::Container => unreachable!(),
+                    FieldType::Boolean => ("?", (255, 255, 0)),
+                    FieldType::Int | FieldType::UInt => ("#", (0, 127, 255)),
+                    FieldType::Float => ("%", (0, 255, 0)),
+                    FieldType::String => ("$", (255, 0, 0)),
+                    FieldType::ItemRef => ("&", (128, 0, 0)),
+                    FieldType::List => ("[]", (255, 127, 0)),
+                    FieldType::Colour => ("\u{1f308}", (127, 127, 255)),
+                    FieldType::Dictionary => ("{}", (255, 0, 255)),
+                    FieldType::DateTime => ("\u{23f0}", (0, 204, 255)),
+                };
+
+                let bg = Color32::from_rgb(r, g, b);
+                let galley = self.text_to_galley(ui, text.into(), f32::INFINITY);
+
+                p.add(epaint::RectShape::filled(
+                    bbox,
+                    Rounding {
+                        ne: 0.0,
+                        se: 0.0,
+                        nw: BORDER_RADIUS,
+                        sw: BORDER_RADIUS,
+                    },
+                    bg,
+                ));
+                p.add(epaint::TextShape::new(
+                    self.galley_pos(&bbox, &galley, Some(Align::Center)),
+                    galley,
+                    theme::WHITE_TEXT,
+                ));
+            }
+        }
+    }
+
     pub fn paint(&self, ui: &Ui, rect: Rect, response: Option<Response>) {
         let p = ui.painter_at(rect.expand(SELECTED_STROKE_WIDTH));
         let galley = self.galley(ui);
@@ -187,8 +258,7 @@ impl<'a> Tag<'a> {
             .get_known_field_value(fields::meta::COLOUR)
             .ok()
             .flatten()
-            .map(|c| c.into())
-            .unwrap_or(visuals.bg_fill);
+            .map_or(visuals.bg_fill, |c| c.into());
 
         let mut hsva = HsvaGamma::from(bg);
 
@@ -217,92 +287,21 @@ impl<'a> Tag<'a> {
         // hanger
 
         let hanger_bbox = Rect::from_min_size(rect.min, hanger_size);
+        self.paint_hanger(ui, &p, hanger_bbox, bg, fg);
+
+        // label
+
         let mut label_rounding = Rounding {
             nw: 0.0,
             sw: 0.0,
             ne: BORDER_RADIUS,
             se: BORDER_RADIUS,
         };
-        match self.definition.field_type {
-            KindType::Tag => {
-                let hanger_rect_width =
-                    FRAC_1_SQRT_2 * total_size.y + 2.0 * (1.0 - FRAC_1_SQRT_2) * BORDER_RADIUS;
-                let hanger_rect = Rect::from_center_size(
-                    hanger_bbox.right_center(),
-                    Vec2::splat(hanger_rect_width),
-                );
-                let hanger_shape =
-                    epaint::RectShape::filled(hanger_rect, Rounding::same(BORDER_RADIUS), bg);
-                let hanger_prim = ui
-                    .ctx()
-                    .tessellate(
-                        vec![ClippedShape {
-                            shape: hanger_shape.into(),
-                            clip_rect: hanger_rect,
-                        }],
-                        ui.ctx().pixels_per_point(),
-                    )
-                    .swap_remove(0);
-                let mut hanger_mesh = match hanger_prim.primitive {
-                    Primitive::Mesh(m) => m,
-                    Primitive::Callback(_) => {
-                        return;
-                    }
-                };
-                hanger_mesh.rotate(
-                    Rot2::from_angle(std::f32::consts::FRAC_PI_4),
-                    hanger_bbox.right_center(),
-                );
-                p.add(hanger_mesh);
 
-                // hanger ring
-                p.add(epaint::CircleShape::filled(
-                    hanger_bbox.left_center() + vec2((SQRT_2 + 0.5) * BORDER_RADIUS, 0.0),
-                    BORDER_RADIUS / 2.0,
-                    fg,
-                ));
-            }
-            KindType::Container => {
-                label_rounding.nw = BORDER_RADIUS;
-                label_rounding.sw = BORDER_RADIUS;
-            }
-            typ => {
-                let (text, (r, g, b)) = match typ {
-                    KindType::Tag | KindType::Container => unreachable!(),
-                    KindType::Boolean => ("?", (255, 255, 0)),
-                    KindType::Int => ("#", (0, 127, 255)),
-                    KindType::UInt => ("#", (0, 127, 255)),
-                    KindType::Float => ("%", (0, 255, 0)),
-                    KindType::String => ("$", (255, 0, 0)),
-                    KindType::ItemRef => ("&", (128, 0, 0)),
-                    KindType::List => ("[]", (255, 127, 0)),
-                    KindType::Colour => ("\u{1f308}", (127, 127, 255)),
-                    KindType::Dictionary => ("{}", (255, 0, 255)),
-                    KindType::DateTime => ("\u{23f0}", (0, 204, 255)),
-                };
-
-                let hanger_bg = Color32::from_rgb(r, g, b);
-                let hanger_galley = self.text_to_galley(ui, text.into(), f32::INFINITY);
-
-                p.add(epaint::RectShape::filled(
-                    hanger_bbox,
-                    Rounding {
-                        ne: 0.0,
-                        se: 0.0,
-                        nw: BORDER_RADIUS,
-                        sw: BORDER_RADIUS,
-                    },
-                    hanger_bg,
-                ));
-                p.add(epaint::TextShape::new(
-                    self.galley_pos(&hanger_bbox, &hanger_galley, Some(Align::Center)),
-                    hanger_galley,
-                    theme::WHITE_TEXT,
-                ));
-            }
+        if self.definition.field_type == FieldType::Container {
+            label_rounding.nw = BORDER_RADIUS;
+            label_rounding.sw = BORDER_RADIUS;
         }
-
-        // label
 
         if has_value {
             label_rounding.ne = 0.0;

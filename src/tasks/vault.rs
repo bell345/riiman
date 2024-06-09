@@ -58,10 +58,10 @@ pub async fn load_vault_from_path(
 
     let contents = tokio::fs::read_to_string(&path)
         .await
-        .with_context(|| format!("while reading from vault file at {}", path))?;
+        .with_context(|| format!("while reading from vault file at {path}"))?;
 
     let vault = serde_json::from_str::<Vault>(contents.as_str())
-        .with_context(|| format!("while deserialising vault file at {}", path))?
+        .with_context(|| format!("while deserialising vault file at {path}"))?
         .with_file_path(Path::new(&path))
         .with_standard_defs();
 
@@ -81,24 +81,23 @@ pub async fn save_vault(vault: Arc<Vault>, progress: ProgressSenderRef) -> Async
 
     progress.send(ProgressState::Determinate(0.5));
 
-    match file_path {
-        Some(path) => tokio::fs::write(path, data).await?,
-        None => {
-            let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
+    if let Some(path) = file_path {
+        tokio::fs::write(path, data).await?;
+    } else {
+        let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
 
-            if let Some(fp) = dialog.save_file().await {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    fp.write(&data).await?;
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let path = fp.path();
+        if let Some(fp) = dialog.save_file().await {
+            #[cfg(target_arch = "wasm32")]
+            {
+                fp.write(&data).await?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = fp.path();
 
-                    tokio::fs::write(path, data).await.with_context(|| {
-                        format!("while writing to vault file at {}", path.display())
-                    })?;
-                }
+                tokio::fs::write(path, data).await.with_context(|| {
+                    format!("while writing to vault file at {}", path.display())
+                })?;
             }
         }
     }

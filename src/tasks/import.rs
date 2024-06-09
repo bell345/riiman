@@ -20,13 +20,14 @@ use crate::tasks::{
 };
 
 const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
+const CONCURRENT_TASKS_LIMIT: usize = 16;
 
 async fn import_single_image(
     state: AppStateRef,
     path: Box<Path>,
     last_modified: DateTime<Utc>,
 ) -> SingleImportResult {
-    let mut item = state
+    let item = state
         .read()
         .await
         .current_vault()?
@@ -197,6 +198,7 @@ pub async fn process_many<
     while let Some(res) = join_set.join_next().await {
         let task_res = res?;
 
+        #[allow(clippy::cast_precision_loss)]
         let p = results.len() as f32 / total as f32;
         on_result(&task_res, &progress, p);
 
@@ -247,8 +249,6 @@ pub async fn import_images_recursively(
         },
     )
     .await?;
-
-    const CONCURRENT_TASKS_LIMIT: usize = 16;
 
     let results = process_many(
         entries,

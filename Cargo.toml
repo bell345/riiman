@@ -70,4 +70,7 @@ windows = { version = "0.56.0", features = ["UI_ViewManagement"] }
 built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }
 
 [lints.clippy]
-redundant_closure_for_method_calls = "allow"
+pedantic = "warn"
+redundant_closure_for_method_calls = { level = "allow", priority = 1 }
+default_trait_access = { level = "allow", priority = 1 }
+module_name_repetitions = { level = "allow", priority = 1 }

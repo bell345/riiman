@@ -8,9 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserializer, Serializer};
 use uuid::Uuid;
 
-use crate::data::kind::KindType;
 use crate::data::{
-    kind, FieldDefinition, FieldStore, FieldValue, FieldValueKind, Item, SerialColour,
+    kind, FieldDefinition, FieldLike, FieldStore, FieldType, FieldValue, Item, SerialColour,
     Utf32CachedString, Vault,
 };
 use crate::errors::AppError;
@@ -103,11 +102,7 @@ impl TextSearchQuery {
             .unwrap();
         l_idx_buf.deref_mut().clear();
         self.pattern
-            .indices(
-                haystack.utf32().slice(..),
-                l_matcher.deref_mut(),
-                l_idx_buf.deref_mut(),
-            )
+            .indices(haystack.utf32().slice(..), &mut l_matcher, &mut l_idx_buf)
             .map(|score| (score, l_idx_buf.deref().clone()))
     }
 
@@ -118,7 +113,7 @@ impl TextSearchQuery {
             .lock()
             .unwrap();
         self.pattern
-            .score(haystack.utf32().slice(..), l_matcher.deref_mut())
+            .score(haystack.utf32().slice(..), &mut l_matcher)
     }
 
     pub fn matches(&self, haystack: &Utf32CachedString) -> bool {
@@ -227,9 +222,10 @@ impl ExactTextSearchQuery {
                 return true;
             }
 
-            scan_idx = match c == self.lowercase[scan_idx] {
-                true => scan_idx + 1,
-                false => 0,
+            scan_idx = if c == self.lowercase[scan_idx] {
+                scan_idx + 1
+            } else {
+                0
             }
         }
         scan_idx == self.char_len
@@ -258,7 +254,7 @@ fn evaluate_match_expression_string(
     })
 }
 
-fn evaluate_match_expression_typed<V, T: FieldValueKind<V>>(
+fn evaluate_match_expression_typed<V, T: FieldLike<V>>(
     value: &V,
     expr: &ValueMatchExpression,
 ) -> anyhow::Result<bool>
@@ -279,7 +275,7 @@ where
         }
         ValueMatchExpression::LessThan(x) => value < &*T::try_from(x.clone())?,
         ValueMatchExpression::GreaterThan(x) => value > &*T::try_from(x.clone())?,
-        ValueMatchExpression::Regex(x) => x.is_match(&format!("{}", value)),
+        ValueMatchExpression::Regex(x) => x.is_match(&value.to_string()),
     })
 }
 
@@ -344,21 +340,21 @@ fn generic_string_match(
                 let def = r.definition();
                 let v = r.value();
                 if match def.field_type {
-                    KindType::Tag | KindType::Container => matches(&def.name),
-                    KindType::String => matches(v.as_string()?),
-                    KindType::ItemRef => {
+                    FieldType::Tag | FieldType::Container => matches(&def.name),
+                    FieldType::String => matches(v.as_string()?),
+                    FieldType::ItemRef => {
                         let (v, p) = v.as_itemref()?;
                         matches(v) || matches(p)
                     }
-                    KindType::List => v
+                    FieldType::List => v
                         .as_list()?
                         .iter()
                         .filter_map(|v| v.as_string_opt())
                         .any(&matches),
-                    KindType::Dictionary => v
+                    FieldType::Dictionary => v
                         .as_dictionary()?
                         .iter()
-                        .any(|(k, v)| v.as_string_opt().map(&matches).unwrap_or(matches(k))),
+                        .any(|(k, v)| v.as_string_opt().map_or_else(|| matches(k), &matches)),
                     _ => false,
                 } {
                     return Ok(true);
@@ -447,28 +443,29 @@ pub enum FieldMatchResult {
 impl FieldMatchResult {
     fn id(&self) -> Uuid {
         match self {
-            FieldMatchResult::Name { id, .. } => *id,
-            FieldMatchResult::Alias { id, .. } => *id,
-            FieldMatchResult::ParentName { id, .. } => *id,
-            FieldMatchResult::ParentAlias { id, .. } => *id,
+            FieldMatchResult::Name { id, .. }
+            | FieldMatchResult::Alias { id, .. }
+            | FieldMatchResult::ParentName { id, .. }
+            | FieldMatchResult::ParentAlias { id, .. } => *id,
         }
     }
 
     fn weighted_score(&self) -> (u8, u32) {
         match self {
-            FieldMatchResult::Name { score, .. } => (1, *score),
-            FieldMatchResult::Alias { score, .. } => (1, *score),
-            FieldMatchResult::ParentName { score, .. } => (0, *score),
-            FieldMatchResult::ParentAlias { score, .. } => (0, *score),
+            FieldMatchResult::Name { score, .. } | FieldMatchResult::Alias { score, .. } => {
+                (1, *score)
+            }
+            FieldMatchResult::ParentName { score, .. }
+            | FieldMatchResult::ParentAlias { score, .. } => (0, *score),
         }
     }
 
     fn indices(&self) -> &Vec<u32> {
         match self {
-            FieldMatchResult::Name { indices, .. } => indices,
-            FieldMatchResult::Alias { indices, .. } => indices,
-            FieldMatchResult::ParentName { indices, .. } => indices,
-            FieldMatchResult::ParentAlias { indices, .. } => indices,
+            FieldMatchResult::Name { indices, .. }
+            | FieldMatchResult::Alias { indices, .. }
+            | FieldMatchResult::ParentName { indices, .. }
+            | FieldMatchResult::ParentAlias { indices, .. } => indices,
         }
     }
 }
@@ -504,7 +501,7 @@ fn evaluate_field_search_one(
             id: def.id,
             score,
             indices,
-        })
+        });
     }
     if let Some(aliases) = def.get_known_field_value(fields::meta::ALIASES)? {
         for alias in aliases {
@@ -515,7 +512,7 @@ fn evaluate_field_search_one(
                     alias: alias_str.to_string(),
                     score,
                     indices,
-                })
+                });
             }
         }
     }
@@ -606,11 +603,11 @@ pub fn evaluate_field_search(
     vault: &Vault,
     query: &TextSearchQuery,
     exclude_ids: Option<&[Uuid]>,
-    filter_types: Option<&[KindType]>,
+    filter_types: Option<&[FieldType]>,
 ) -> anyhow::Result<Vec<MergedFieldMatchResult>> {
     let mut results = vec![];
     let exclude_ids = exclude_ids.unwrap_or(&[]);
-    let filter_types = filter_types.unwrap_or_else(|| KindType::all());
+    let filter_types = filter_types.unwrap_or_else(|| FieldType::all());
     for def in vault.iter_field_defs() {
         if exclude_ids.contains(&def.id) {
             continue;

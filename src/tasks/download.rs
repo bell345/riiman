@@ -213,6 +213,7 @@ async fn async_tee(
     Ok(())
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub async fn perform_gallery_dl_download(
     state: AppStateRef,
     progress: ProgressSenderRef,
@@ -289,8 +290,7 @@ pub async fn perform_gallery_dl_download(
                 "error code {}",
                 status
                     .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or("unknown".to_string())
+                    .map_or("unknown".to_string(), |c| c.to_string())
             )
         }));
     }

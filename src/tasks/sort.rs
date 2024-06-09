@@ -4,7 +4,7 @@ use std::ops::{Deref, Not};
 use derive_more::Display;
 use uuid::Uuid;
 
-use crate::data::kind::KindType;
+use crate::data::FieldType;
 use crate::data::{kind, FieldDefinition, FieldStore, Item, SerialColour, Vault};
 use crate::errors::AppError;
 use crate::tasks::filter::{evaluate_items_filter, FilterExpression};
@@ -77,7 +77,7 @@ fn cmp_by_field(
     item2: &Item,
     vault: &Vault,
     field_def: &FieldDefinition,
-) -> Option<Ordering> {
+) -> Ordering {
     let id = &field_def.id;
 
     macro_rules! cmp_typed {
@@ -93,24 +93,24 @@ fn cmp_by_field(
             val1.cmp(&val2)
         }};
     }
-    Some(match field_def.field_type {
-        KindType::Container | KindType::Tag => item1
+
+    match field_def.field_type {
+        FieldType::Container | FieldType::Tag => item1
             .has_tag(vault, id)
             .ok()
             .cmp(&item2.has_tag(vault, id).ok()),
-        KindType::Boolean => cmp_typed!(bool, Boolean),
-        KindType::Int => cmp_typed!(i64, Int),
-        KindType::UInt => cmp_typed!(u64, UInt),
-        KindType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
-        KindType::Colour => cmp_typed!(SerialColour, Colour),
-        KindType::String | KindType::ItemRef => cmp_option_refs(
+        FieldType::Boolean => cmp_typed!(bool, Boolean),
+        FieldType::Int => cmp_typed!(i64, Int),
+        FieldType::UInt => cmp_typed!(u64, UInt),
+        FieldType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
+        FieldType::Colour => cmp_typed!(SerialColour, Colour),
+        FieldType::String | FieldType::ItemRef => cmp_option_refs(
             item1.get_field_value_as_str(id),
             item2.get_field_value_as_str(id),
         ),
-        KindType::DateTime => cmp_typed!(chrono::DateTime<chrono::Utc>, DateTime),
-        KindType::List => Ordering::Equal,
-        KindType::Dictionary => Ordering::Equal,
-    })
+        FieldType::DateTime => cmp_typed!(chrono::DateTime<chrono::Utc>, DateTime),
+        FieldType::List | FieldType::Dictionary => Ordering::Equal,
+    }
 }
 
 pub fn get_filtered_and_sorted_items<'a, 'b>(
@@ -132,9 +132,7 @@ pub fn get_filtered_and_sorted_items<'a, 'b>(
                 let field_def = vault.get_definition(id).ok_or(anyhow::Error::from(
                     AppError::MissingFieldDefinition { id: *id },
                 ))?;
-                items.sort_unstable_by(|a, b| {
-                    cmp_by_field(a, b, vault, &field_def).unwrap_or(Ordering::Equal)
-                });
+                items.sort_unstable_by(|a, b| cmp_by_field(a, b, vault, &field_def));
             }
         }
 

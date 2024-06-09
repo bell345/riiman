@@ -60,7 +60,7 @@ impl AppModal for LinkVault {
                         .selected_text(&self.selected_vault_name)
                         .show_ui(ui, |ui| {
                             let v = &mut self.selected_vault_name;
-                            ui.selectable_value(v, String::from(""), "--");
+                            ui.selectable_value(v, String::new(), "--");
                             for vault_name in vault_names {
                                 if vault_name != curr_name {
                                     ui.selectable_value(v, vault_name.clone(), vault_name);
@@ -86,10 +86,10 @@ impl AppModal for LinkVault {
             modal.buttons(ui, |ui| {
                 if modal.suggested_button(ui, "Link").clicked() {
                     match self.verify() {
-                        Ok(_) => {
+                        Ok(()) => {
                             let other_vault_name = self.selected_vault_name.clone();
                             state.blocking_read().add_task(
-                                format!("Link with {}", other_vault_name),
+                                format!("Link with {other_vault_name}"),
                                 |s, p| {
                                     Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
                                         other_vault_name,

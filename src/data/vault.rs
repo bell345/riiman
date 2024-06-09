@@ -13,13 +13,10 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::data::{kind, FieldStore, FieldValue};
+use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, Item};
 use crate::errors::{AppError, HierarchyError};
 use crate::fields;
 use crate::state::AppStateRef;
-
-use super::field::FieldDefinition;
-use super::item::Item;
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Vault {
@@ -41,8 +38,7 @@ enum HierarchyWalkPosition {
 impl HierarchyWalkPosition {
     fn id(&self) -> &Uuid {
         match self {
-            Self::FromParent { id, .. } => id,
-            Self::FromChild { id, .. } => id,
+            Self::FromParent { id, .. } | Self::FromChild { id, .. } => id,
         }
     }
 }
@@ -139,12 +135,11 @@ impl Vault {
 
     pub fn resolve_rel_path<'a>(&self, path: &'a Path) -> anyhow::Result<&'a str> {
         let rel_path = match (path.is_relative(), self.file_path.as_ref()) {
-            (true, Some(_)) => path,
             (false, Some(vault_path)) => {
                 let root_dir = vault_path.parent().ok_or(AppError::VaultNoParent)?;
                 path.strip_prefix(root_dir)?
             }
-            (_, None) => path,
+            _ => path,
         };
 
         rel_path
@@ -155,12 +150,11 @@ impl Vault {
 
     pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<String> {
         let abs_path = match (path.is_absolute(), self.file_path.as_ref()) {
-            (true, _) => path.to_owned(),
-            (_, Some(vault_path)) => {
+            (false, Some(vault_path)) => {
                 let root_dir = vault_path.parent().ok_or(AppError::VaultNoParent)?;
                 root_dir.join(path)
             }
-            (_, None) => path.to_owned(),
+            _ => path.to_owned(),
         };
 
         Ok(abs_path
@@ -187,8 +181,7 @@ impl Vault {
         Ok(self
             .items
             .get(&rel_path)
-            .map(|i| i.value().clone())
-            .unwrap_or_else(|| Item::new(rel_path)))
+            .map_or_else(|| Item::new(rel_path), |i| i.value().clone()))
     }
 
     pub fn update_item(&self, path: &Path, item: Item) -> anyhow::Result<()> {

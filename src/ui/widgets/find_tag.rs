@@ -1,7 +1,8 @@
-use crate::data::{kind, FieldDefinition, Vault};
+// Heavily informed by Jake Hansen's `egui_autocomplete`:
+// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
+
+use crate::data::{FieldDefinition, FieldType, Vault};
 use crate::shortcut;
-/// Heavily informed by Jake Hansen's 'egui_autocomplete':
-/// https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
@@ -19,13 +20,13 @@ pub struct FindTag<'a, 'b> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
     vault: &'b Vault,
+    state: State,
 
     create_req: Option<&'a mut Option<String>>,
 
     exclude_ids: Option<&'a [Uuid]>,
-    filter_types: Option<Vec<kind::KindType>>,
+    filter_types: Option<Vec<FieldType>>,
     max_suggestions: usize,
-    highlight: bool,
     show_tag: bool,
     desired_width: f32,
 }
@@ -92,8 +93,8 @@ impl<'a, 'b> FindTag<'a, 'b> {
             widget_id: egui::Id::new(widget_id),
             tag_id,
             vault,
+            state: State::default(),
             max_suggestions: 10,
-            highlight: true,
             exclude_ids: None,
             filter_types: None,
             show_tag: false,
@@ -107,17 +108,17 @@ impl<'a, 'b> FindTag<'a, 'b> {
         self
     }
 
-    pub fn filter_types(mut self, filter_types: &[kind::KindType]) -> Self {
+    pub fn filter_types(mut self, filter_types: &[FieldType]) -> Self {
         self.filter_types = Some(filter_types.to_vec());
         self
     }
 
-    pub fn exclude_types(mut self, exclude_types: &[kind::KindType]) -> Self {
+    pub fn exclude_types(mut self, exclude_types: &[FieldType]) -> Self {
         self.filter_types = Some(
-            kind::KindType::all()
+            FieldType::all()
                 .iter()
                 .filter(|t| !exclude_types.contains(t))
-                .cloned()
+                .copied()
                 .collect(),
         );
         self
@@ -192,93 +193,61 @@ impl<'a, 'b> FindTag<'a, 'b> {
             parents_aliases_and_indices,
         )
     }
-}
 
-impl<'a, 'b> Widget for FindTag<'a, 'b> {
-    fn ui(mut self, ui: &mut Ui) -> Response {
-        ui.ctx().check_for_id_clash(
-            self.widget_id,
-            Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
-            "FindTag",
-        );
-
-        let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
-        let mut tag_selected = false;
-
-        let up_pressed = state.focused && shortcut!(ui, ArrowUp);
-        let down_pressed = state.focused && shortcut!(ui, ArrowDown);
-
-        let mut text_res = {
-            let tags = if self.show_tag {
-                self.definition().map(|def| vec![def]).unwrap_or_default()
-            } else {
-                Default::default()
-            };
-            ui.add(
-                widgets::SearchBox::new(&mut state.search_text)
-                    .tags(&tags)
-                    .desired_width(self.desired_width),
-            )
+    fn new_search_results(&mut self) {
+        self.state.search_query = TextSearchQuery::new(self.state.search_text.clone());
+        let Ok(search_results) = evaluate_field_search(
+            self.vault,
+            &self.state.search_query,
+            self.exclude_ids,
+            self.filter_types.as_deref(),
+        ) else {
+            return;
         };
 
-        state.focused = text_res.has_focus();
+        let mut vec: Vec<_> = search_results
+            .into_iter()
+            .map(AutocompleteResult::MatchResult)
+            .collect();
 
-        if state.search_results.is_none() || text_res.changed() {
-            state.search_query = TextSearchQuery::new(state.search_text.clone());
-            let Ok(search_results) = evaluate_field_search(
-                self.vault,
-                &state.search_query,
-                self.exclude_ids,
-                self.filter_types.as_deref(),
-            ) else {
-                return text_res;
-            };
-
-            let mut vec: Vec<_> = search_results
-                .into_iter()
-                .map(AutocompleteResult::MatchResult)
-                .collect();
-
-            if self.create_req.is_some() && !state.search_text.is_empty() {
-                if vec.len() >= MAX_SUGGESTIONS {
-                    vec.insert(9, AutocompleteResult::CreateResult);
-                } else {
-                    vec.push(AutocompleteResult::CreateResult);
-                }
+        if self.create_req.is_some() && !self.state.search_text.is_empty() {
+            if vec.len() >= MAX_SUGGESTIONS {
+                vec.insert(9, AutocompleteResult::CreateResult);
+            } else {
+                vec.push(AutocompleteResult::CreateResult);
             }
-
-            state.search_results = Some(vec);
-            state.selected_index = Some(0);
         }
 
-        state.update_index(
-            down_pressed,
-            up_pressed,
-            state.search_results.as_ref().unwrap().len(),
-            MAX_SUGGESTIONS,
-        );
+        self.state.search_results = Some(vec);
+        self.state.selected_index = Some(0);
+    }
+
+    fn popup_ui(&mut self, ui: &mut Ui, text_res: &Response) -> bool {
+        let mut tag_selected = false;
 
         let accepted_by_keyboard = shortcut!(ui, Tab) || shortcut!(ui, Enter);
         if let (Some(index), true) = (
-            state.selected_index,
+            self.state.selected_index,
             ui.memory(|mem| mem.is_popup_open(self.widget_id)) && accepted_by_keyboard,
         ) {
-            if let Some(results) = state.search_results.as_ref() {
+            if let Some(results) = self.state.search_results.as_ref() {
                 if let Some(result) = results.get(index) {
                     tag_selected = true;
                     match result {
                         AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
                         AutocompleteResult::CreateResult => {
-                            **self.create_req.as_mut().unwrap() = Some(state.search_text.clone())
+                            **self.create_req.as_mut().unwrap() =
+                                Some(self.state.search_text.clone());
                         }
                     }
                 }
             }
         }
 
-        egui::popup::popup_below_widget(ui, self.widget_id, &text_res, |ui| {
+        egui::popup::popup_below_widget(ui, self.widget_id, text_res, |ui| {
             ui.set_min_width(200.0);
-            for (i, result) in state
+            for (i, result) in self
+                .state
                 .search_results
                 .as_ref()
                 .unwrap()
@@ -286,7 +255,7 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
                 .take(self.max_suggestions)
                 .enumerate()
             {
-                let selected = if let Some(x) = state.selected_index {
+                let selected = if let Some(x) = self.state.selected_index {
                     x == i
                 } else {
                     false
@@ -316,32 +285,71 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
                             *self.tag_id = Some(*id);
                         }
                         if res.has_focus() {
-                            state.focused = true;
+                            self.state.focused = true;
                         }
                     }
                     AutocompleteResult::CreateResult => {
-                        let res = ui
-                            .selectable_label(selected, format!("New tag: {}", state.search_text));
+                        let res = ui.selectable_label(
+                            selected,
+                            format!("New tag: {}", self.state.search_text),
+                        );
                         if res.clicked() {
                             tag_selected = true;
-                            **self.create_req.as_mut().unwrap() = Some(state.search_text.clone());
+                            **self.create_req.as_mut().unwrap() =
+                                Some(self.state.search_text.clone());
                         }
                         if res.has_focus() {
-                            state.focused = true;
+                            self.state.focused = true;
                         }
                     }
                 };
             }
         });
 
-        if state.focused && !state.search_results.as_ref().unwrap().is_empty() {
+        tag_selected
+    }
+}
+
+impl<'a, 'b> Widget for FindTag<'a, 'b> {
+    fn ui(mut self, ui: &mut Ui) -> Response {
+        ui.ctx().check_for_id_clash(
+            self.widget_id,
+            Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
+            "FindTag",
+        );
+
+        self.state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
+
+        let mut text_res = {
+            let tags = if self.show_tag {
+                self.definition().map(|def| vec![def]).unwrap_or_default()
+            } else {
+                Default::default()
+            };
+            ui.add(
+                widgets::SearchBox::new(&mut self.state.search_text)
+                    .tags(&tags)
+                    .desired_width(self.desired_width),
+            )
+        };
+
+        self.state.focused = text_res.has_focus();
+
+        if self.state.search_results.is_none() || text_res.changed() {
+            self.new_search_results();
+        }
+
+        self.state.update_index(
+            self.state.focused && shortcut!(ui, ArrowDown),
+            self.state.focused && shortcut!(ui, ArrowUp),
+            self.state.search_results.as_ref().unwrap().len(),
+            MAX_SUGGESTIONS,
+        );
+
+        let tag_selected = self.popup_ui(ui, &text_res);
+
+        if self.state.focused && !self.state.search_results.as_ref().unwrap().is_empty() {
             ui.memory_mut(|mem| mem.open_popup(self.widget_id));
-        } else {
-            /*ui.memory_mut(|mem| {
-                if mem.is_popup_open(self.widget_id) {
-                    mem.close_popup()
-                }
-            });*/
         }
 
         if tag_selected {
@@ -351,17 +359,18 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
                 }
             });
             text_res.changed = true;
-            state.focused = false;
-            state.search_results = None;
-            state.search_text.clear();
+            self.state.focused = false;
+            self.state.search_results = None;
+            self.state.search_text.clear();
         }
 
-        state.store(ui.ctx(), self.widget_id);
+        std::mem::take(&mut self.state).store(ui.ctx(), self.widget_id);
 
         text_res
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn highlight_matches(
     text: &str,
     match_indices: &[u32],

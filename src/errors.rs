@@ -1,4 +1,4 @@
-use crate::data::kind::KindType;
+use crate::data::FieldType;
 use crate::data::FieldValue;
 use thiserror::Error;
 use uuid::Uuid;
@@ -20,7 +20,10 @@ pub enum AppError {
     #[error("vault with name {name} does not exist")]
     VaultDoesNotExist { name: String },
     #[error("wrong field type; expected {expected:?}, got {got:?}")]
-    WrongFieldType { expected: KindType, got: FieldValue },
+    WrongFieldType {
+        expected: FieldType,
+        got: FieldValue,
+    },
     #[error("wrong mime type; expected {expected}, got {got}")]
     WrongMimeType { expected: String, got: String },
     #[error("missing field definition with ID {id}")]

@@ -7,6 +7,7 @@ use eframe::egui;
 use magick_rust::bindings::FilterType_LanczosFilter;
 use magick_rust::MagickWand;
 use sha2::{Digest, Sha256};
+use tokio::task::block_in_place;
 
 use crate::errors::AppError;
 use crate::state::AppStateRef;
@@ -30,8 +31,7 @@ impl ThumbnailParams {
             self.path.display(),
             self.height,
             self.last_modified
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or("".to_string())
+                .map_or(String::new(), |dt| dt.to_rfc3339())
         );
         let h = base16ct::lower::encode_string(Sha256::digest(id).as_slice());
         // 6f12a101d9[...] -> riiman/6f/12a101d9[...].jpg
@@ -43,18 +43,16 @@ impl ThumbnailParams {
     }
 }
 
-async fn read_thumbnail(path: impl AsRef<Path>) -> anyhow::Result<MagickWand> {
-    tokio::task::block_in_place(|| {
-        let wand = MagickWand::new();
-        wand.read_image(
-            path.as_ref()
-                .to_str()
-                .ok_or(AppError::InvalidUnicode)
-                .with_context(|| format!("decoding path: {}", path.as_ref().display()))?,
-        )
-        .with_context(|| format!("while reading from image at {}", path.as_ref().display()))?;
-        Ok(wand)
-    })
+fn read_thumbnail(path: impl AsRef<Path>) -> anyhow::Result<MagickWand> {
+    let wand = MagickWand::new();
+    wand.read_image(
+        path.as_ref()
+            .to_str()
+            .ok_or(AppError::InvalidUnicode)
+            .with_context(|| format!("decoding path: {}", path.as_ref().display()))?,
+    )
+    .with_context(|| format!("while reading from image at {}", path.as_ref().display()))?;
+    Ok(wand)
 }
 
 async fn read_and_resize(
@@ -67,7 +65,10 @@ async fn read_and_resize(
         vault.resolve_abs_path(&params.path)?
     };
 
-    tokio::task::block_in_place(|| {
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    block_in_place(|| {
         let wand = MagickWand::new();
         wand.read_image(&abs_path)
             .with_context(|| format!("while reading from image at {}", &abs_path))?;
@@ -99,8 +100,8 @@ fn export_all_rgba(wand: &MagickWand) -> anyhow::Result<Vec<u8>> {
     })
 }
 
-fn wand_to_result(wand: MagickWand, params: ThumbnailParams) -> AsyncTaskReturn {
-    let rgba = export_all_rgba(&wand)
+fn wand_to_result(wand: &MagickWand, params: ThumbnailParams) -> AsyncTaskReturn {
+    let rgba = export_all_rgba(wand)
         .with_context(|| format!("while reading pixels of {}", params.path.display()))?;
     let image = egui::ColorImage::from_rgba_unmultiplied(
         [wand.get_image_width(), wand.get_image_height()],
@@ -110,7 +111,7 @@ fn wand_to_result(wand: MagickWand, params: ThumbnailParams) -> AsyncTaskReturn 
     Ok(AsyncTaskResult::ThumbnailLoaded { params, image })
 }
 
-async fn thumbnail_needs_updating(params: &ThumbnailParams, meta: &Metadata) -> bool {
+fn thumbnail_needs_updating(params: &ThumbnailParams, meta: &Metadata) -> bool {
     if !meta.is_file() {
         return true;
     }
@@ -151,12 +152,12 @@ pub async fn load_image_thumbnail_with_fs(
         })?;
 
     let wand = match tokio::fs::metadata(&hash_file).await {
-        Ok(meta) if !thumbnail_needs_updating(&params, &meta).await => {
-            read_thumbnail(&hash_file).await?
+        Ok(meta) if !thumbnail_needs_updating(&params, &meta) => {
+            block_in_place(|| read_thumbnail(&hash_file))?
         }
         _ => {
             let wand = read_and_resize(state, &params).await?;
-            tokio::task::block_in_place(|| -> anyhow::Result<MagickWand> {
+            block_in_place(|| -> anyhow::Result<MagickWand> {
                 wand.write_image(hash_file_str).with_context(|| {
                     format!(
                         "while writing thumbnail at {} for {}",
@@ -169,7 +170,7 @@ pub async fn load_image_thumbnail_with_fs(
         }
     };
 
-    tokio::task::block_in_place(|| wand_to_result(wand, params))
+    block_in_place(|| wand_to_result(&wand, params))
 }
 
 pub async fn load_image_thumbnail(
@@ -186,7 +187,7 @@ pub async fn load_image_thumbnail(
 
     let wand = read_and_resize(state, &params).await?;
 
-    tokio::task::block_in_place(|| wand_to_result(wand, params))
+    block_in_place(|| wand_to_result(&wand, params))
 }
 
 pub async fn commit_thumbnail_to_fs(

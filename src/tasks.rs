@@ -129,12 +129,13 @@ impl TaskState {
         for task in self.running_tasks.drain(..) {
             let name = task.name.clone();
             match task.try_take_result() {
-                Ok(result) => match self.requests.remove(&name) {
-                    true => request_results.push((name, result)),
-                    false => {
+                Ok(result) => {
+                    if self.requests.remove(&name) {
+                        request_results.push((name, result));
+                    } else {
                         results.push(result);
                     }
-                },
+                }
                 Err(task) => still_running_tasks.push(task),
             }
         }
@@ -145,7 +146,7 @@ impl TaskState {
 
     pub fn iter_progress(&self) -> Vec<(String, ProgressState)> {
         let mut progresses = vec![];
-        for task in self.running_tasks.iter() {
+        for task in &self.running_tasks {
             if task.progress_rx.is_some() {
                 let rx = task.progress_rx.as_ref().unwrap();
                 progresses.push((task.name.clone(), rx.borrow().clone()));

@@ -28,8 +28,7 @@ fn compute_progress(sub_tasks: &DashMap<String, SubTaskProgress>) -> ProgressSta
     let progress_value = sub_tasks
         .iter()
         .map(|sub_task| match &sub_task.state {
-            ProgressState::NotStarted => 0.0,
-            ProgressState::Indeterminate => 0.0,
+            ProgressState::NotStarted | ProgressState::Indeterminate => 0.0,
             ProgressState::Determinate(x) => sub_task.weight * x,
             ProgressState::DeterminateWithMessage(x, msg) => {
                 progress_msg = Some(msg.clone());
@@ -46,6 +45,8 @@ fn compute_progress(sub_tasks: &DashMap<String, SubTaskProgress>) -> ProgressSta
     }
 }
 
+#[allow(clippy::unnecessary_box_returns)]
+#[allow(clippy::redundant_allocation)]
 impl ProgressSenderAsync {
     pub fn new(name: String, tx: tokio::sync::watch::Sender<ProgressState>) -> Box<Arc<Self>> {
         Arc::new(Self {
@@ -57,6 +58,7 @@ impl ProgressSenderAsync {
     }
 }
 
+//noinspection DuplicatedCode
 impl ProgressSender for Arc<ProgressSenderAsync> {
     fn send(&self, state: ProgressState) {
         self.tx.send_replace(state);
@@ -96,6 +98,7 @@ impl ProgressSenderSubTask {
     }
 }
 
+//noinspection DuplicatedCode
 impl ProgressSender for Arc<ProgressSenderSubTask> {
     fn send(&self, state: ProgressState) {
         self.parent
@@ -122,6 +125,8 @@ impl ProgressSender for Arc<ProgressSenderSubTask> {
 
 pub struct DummyProgressSender;
 
+#[allow(clippy::unnecessary_box_returns)]
+#[allow(clippy::redundant_allocation)]
 impl DummyProgressSender {
     pub fn new() -> Box<Arc<Self>> {
         Box::new(Arc::new(Self))

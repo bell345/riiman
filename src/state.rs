@@ -50,13 +50,13 @@ impl AppState {
 
         for item in vault.iter_items() {
             if let Ok(Some((ref_name, _))) = item.get_known_field_value(fields::general::LINK) {
-                if !self.vaults.contains_key(ref_name.deref()) && ref_name != name {
+                if !self.vaults.contains_key(&*ref_name) && ref_name != name {
                     self.unresolved_vaults.insert(ref_name.to_string());
                 }
             }
         }
 
-        self.unresolved_vaults.remove(name.deref());
+        self.unresolved_vaults.remove(&*name);
         self.vaults.insert(name.to_string(), Arc::new(vault));
         self.set_current_vault_name(name.into())
             .expect("vault we just added should exist");
@@ -111,11 +111,10 @@ impl AppState {
     }
 
     pub fn vault_name_to_file_paths(&self) -> HashMap<String, String> {
-        HashMap::from_iter(
-            self.vaults
-                .iter()
-                .filter_map(|r| Some((r.name.clone(), r.file_path.clone()?.to_str()?.to_string()))),
-        )
+        self.vaults
+            .iter()
+            .filter_map(|r| Some((r.name.clone(), r.file_path.clone()?.to_str()?.to_string())))
+            .collect()
     }
 
     fn add_task_impl(
@@ -243,4 +242,51 @@ impl AppState {
     }
 }
 
-pub type AppStateRef = Arc<tokio::sync::RwLock<AppState>>;
+#[derive(Default)]
+pub(crate) enum AppStateRef {
+    #[default]
+    Empty,
+    Filled(Arc<tokio::sync::RwLock<AppState>>),
+}
+
+impl AppStateRef {
+    pub fn new(state: AppState) -> Self {
+        Self::Filled(Arc::new(tokio::sync::RwLock::new(state)))
+    }
+
+    fn from_inner(inner: Arc<tokio::sync::RwLock<AppState>>) -> Self {
+        Self::Filled(inner)
+    }
+
+    pub fn blocking_catch<T, E: Into<anyhow::Error>>(
+        &self,
+        f: impl FnOnce(&AppState) -> Result<T, E>,
+    ) -> Result<T, ()> {
+        let r = self.blocking_read();
+        r.catch(|| f(&r))
+    }
+
+    pub fn blocking_current_vault(&self) -> Result<Arc<Vault>, ()> {
+        self.blocking_catch(|r| r.current_vault())
+    }
+}
+
+impl Deref for AppStateRef {
+    type Target = Arc<tokio::sync::RwLock<AppState>>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            AppStateRef::Empty => panic!("Expected filled AppStateRef instead of empty"),
+            AppStateRef::Filled(inner) => inner,
+        }
+    }
+}
+
+impl Clone for AppStateRef {
+    fn clone(&self) -> Self {
+        match self {
+            AppStateRef::Empty => AppStateRef::Empty,
+            AppStateRef::Filled(inner) => Self::from_inner(Arc::clone(inner)),
+        }
+    }
+}

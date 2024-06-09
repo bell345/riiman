@@ -12,7 +12,7 @@ use crate::data::{
 use crate::shortcut;
 use crate::state::AppStateRef;
 use crate::ui::cloneable_state::CloneableTempState;
-use crate::ui::modals::EditTagDialog;
+use crate::ui::modals::EditTag;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
 
@@ -24,6 +24,7 @@ pub struct ItemPanel<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> {
     app_state: AppStateRef,
 }
 
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Default, Clone)]
 struct State {
     is_editing: bool,
@@ -172,7 +173,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
                         let tag_res = ui.add(widgets::Tag::new(item.definition()));
                         if tag_res.clicked() {
                             let r = app_state.blocking_read();
-                            r.add_dialog(EditTagDialog::edit(item.definition()));
+                            r.add_dialog(EditTag::edit(item.definition().clone()));
                         }
 
                         let tag_space = tag_res.rect.width();
@@ -210,7 +211,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
 
         self.state.row_heights = existing_ids
             .iter()
-            .map(|id| new_row_heights.get(id).map(|v| *v).unwrap_or(22.0) + 6.0)
+            .map(|id| new_row_heights.get(id).map_or(22.0, |v| *v) + 6.0)
             .collect();
         self.state.widest_tag_width = widest_tag_width.into_inner().unwrap();
 
@@ -221,7 +222,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
                 self.state.field_store.remove_field(&existing_ids[i]);
             }
             ListEditResult::Edit(i, v) => {
-                self.state.field_store.set_field_value(existing_ids[i], v)
+                self.state.field_store.set_field_value(existing_ids[i], v);
             }
         };
 

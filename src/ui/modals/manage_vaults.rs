@@ -103,9 +103,7 @@ impl ManageVaults {
                     }
                     (Some(_), false) => {
                         if ui.button("Select").clicked() {
-                            if let Err(e) =
-                                state.blocking_read().set_current_vault_name(name.clone())
-                            {
+                            if let Err(e) = state.blocking_read().set_current_vault_name(name) {
                                 self.widget_state.error_message = Some(e.to_string());
                             }
                         }
@@ -122,7 +120,7 @@ impl ManageVaults {
             self.widget_state.current_name = r.current_vault_name();
 
             let vault_names = r.known_vault_names();
-            for name in vault_names.iter() {
+            for name in &vault_names {
                 let error_message = self
                     .widget_state
                     .vault_errors
@@ -138,10 +136,10 @@ impl ManageVaults {
                     Some(Ok(AsyncTaskResult::VaultLoaded { name: res_name, .. })) => {
                         *error_message = Some(format!(
                             "Vault has wrong name (expected {name}, got {res_name})"
-                        ))
+                        ));
                     }
                     Some(Ok(res)) => {
-                        *error_message = Some(format!("Unexpected task result: {res:?}"))
+                        *error_message = Some(format!("Unexpected task result: {res:?}"));
                     }
                     Some(Err(e)) if AppError::UserCancelled.is_err(&e) => {}
                     Some(Err(e)) => *error_message = Some(e.to_string()),

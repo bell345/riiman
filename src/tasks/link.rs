@@ -1,22 +1,19 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
-use tracing::info;
 
-use crate::data::{FieldStore, FieldValue, Vault};
+use crate::data::{FieldStore, FieldValue};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::tasks::import::{on_import_result_send_progress, process_many, scan_recursively};
 use crate::tasks::vault::save_vault;
-use crate::tasks::{
-    AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
-};
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, SingleImportResult};
 
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
@@ -136,7 +133,7 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
         progress.sub_task("Scan", 0.05),
         |item, metadata| {
             Some((
-                item.path().to_path_buf(),
+                item.path().clone(),
                 metadata
                     .modified()
                     .map(|m| -> DateTime<Utc> { m.into() })
@@ -147,11 +144,12 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     .await?;
 
     let json_ext = OsStr::new("json");
-    let mut path_to_last_modified_map: HashMap<PathBuf, DateTime<Utc>> = HashMap::from_iter(
-        entries
-            .iter()
-            .map(|(path, last_modified)| (path.to_path_buf(), *last_modified)),
-    );
+
+    let mut path_to_last_modified_map: HashMap<PathBuf, DateTime<Utc>> = entries
+        .iter()
+        .map(|(path, last_modified)| (path.clone(), *last_modified))
+        .collect();
+
     let entries_with_sidecars = entries
         .into_iter()
         .filter_map(|(path, _date)| {

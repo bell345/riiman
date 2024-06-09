@@ -84,6 +84,8 @@ impl Default for ThumbnailGrid {
     }
 }
 
+#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_wrap)]
 fn wrap_index(i: usize, len: usize, delta: isize) -> usize {
     ((((i as isize) + delta) + len as isize) % (len as isize)) as usize
 }
@@ -98,6 +100,7 @@ impl ThumbnailGrid {
 
     fn resolve_thumbnail(&self, item: &ThumbnailPosition) -> ThumbnailCacheItem {
         let path: Box<Path> = Path::new(item.path.as_str()).into();
+        #[allow(clippy::cast_possible_truncation)]
         let height = self.params.max_row_height as usize;
 
         let mut thumb = ThumbnailCacheItem::Loading;
@@ -173,7 +176,7 @@ impl ThumbnailGrid {
         if item_cache_is_new {
             let included_paths = item_cache.item_path_set();
             let mut to_remove = vec![];
-            for item in self.checked_items.iter() {
+            for item in &self.checked_items {
                 if !included_paths.contains(item.key()) {
                     to_remove.push(item.key().clone());
                 }
@@ -202,8 +205,7 @@ impl ThumbnailGrid {
                     let vp_middle = (vp.min + vp.max.to_vec2()) / 2.0;
                     let vp_changed = self.last_vp != Some(vp);
                     let vp_scrolled = vp_changed
-                        && (vp.size() - self.last_vp.map(|v| v.size()).unwrap_or(vp.size()))
-                            .length_sq()
+                        && (vp.size() - self.last_vp.map_or(vp.size(), |v| v.size())).length_sq()
                             < 1.0;
                     let vp_resized = vp_changed && !vp_scrolled;
                     let max_y = self.info.thumbnails.last().unwrap().outer_bounds.max.y;
@@ -238,7 +240,7 @@ impl ThumbnailGrid {
                             self.set_scroll = true;
                             self.middle_item = Some(next_path.clone());
                             ui.ctx().memory_mut(|wr| {
-                                wr.request_focus(egui::Id::new(next_path.clone()))
+                                wr.request_focus(egui::Id::new(next_path.clone()));
                             });
                             self.checked_items.clear();
                             self.checked_items.insert(next_path, true);
@@ -257,7 +259,7 @@ impl ThumbnailGrid {
                     let mut next_hover: Option<String> = None;
                     let mut next_pressing: Option<String> = None;
 
-                    for item in grid.thumbnails.iter() {
+                    for item in &grid.thumbnails {
                         let id = egui::Id::new(item.path.clone());
                         let outer_bounds = item.outer_bounds.translate(abs_min);
                         let inner_bounds = item.inner_bounds.translate(abs_min);
@@ -363,7 +365,7 @@ impl ThumbnailGrid {
                                             vertical_arrows: true,
                                             escape: false,
                                         },
-                                    )
+                                    );
                                 });
                             }
 
@@ -423,7 +425,7 @@ impl ThumbnailGrid {
 
                     let selected_path = self.view_selected_paths(|paths| {
                         if paths.len() == 1 {
-                            Some(paths.first().unwrap().to_string())
+                            Some((*paths.first().unwrap()).to_string())
                         } else {
                             None
                         }

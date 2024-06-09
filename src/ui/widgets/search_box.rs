@@ -51,6 +51,7 @@ impl<'a> Widget for SearchBox<'a> {
 
         let icon_reserved_width = icon_galley.rect.width() + style.spacing.icon_spacing;
 
+        #[allow(clippy::cast_precision_loss)]
         let reserved_width = icon_reserved_width
             + tag_sizes.iter().map(|s| s.x).sum::<f32>()
             + style.spacing.item_spacing.x * tag_sizes.len().saturating_sub(1) as f32;

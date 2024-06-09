@@ -1,13 +1,13 @@
 #![allow(unused_imports)]
 
 pub use field::kind;
-pub use field::kind::FieldKind as FieldValueKind;
-pub use field::kind::TagKind as FieldKind;
-pub use field::FieldDefinition;
-pub use field::FieldType;
-pub use field::FieldValue;
+pub use field::kind::FieldLike;
+pub use field::kind::TagLike;
+pub use field::Definition as FieldDefinition;
 pub use field::KnownField;
 pub use field::SerialColour;
+pub use field::Type as FieldType;
+pub use field::Value as FieldValue;
 pub use field_store::FieldStore;
 pub use field_store::SimpleFieldStore;
 pub use item::Item;

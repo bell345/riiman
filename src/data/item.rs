@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use crate::data::field::KnownField;
 use crate::data::field_store::FieldStore;
-use crate::data::{
-    kind, FieldDefinition, FieldKind, FieldValue, FieldValueKind, Utf32CachedString, Vault,
-};
+use crate::data::{kind, FieldDefinition, FieldValue, Utf32CachedString, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
@@ -44,20 +42,21 @@ impl Item {
         self.get_known_field_value(fields::general::LINK)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn blocking_update_link(&self, state: AppStateRef) -> Result<bool, ()> {
         let r = state.blocking_read();
         let vault = r.catch(|| r.current_vault())?;
         let link_ref = r.catch(|| self.link_ref())?;
 
-        let mut link_res = None;
+        let mut item_ref_opt = None;
         if let Some((other_vault_name, _)) = link_ref {
             let other_vault = r.catch(|| r.get_vault(&other_vault_name))?;
-            link_res = r.catch(|| vault.update_link(Path::new(self.path()), &other_vault))?;
+            item_ref_opt = r.catch(|| vault.update_link(Path::new(self.path()), &other_vault))?;
         }
         drop(vault);
 
         r.save_current_vault();
-        if let Some(kind::ItemRef((other_vault_name, _))) = link_res {
+        if let Some(kind::ItemRef((other_vault_name, _))) = item_ref_opt {
             r.save_vault_by_name(other_vault_name.to_string());
             Ok(true)
         } else {

@@ -1,5 +1,5 @@
 use crate::data::field_refs::FieldDefValueRef;
-use crate::data::{FieldDefinition, FieldKind, FieldValue, FieldValueKind, KnownField, Utf32CachedString, Vault};
+use crate::data::{FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use anyhow::Context;
@@ -15,14 +15,14 @@ use uuid::Uuid;
 pub trait FieldStore {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
 
-    fn set_known_field<T: FieldKind>(&self, field: KnownField<T>, value: T) {
+    fn set_known_field<T: TagLike>(&self, field: KnownField<T>, value: T) {
         *self
             .fields()
             .entry(field.id)
             .or_insert_with(|| <T as Default>::default().into()) = value.into();
     }
 
-    fn has_known_field<T: FieldKind>(&self, field: KnownField<T>) -> anyhow::Result<Option<()>>
+    fn has_known_field<T: TagLike>(&self, field: KnownField<T>) -> anyhow::Result<Option<()>>
     where
         <T as TryFrom<FieldValue>>::Error: std::error::Error + Send + Sync + 'static,
     {
@@ -36,7 +36,7 @@ pub trait FieldStore {
         }
     }
 
-    fn get_known_field_value<V, T: FieldValueKind<V>>(
+    fn get_known_field_value<V, T: FieldLike<V>>(
         &self,
         field: KnownField<T>,
     ) -> anyhow::Result<Option<V>>
@@ -53,7 +53,7 @@ pub trait FieldStore {
         }
     }
 
-    fn get_or_insert_known_field_value<V, T: FieldValueKind<V>>(
+    fn get_or_insert_known_field_value<V, T: FieldLike<V>>(
         &self,
         field: KnownField<T>,
         default_value: V,
@@ -70,7 +70,7 @@ pub trait FieldStore {
             .with_context(|| format!("while retrieving field {}", field.name))
     }
 
-    fn set_known_field_value<V, T: FieldValueKind<V>>(&self, field: KnownField<T>, value: V) {
+    fn set_known_field_value<V, T: FieldLike<V>>(&self, field: KnownField<T>, value: V) {
         *self
             .fields()
             .entry(field.id)
@@ -84,6 +84,7 @@ pub trait FieldStore {
         let Some(height) = self.get_known_field_value(fields::image::HEIGHT)? else {
             return Ok(None);
         };
+        #[allow(clippy::cast_precision_loss)]
         Ok(Some(egui::Vec2::new(width as f32, height as f32)))
     }
 
@@ -103,7 +104,7 @@ pub trait FieldStore {
         self.fields().insert(field_id, value);
     }
 
-    fn get_field_value_typed<V, T: FieldValueKind<V>>(
+    fn get_field_value_typed<V, T: FieldLike<V>>(
         &self,
         field_id: &Uuid,
     ) -> anyhow::Result<Option<V>>
@@ -115,11 +116,11 @@ pub trait FieldStore {
                 .clone()
                 .try_into()
                 .map(|v: T| -> Option<V> { Some(v.into()) })
-                .with_context(|| format!("while retrieving field with ID {}", field_id)),
+                .with_context(|| format!("while retrieving field with ID {field_id}")),
             None => Ok(None),
         }
     }
-    
+
     fn get_field_value_as_str(&self, field_id: &Uuid) -> Option<impl Deref<Target = Utf32CachedString>> {
         self.get_field_value(field_id)?.try_map(|v| v.as_string_opt()).ok()
     }
@@ -182,6 +183,7 @@ pub trait FieldStore {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Default, Clone)]
 pub struct SimpleFieldStore {
     fields: DashMap<Uuid, FieldValue>,

@@ -231,9 +231,6 @@ impl<'a> Widget for TagTree<'a> {
 
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
 
-        let up_pressed = state.focused && shortcut!(ui, ArrowUp);
-        let down_pressed = state.focused && shortcut!(ui, ArrowDown);
-
         let text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
 
         ui.separator();
@@ -279,7 +276,10 @@ impl<'a> Widget for TagTree<'a> {
             state.selected_indices = vec![0];
         }
 
-        state.update_index(down_pressed, up_pressed);
+        state.update_index(
+            state.focused && shortcut!(ui, ArrowDown),
+            state.focused && shortcut!(ui, ArrowUp),
+        );
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])

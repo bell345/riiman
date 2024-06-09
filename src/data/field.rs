@@ -9,18 +9,19 @@ use crate::data::{FieldStore, Utf32CachedString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
-pub struct FieldDefinition {
+pub struct Definition {
     pub id: Uuid,
     pub name: Utf32CachedString,
-    pub field_type: kind::KindType,
+    pub field_type: Type,
     parents: DashSet<Uuid>,
     children: DashSet<Uuid>,
-    fields: DashMap<Uuid, FieldValue>,
+    fields: DashMap<Uuid, Value>,
 }
 
-impl FieldDefinition {
-    pub fn known<T: kind::TagKind>(known_field: KnownField<T>) -> Self {
+impl Definition {
+    pub fn known<T: kind::TagLike>(known_field: &KnownField<T>) -> Self {
         Self {
             id: known_field.id,
             name: known_field.name.to_string().into(),
@@ -42,7 +43,7 @@ impl FieldDefinition {
     }
 
     pub fn with_tag_id(self, tag_id: Uuid) -> Self {
-        self.fields.insert(tag_id, FieldValue::Tag);
+        self.fields.insert(tag_id, Value::Tag);
         self
     }
 
@@ -71,8 +72,8 @@ impl FieldDefinition {
     }
 }
 
-impl FieldStore for FieldDefinition {
-    fn fields(&self) -> &DashMap<Uuid, FieldValue> {
+impl FieldStore for Definition {
+    fn fields(&self) -> &DashMap<Uuid, Value> {
         &self.fields
     }
 }
@@ -82,9 +83,9 @@ macro_rules! impl_kind {
         #[derive(Default, std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name ;
 
-        impl TagKind for $name {
-            fn get_type() -> KindType {
-                KindType::$name
+        impl TagLike for $name {
+            fn get_type() -> Type {
+                Type::$name
             }
         }
 
@@ -112,13 +113,13 @@ macro_rules! impl_kind {
         #[derive(Default, std::fmt::Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct $name ( pub $type );
 
-        impl TagKind for $name {
-            fn get_type() -> KindType {
-                KindType::$name
+        impl TagLike for $name {
+            fn get_type() -> Type {
+                Type::$name
             }
         }
 
-        impl FieldKind< $type > for $name {}
+        impl FieldLike< $type > for $name {}
 
         impl TryFrom<Value> for $name {
             type Error = $crate::errors::AppError;
@@ -204,7 +205,7 @@ macro_rules! define_kinds {
             serde::Serialize,
             serde::Deserialize
         )]
-        pub enum KindType {
+        pub enum Type {
             $(
                 $( #[display(fmt = $display )] )?
                 $( #[serde(alias = $alias )] )?
@@ -212,8 +213,8 @@ macro_rules! define_kinds {
             )*
         }
 
-        impl KindType {
-            pub const fn all() -> &'static [KindType] {
+        impl Type {
+            pub const fn all() -> &'static [Type] {
                 &[
                     $(
                         Self:: $name ,
@@ -231,13 +232,13 @@ macro_rules! define_kinds {
         }
 
         impl Value {
-            pub fn get_type(&self) -> KindType {
+            pub fn get_type(&self) -> Type {
                 match self {
                     $(
                         Self:: $name $(
                           (_) if std::any::TypeId::of::< $type >()
                             != std::any::TypeId::of::<()>()
-                        )? => KindType:: $name ,
+                        )? => Type:: $name ,
                     )*
                     _ => unreachable!()
                 }
@@ -266,13 +267,13 @@ macro_rules! define_kinds {
 pub struct SerialColour(pub(crate) [u8; 3]);
 
 impl SerialColour {
-    pub fn r(&self) -> u8 {
+    pub fn r(self) -> u8 {
         self.0[0]
     }
-    pub fn g(&self) -> u8 {
+    pub fn g(self) -> u8 {
         self.0[1]
     }
-    pub fn b(&self) -> u8 {
+    pub fn b(self) -> u8 {
         self.0[2]
     }
     pub fn as_slice(&self) -> &[u8; 3] {
@@ -320,13 +321,13 @@ pub mod kind {
     use std::any::TypeId;
     use std::str::FromStr;
 
-    pub trait TagKind:
+    pub trait TagLike:
         std::fmt::Debug + Default + Clone + serde::Serialize + TryFrom<Value> + Into<Value>
     {
-        fn get_type() -> KindType;
+        fn get_type() -> Type;
     }
 
-    pub trait FieldKind<T>: TagKind + From<T> + Into<T> + std::ops::Deref<Target = T> {}
+    pub trait FieldLike<T>: TagLike + From<T> + Into<T> + std::ops::Deref<Target = T> {}
 
     define_kinds! {
         Tag,
@@ -381,29 +382,30 @@ pub mod kind {
 
         pub fn as_str(&self) -> Result<&str, AppError> {
             self.as_str_opt().ok_or_else(|| AppError::WrongFieldType {
-                expected: KindType::String,
+                expected: Type::String,
                 got: self.clone(),
             })
         }
     }
 
-    impl Default for KindType {
+    impl Default for Type {
         fn default() -> Self {
             Self::Tag
         }
     }
 }
 
-pub type FieldValue = kind::Value;
-pub type FieldType = kind::KindType;
+pub type Value = kind::Value;
+pub type Type = kind::Type;
 
-pub struct KnownField<T: kind::TagKind> {
+#[allow(clippy::module_name_repetitions)]
+pub struct KnownField<T: kind::TagLike> {
     pub id: Uuid,
     pub name: &'static str,
     _phantom: PhantomData<T>,
 }
 
-impl<T: kind::TagKind> KnownField<T> {
+impl<T: kind::TagLike> KnownField<T> {
     pub const fn new(id: Uuid, name: &'static str) -> KnownField<T> {
         KnownField {
             id,

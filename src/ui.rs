@@ -37,7 +37,7 @@ mod widgets;
 
 pub use crate::ui::modals::AppModal;
 pub use crate::ui::modals::MessageDialog;
-use crate::ui::modals::{EditTagDialog, LinkVault, NewVaultDialog};
+use crate::ui::modals::{EditTag, LinkVault, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 static EXACT_TEXT_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -84,6 +84,7 @@ impl AppStorage {
 impl App {
     pub fn new() -> Self {
         Self {
+            state: AppStateRef::new(AppState::default()),
             ..Default::default()
         }
     }
@@ -326,11 +327,11 @@ impl App {
     fn tag_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Tags", |ui| {
             if ui.button("New...").clicked() {
-                self.add_modal_dialog(EditTagDialog::create());
+                self.add_modal_dialog(EditTag::create());
                 ui.close_menu();
             }
             if ui.button("Edit...").clicked() {
-                self.add_modal_dialog(EditTagDialog::select());
+                self.add_modal_dialog(EditTag::select());
                 ui.close_menu();
             }
         });
@@ -455,7 +456,7 @@ impl App {
                     } else {
                         FilterExpression::TextSearch(self.search_text.clone().into())
                     };
-                    
+
                     self.state.blocking_read().set_filter_and_sorts(filter, sorts);
                 });
             });
@@ -643,7 +644,7 @@ impl eframe::App for App {
             }
             self.modal_dialogs.insert(new_dialog.id(), new_dialog);
         }
-    
+
         self.modal_dialogs
             .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 

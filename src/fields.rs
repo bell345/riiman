@@ -2,18 +2,18 @@
 macro_rules! field_def {
     { $name:ident } => {
         paste::paste! {
-            FieldDefinition::known([<$name:upper>])
+            FieldDefinition::known(&[<$name:upper>])
         }
     };
     { $name:ident , $parent:ident } => {
         paste::paste! {
-            FieldDefinition::known([<$name:upper>])
+            FieldDefinition::known(&[<$name:upper>])
                 .with_parent($parent.id)
         }
     };
     { $name:ident , $parent:ident , $( $tag_ns:ident :: $tag:ident ),+ } => {
         paste::paste! {
-            FieldDefinition::known([<$name:upper>])
+            FieldDefinition::known(&[<$name:upper>])
                 .with_parent($parent.id)
             $(
                 .with_tag_id(super::$tag_ns::[<$tag:upper>].id)
@@ -67,7 +67,7 @@ macro_rules! field_defs {
                     pub fn defs() -> Vec<&'static FieldDefinition> {
                         static DEFS: OnceLock<Vec<FieldDefinition>> = OnceLock::new();
                         DEFS.get_or_init(|| vec![
-                            FieldDefinition::known(NAMESPACE),
+                            FieldDefinition::known(&NAMESPACE),
                             $(
                                 field_def!{ $name , NAMESPACE $(,  $tag_ns :: $tag ),* },
                             )*
