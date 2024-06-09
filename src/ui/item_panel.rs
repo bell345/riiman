@@ -227,11 +227,11 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
         };
 
         ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
+            if ui.button("Cancel").clicked() || shortcut!(ui, Escape) {
                 self.state.is_editing = false;
             }
 
-            if ui.button("OK").clicked() {
+            if ui.button("OK").clicked() || shortcut!(ui, Enter) {
                 item.clear();
                 item.update(&self.state.field_store);
                 if item.blocking_update_link(self.app_state.clone()).is_err() {
@@ -269,7 +269,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
 
         let is_viewing = !self.state.is_editing && !self.state.is_adding;
 
-        if ui.button("Edit tags").clicked() || (is_viewing && shortcut!(ui, E)) {
+        if ui.button("Edit tags").clicked() || (is_viewing && shortcut!(ui, CTRL + E)) {
             self.state.is_editing = true;
             self.state.widest_tag_width = 100.0;
             self.state.field_store.clear();
@@ -277,7 +277,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
         }
 
         if !self.state.is_adding && ui.button("Add tag").clicked()
-            || (is_viewing && shortcut!(ui, A))
+            || (is_viewing && shortcut!(ui, Backtick))
         {
             self.state.is_adding = true;
             self.state.quick_create_state = Default::default();

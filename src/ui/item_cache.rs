@@ -48,20 +48,25 @@ impl ItemCache {
         None
     }
 
-    pub fn update(&mut self, state: AppStateRef) -> anyhow::Result<(bool, bool)> {
+    pub fn update(&mut self, state: AppStateRef) -> Option<(bool, bool)> {
         let r = state.blocking_read();
-        let current_vault = r.current_vault()?;
+        let vault = r.current_vault_opt()?;
 
-        let Some(params) = self.new_params_opt(state.clone(), &current_vault) else {
-            return Ok((false, false));
+        let Some(params) = self.new_params_opt(state.clone(), &vault) else {
+            return Some((false, false));
         };
         let vault_is_new = self.params.vault_name == params.vault_name;
 
-        let items = get_filtered_and_sorted_items(&current_vault, &r.filter(), &r.sorts())?;
+        let items = r
+            .catch(
+                || "item_cache".into(),
+                || get_filtered_and_sorted_items(&vault, &r.filter(), &r.sorts()),
+            )
+            .ok()?;
         self.params = params;
         self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
 
-        Ok((true, vault_is_new))
+        Some((true, vault_is_new))
     }
 
     pub fn resolve_all_refs<'a, 'b: 'a>(&'a self, vault: &'b Vault) -> Vec<Ref<String, Item>> {

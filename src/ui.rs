@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -72,7 +73,6 @@ struct AppStorage {
     vault_name_to_file_paths: HashMap<String, String>,
     current_vault_name: Option<String>,
     thumbnail_row_height: f32,
-    checked_items: Vec<String>,
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
 }
@@ -134,8 +134,10 @@ impl App {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
-        for (name, path) in stored_state.vault_name_to_file_paths {
-            let set_as_current = stored_state.current_vault_name.as_ref() == Some(&path);
+        let mut vault_name_to_file_paths: Vec<(String, String)> = stored_state.vault_name_to_file_paths.into_iter().collect();
+        vault_name_to_file_paths.sort_by_key(|(name, _)| Reverse(stored_state.current_vault_name.as_ref() == Some(name)));
+        for (name, path) in vault_name_to_file_paths {
+            let set_as_current = stored_state.current_vault_name.as_ref() == Some(&name);
             if set_as_current {
                 self.state.blocking_read().set_vault_loading();
             }
@@ -151,8 +153,6 @@ impl App {
         }
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
-        self.thumbnail_grid
-            .set_selected_paths(&stored_state.checked_items);
 
         self.state.blocking_read().set_filter_and_sorts(stored_state.filter, stored_state.sorts);
 
@@ -508,27 +508,26 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .max_width(350.0)
-                    .show_viewport(ui, |ui, _vp| {
+                    .show_viewport(ui, |ui, _vp| -> Result<(), ()> {
                         let len = self.item_list_cache.len_items();
                         ui.label(format!("{} item{}", len, if len == 1 { "" } else {"s"}));
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
+                            let mut select_mode = self.thumbnail_grid.select_mode(ui.ctx());
                             ui.selectable_value(
-                                &mut self.thumbnail_grid.select_mode,
+                                &mut select_mode,
                                 SelectMode::Single,
                                 "Single",
                             );
                             ui.selectable_value(
-                                &mut self.thumbnail_grid.select_mode,
+                                &mut select_mode,
                                 SelectMode::Multiple,
                                 "Multiple",
                             );
+                            self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
-                        let r = self.state.blocking_read();
-                        let Some(vault) = r.current_vault_opt() else {
-                            return;
-                        };
+                        let vault = self.state.blocking_current_vault(|| "right panel".into())?;
 
                         let items = self.thumbnail_grid.view_selected_paths(|paths| {
                             self.item_list_cache.resolve_refs(&vault, paths)
@@ -540,6 +539,8 @@ impl App {
                             &vault,
                             self.state.clone(),
                         ));
+                        
+                        Ok(())
                     });
             },
         );
@@ -552,35 +553,19 @@ impl App {
                     time!("Right panel UI", {
                         self.right_panel_ui(ui);
                     });
-
-                    let mut update =
-                        || -> anyhow::Result<Option<egui::scroll_area::ScrollAreaOutput<()>>> {
-                            let (is_new_item_list, vault_is_new) =
-                            time!("Item list update", {
-                                self.item_list_cache.update(self.state.clone())?
-                            });
-
-                            time!("Thumbnail grid update", {
-                                self.thumbnail_grid.update(
-                                    ui,
-                                    self.state.clone(),
-                                    &self.item_list_cache,
-                                    is_new_item_list,
-                                    vault_is_new,
-                                )
-                            })
-                        };
-
-                    let mut scroll_area_rect: Option<egui::Rect> = None;
-                    match update() {
-                        Ok(Some(egui::scroll_area::ScrollAreaOutput { inner_rect, .. })) => {
-                            scroll_area_rect = Some(inner_rect);
-                        }
-                        Ok(_) => {}
-                        Err(e) if AppError::NoCurrentVault.is_err(&e) => {}
-                        Err(e) => self.error(format!("{e:?}")),
-                    }
-                    scroll_area_rect
+                    let (is_new_item_list, vault_is_new) =
+                    time!("Item list update", {
+                        self.item_list_cache.update(self.state.clone())?
+                    });
+                    time!("Thumbnail grid update", {
+                        self.thumbnail_grid.update(
+                            ui,
+                            self.state.clone(),
+                            &self.item_list_cache,
+                            is_new_item_list,
+                            vault_is_new,
+                        )
+                    })
                 })
                 .inner;
 
@@ -614,7 +599,7 @@ impl App {
                 let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
                     EXPAND_BTN_SIZE,
                     scroll_area_rect
-                        .unwrap_or(ui.min_rect())
+                        .map_or(ui.min_rect(), |res| res.inner_rect)
                         .shrink2(EXPAND_BTN_MARGIN),
                 );
 
@@ -623,7 +608,6 @@ impl App {
                 }
             });
         });
-
     }
 }
 
@@ -672,9 +656,6 @@ impl eframe::App for App {
             current_vault_name: state.current_vault_name().map(|s| s.to_string()),
             vault_name_to_file_paths: state.vault_name_to_file_paths(),
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
-            checked_items: self
-                .thumbnail_grid
-                .view_selected_paths(|paths| paths.into_iter().cloned().collect()),
             sorts: state.sorts().clone(),
             filter: state.filter().clone(),
         };

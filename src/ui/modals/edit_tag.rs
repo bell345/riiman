@@ -266,13 +266,16 @@ impl EditTag {
         };
 
         ui.group(|ui| {
-            let Ok(aliases) = r.catch::<Vec<_>, anyhow::Error>(|| {
-                Ok(def
-                    .get_or_insert_known_field_value(fields::meta::ALIASES, vec![])?
-                    .into_iter()
-                    .filter_map(|v| v.as_str_opt().map(|s| s.to_string()))
-                    .collect())
-            }) else {
+            let Ok(aliases) = r.catch::<Vec<_>, anyhow::Error>(
+                || "edit_tag".into(),
+                || {
+                    Ok(def
+                        .get_or_insert_known_field_value(fields::meta::ALIASES, vec![])?
+                        .into_iter()
+                        .filter_map(|v| v.as_str_opt().map(|s| s.to_string()))
+                        .collect())
+                },
+            ) else {
                 return;
             };
 
@@ -338,7 +341,9 @@ impl EditTag {
         ui.heading("Edit properties");
 
         egui::ScrollArea::vertical().show_viewport(ui, |ui, _vp| -> Result<(), ()> {
-            let vault = self.app_state.blocking_current_vault()?;
+            let vault = self
+                .app_state
+                .blocking_current_vault(|| "edit tag".into())?;
 
             egui_extras::TableBuilder::new(ui)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -378,12 +383,15 @@ impl EditTag {
                         });
                         row.col(|ui| {
                             let visuals = ui.style().visuals.widgets.inactive;
-                            let Ok(mut colour) = self.app_state.blocking_catch(|_| {
-                                def.get_or_insert_known_field_value(
-                                    fields::meta::COLOUR,
-                                    visuals.bg_fill.into(),
-                                )
-                            }) else {
+                            let Ok(mut colour) = self.app_state.blocking_catch(
+                                || "edit tag colour".into(),
+                                |_| {
+                                    def.get_or_insert_known_field_value(
+                                        fields::meta::COLOUR,
+                                        visuals.bg_fill.into(),
+                                    )
+                                },
+                            ) else {
                                 return;
                             };
                             ui.color_edit_button_srgb(colour.as_mut_slice());
@@ -433,8 +441,10 @@ impl EditTag {
                 return Err("Name must not be empty".into());
             }
 
-            let r = self.app_state.blocking_read();
-            let Ok(vault) = r.catch(|| r.current_vault()) else {
+            let Ok(vault) = self
+                .app_state
+                .blocking_current_vault(|| "verify edit tag".into())
+            else {
                 return Err("No vault found".into());
             };
 
@@ -473,7 +483,9 @@ impl EditTag {
                     || self.updated
                 {
                     if let Some(id) = widget_state.selected_tag_ids.first() {
-                        let vault = self.app_state.blocking_current_vault()?;
+                        let vault = self
+                            .app_state
+                            .blocking_current_vault(|| "edit tag set definition".into())?;
                         let def = vault.get_definition(id).map(|r| r.clone());
                         if let Some(def) = def {
                             self.set_existing_definition(def);
@@ -556,7 +568,9 @@ impl AppModal for EditTag {
                 self.bottom_button_ui(ui);
 
                 egui::CentralPanel::default().show_inside(ui, |ui| -> Result<(), ()> {
-                    let vault = self.app_state.blocking_current_vault()?;
+                    let vault = self
+                        .app_state
+                        .blocking_current_vault(|| "edit tag".into())?;
 
                     if let Some(def) = self.definition.as_ref() {
                         if self.is_new || vault.get_definition(&def.id).is_some() {

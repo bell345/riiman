@@ -45,7 +45,7 @@ impl Default for AppState {
 }
 
 impl AppState {
-    pub fn load_vault(&self, vault: Vault) {
+    pub fn load_vault(&self, vault: Vault, set_as_current: bool) {
         let name = vault.name.clone().into();
 
         for item in vault.iter_items() {
@@ -58,8 +58,10 @@ impl AppState {
 
         self.unresolved_vaults.remove(&*name);
         self.vaults.insert(name.to_string(), Arc::new(vault));
-        self.set_current_vault_name(name.into())
-            .expect("vault we just added should exist");
+        if set_as_current {
+            self.set_current_vault_name(name.into())
+                .expect("vault we just added should exist");
+        }
     }
 
     pub fn get_vault(&self, name: &String) -> Result<Arc<Vault>, AppError> {
@@ -159,13 +161,14 @@ impl AppState {
 
     pub fn catch<T, E: Into<anyhow::Error>>(
         &self,
+        context: impl FnOnce() -> String,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, ()> {
         match f() {
             Ok(r) => Ok(r),
             Err(e) => {
                 let mut queue = self.error_queue.lock().unwrap();
-                queue.push(e.into());
+                queue.push(e.into().context(context()));
                 Err(())
             }
         }
@@ -260,14 +263,18 @@ impl AppStateRef {
 
     pub fn blocking_catch<T, E: Into<anyhow::Error>>(
         &self,
+        context: impl FnOnce() -> String,
         f: impl FnOnce(&AppState) -> Result<T, E>,
     ) -> Result<T, ()> {
         let r = self.blocking_read();
-        r.catch(|| f(&r))
+        r.catch(context, || f(&r))
     }
 
-    pub fn blocking_current_vault(&self) -> Result<Arc<Vault>, ()> {
-        self.blocking_catch(|r| r.current_vault())
+    pub fn blocking_current_vault(
+        &self,
+        context: impl FnOnce() -> String,
+    ) -> Result<Arc<Vault>, ()> {
+        self.blocking_catch(context, |r| r.current_vault())
     }
 }
 

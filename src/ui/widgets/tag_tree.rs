@@ -240,13 +240,14 @@ impl<'a> Widget for TagTree<'a> {
         if state.tree.is_none() || text_res.changed() || self.updated {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
             let r = self.app_state.blocking_read();
-            let Ok(vault) = r.catch(|| r.current_vault()) else {
+            let Ok(vault) = r.catch(|| "tag tree".into(), || r.current_vault()) else {
                 return text_res;
             };
 
-            let Ok(search_results) =
-                r.catch(|| evaluate_field_search(&vault, &state.search_query, None, None))
-            else {
+            let Ok(search_results) = r.catch(
+                || "tag tree".into(),
+                || evaluate_field_search(&vault, &state.search_query, None, None),
+            ) else {
                 return text_res;
             };
 

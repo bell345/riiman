@@ -41,7 +41,7 @@ impl AppModal for DeleteDefinition {
 
             modal.title(ui, "Delete tag");
             modal.frame(ui, |ui| {
-                ui.vertical_centered_justified(|ui| {
+                ui.vertical_centered_justified(|ui| -> Result<(), ()> {
                     ui.label("You are about to delete the following tag:");
                     ui.add(widgets::Tag::new(&self.definition));
 
@@ -65,10 +65,8 @@ impl AppModal for DeleteDefinition {
                         ));
                     }
 
-                    let r = app_state.blocking_read();
-                    let Ok(vault) = r.catch(|| r.current_vault()) else {
-                        return;
-                    };
+                    let vault =
+                        app_state.blocking_current_vault(|| self.definition.name.to_string())?;
                     let descendants = vault.iter_descendants(&self.definition.id);
                     if !descendants.is_empty() {
                         ui.label("This will also delete all of the children of this tag:");
@@ -76,17 +74,19 @@ impl AppModal for DeleteDefinition {
                             ui.add(widgets::Tag::new(&descendant));
                         }
                     }
+
+                    Ok(())
                 });
             });
-            modal.buttons(ui, |ui| {
+            modal.buttons(ui, |ui| -> Result<(), ()> {
                 if modal.suggested_button(ui, "Delete").clicked() {
-                    let r = app_state.blocking_read();
-                    let Ok(vault) = r.catch(|| r.current_vault()) else {
-                        return;
-                    };
-                    vault.remove_definition(&self.definition.id);
+                    app_state
+                        .blocking_current_vault(|| self.definition.name.to_string())?
+                        .remove_definition(&self.definition.id);
                 }
                 modal.button(ui, "Cancel");
+
+                Ok(())
             });
 
             state.store(ctx, self.id());
