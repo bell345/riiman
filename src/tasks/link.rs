@@ -56,7 +56,7 @@ async fn link_single_sidecar(
             error: Some("not an object".into())
         }))?;
 
-    if let Some(tweet_id) = dom.get("tweet_id").and_then(|tid| tid.as_u64()) {
+    if let Some(tweet_id) = dom.get("tweet_id").and_then(|tid| tid.as_i64()) {
         item.set_known_field_value(fields::tweet::ID, tweet_id);
     }
 
@@ -77,7 +77,7 @@ async fn link_single_sidecar(
 
     let author = dom.get("author").and_then(|a| a.as_object());
 
-    if let Some(author_id) = author.and_then(|a| a.get("id")).and_then(|id| id.as_u64()) {
+    if let Some(author_id) = author.and_then(|a| a.get("id")).and_then(|id| id.as_i64()) {
         item.set_known_field_value(fields::tweet::AUTHOR_ID, author_id);
     }
 

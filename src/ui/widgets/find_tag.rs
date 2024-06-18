@@ -1,16 +1,14 @@
 // Heavily informed by Jake Hansen's `egui_autocomplete`:
 // https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 
-use crate::data::{FieldDefinition, FieldType, Vault};
+use crate::data::{FieldDefinition, FieldType, TextSearchQuery, Vault};
 use crate::shortcut;
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
 use uuid::Uuid;
 
-use crate::tasks::filter::{
-    evaluate_field_search, FieldMatchResult, MergedFieldMatchResult, TextSearchQuery,
-};
+use crate::tasks::filter::{evaluate_field_search, FieldMatchResult, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
 

@@ -316,6 +316,7 @@ impl From<[u8; 3]> for SerialColour {
 
 pub mod kind {
     use super::SerialColour;
+    use crate::data::Utf32CachedString;
     use crate::errors::AppError;
     use itertools::Itertools;
     use std::any::TypeId;
@@ -336,27 +337,25 @@ pub mod kind {
 
         Boolean(bool),
 
-        #[display("Signed Integer")]
+        #[display("Integer")]
+        #[alias("UInt")]
         Int(i64),
-
-        #[display("Unsigned Integer")]
-        UInt(u64),
 
         #[display("Floating Point Decimal")]
         Float(ordered_float::OrderedFloat<f64>),
 
         #[display("String")]
         #[alias("Str")]
-        String(crate::data::Utf32CachedString),
+        String(Utf32CachedString),
 
         #[display("Item Reference")]
-        ItemRef((crate::data::Utf32CachedString, crate::data::Utf32CachedString)),
+        ItemRef((Utf32CachedString, Utf32CachedString)),
 
         List(Vec<Value>),
 
         Colour(SerialColour),
 
-        Dictionary(Vec<(crate::data::Utf32CachedString, Value)>),
+        Dictionary(Vec<(Utf32CachedString, Value)>),
 
         #[display("Date and Time")]
         DateTime(chrono::DateTime<chrono::Utc>)

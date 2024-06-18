@@ -63,9 +63,6 @@ impl<'a> TagValueEdit<'a> {
     fn int_ui(&mut self, ui: &mut Ui) -> Response {
         if let Some(i) = match self.value {
             Some(FieldValue::Int(i)) => Some(*i),
-            Some(FieldValue::UInt(u)) => {
-                Some(i64::try_from(*u).unwrap_or(if *u > 0 { i64::MAX } else { i64::MIN }))
-            }
             #[allow(clippy::cast_possible_truncation)]
             Some(FieldValue::Float(OrderedFloat(f))) => Some(*f as i64),
             Some(FieldValue::String(s)) => i64::from_str(s).ok(),
@@ -83,34 +80,10 @@ impl<'a> TagValueEdit<'a> {
         res
     }
 
-    fn uint_ui(&mut self, ui: &mut Ui) -> Response {
-        if let Some(u) = match self.value {
-            Some(FieldValue::Int(i)) => Some(u64::try_from(*i).unwrap_or(0)),
-            Some(FieldValue::UInt(u)) => Some(*u),
-            #[allow(clippy::cast_possible_truncation)]
-            #[allow(clippy::cast_sign_loss)]
-            Some(FieldValue::Float(OrderedFloat(f))) => Some(*f as u64),
-            Some(FieldValue::String(s)) => u64::from_str(s).ok(),
-            _ => None,
-        } {
-            self.state.typed_value = u.to_string();
-        }
-
-        let res = ui.text_edit_singleline(&mut self.state.typed_value);
-
-        *self.value = u64::from_str(self.state.typed_value.as_str())
-            .ok()
-            .map(FieldValue::UInt);
-
-        res
-    }
-
     fn float_ui(&mut self, ui: &mut Ui) -> Response {
         if let Some(f) = match self.value {
             #[allow(clippy::cast_precision_loss)]
             Some(FieldValue::Int(i)) => Some(*i as f64),
-            #[allow(clippy::cast_precision_loss)]
-            Some(FieldValue::UInt(u)) => Some(*u as f64),
             Some(FieldValue::Float(OrderedFloat(f))) => Some(*f),
             Some(FieldValue::String(s)) => f64::from_str(s).ok(),
             _ => None,
@@ -134,7 +107,6 @@ impl<'a> TagValueEdit<'a> {
     fn string_ui(&mut self, ui: &mut Ui) -> Response {
         if let Some(s) = match self.value {
             Some(FieldValue::Int(i)) => Some(i.to_string()),
-            Some(FieldValue::UInt(u)) => Some(u.to_string()),
             Some(FieldValue::Float(OrderedFloat(f))) => Some(f.to_string()),
             Some(FieldValue::String(s)) => Some(s.to_string()),
             Some(FieldValue::ItemRef(r)) => Some(format!("{}:{}", r.0, r.1)),
@@ -300,7 +272,6 @@ impl<'a> Widget for TagValueEdit<'a> {
             }
             FieldType::Boolean => self.boolean_ui(ui),
             FieldType::Int => self.int_ui(ui),
-            FieldType::UInt => self.uint_ui(ui),
             FieldType::Float => self.float_ui(ui),
             FieldType::String | FieldType::ItemRef => self.string_ui(ui),
             FieldType::List => self.list_ui(ui),

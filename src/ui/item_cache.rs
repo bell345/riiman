@@ -1,6 +1,5 @@
-use crate::data::{Item, Vault};
+use crate::data::{FilterExpression, Item, Vault};
 use crate::state::AppStateRef;
-use crate::tasks::filter::FilterExpression;
 use crate::tasks::sort::{get_filtered_and_sorted_items, SortExpression};
 use chrono::{DateTime, Utc};
 use dashmap::mapref::one::Ref;

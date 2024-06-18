@@ -71,13 +71,14 @@ async fn import_single_image(
     .await
     .map_err(|e| anyhow!(e))?;
 
+    #[allow(clippy::cast_possible_wrap)]
     {
         let wand = MagickWand::new();
         wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)
             .with_context(|| format!("while reading image metadata of {}", path.display()))?;
 
-        let width = wand.get_image_width() as u64;
-        let height = wand.get_image_height() as u64;
+        let width = wand.get_image_width() as i64;
+        let height = wand.get_image_height() as i64;
         item.set_known_field_value(fields::image::HEIGHT, height);
         item.set_known_field_value(fields::image::WIDTH, width);
     }

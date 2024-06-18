@@ -5,10 +5,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use dashmap::{DashMap, DashSet};
 use poll_promise::Promise;
 
-use crate::data::{FieldStore, Vault};
+use crate::data::{FieldStore, FilterExpression, Vault};
 use crate::errors::AppError;
 use crate::fields;
-use crate::tasks::filter::FilterExpression;
 use crate::tasks::sort::{SortDirection, SortExpression};
 use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 use crate::ui::AppModal;

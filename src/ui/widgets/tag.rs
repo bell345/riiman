@@ -100,7 +100,6 @@ impl<'a> Tag<'a> {
                 }
             }
             FieldValue::Int(i) => format!("{i}"),
-            FieldValue::UInt(i) => format!("{i}"),
             FieldValue::Float(f) => format!("{f}"),
             FieldValue::String(s) => s.deref().into(),
             FieldValue::ItemRef((v, p)) => format!("{v}:{p}"),
@@ -212,7 +211,7 @@ impl<'a> Tag<'a> {
                 let (text, (r, g, b)) = match typ {
                     FieldType::Tag | FieldType::Container => unreachable!(),
                     FieldType::Boolean => ("?", (255, 255, 0)),
-                    FieldType::Int | FieldType::UInt => ("#", (0, 127, 255)),
+                    FieldType::Int => ("#", (0, 127, 255)),
                     FieldType::Float => ("%", (0, 255, 0)),
                     FieldType::String => ("$", (255, 0, 0)),
                     FieldType::ItemRef => ("&", (128, 0, 0)),

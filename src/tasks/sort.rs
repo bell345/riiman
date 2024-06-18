@@ -4,10 +4,10 @@ use std::ops::{Deref, Not};
 use derive_more::Display;
 use uuid::Uuid;
 
-use crate::data::FieldType;
 use crate::data::{kind, FieldDefinition, FieldStore, Item, SerialColour, Vault};
+use crate::data::{FieldType, FilterExpression};
 use crate::errors::AppError;
-use crate::tasks::filter::{evaluate_items_filter, FilterExpression};
+use crate::tasks::filter::evaluate_items_filter;
 
 #[derive(
     Default, Display, Debug, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize,
@@ -101,7 +101,6 @@ fn cmp_by_field(
             .cmp(&item2.has_tag(vault, id).ok()),
         FieldType::Boolean => cmp_typed!(bool, Boolean),
         FieldType::Int => cmp_typed!(i64, Int),
-        FieldType::UInt => cmp_typed!(u64, UInt),
         FieldType::Float => cmp_typed!(ordered_float::OrderedFloat<f64>, Float),
         FieldType::Colour => cmp_typed!(SerialColour, Colour),
         FieldType::String | FieldType::ItemRef => cmp_option_refs(

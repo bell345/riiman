@@ -93,10 +93,10 @@ field_defs! {
     image {
         #[id("07f4527f-9cec-4310-8d32-ee820bd7f87e")]
         #[tag(meta::no_link)]
-        width: UInt,
+        width: Int,
         #[id("dabb8289-62e3-47b8-bfea-90891cdaf858")]
         #[tag(meta::no_link)]
-        height: UInt
+        height: Int
     },
     #[id("59589bd3-f9b9-49c1-9969-1d3714fa68db")]
     general {
@@ -125,13 +125,13 @@ field_defs! {
     #[id("f194b5a3-d623-4a28-a91a-c6ed6affff53")]
     tweet {
         #[id("b3515371-db8e-42e5-9f78-a55dfb682be1")]
-        id: UInt,
+        id: Int,
         #[id("dd8e96dd-375a-48a5-b1b7-7b5aecfdbc53")]
         content: String,
         #[id("49d87b9c-bf8c-4560-a745-eaa64b7af965")]
         hashtags: List,
         #[id("f0c1b538-53b5-408a-bf90-c9d169f4f13d")]
-        author_id: UInt,
+        author_id: Int,
         #[id("3daf7d4d-a889-41c7-8ad2-91e4f1cd0a1d")]
         author_handle: String,
         #[id("50297d00-681d-4351-bce1-5fa64dbea128")]

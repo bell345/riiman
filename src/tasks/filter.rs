@@ -1,236 +1,16 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
-
-use serde::{Deserializer, Serializer};
 use uuid::Uuid;
 
 use crate::data::{
-    kind, FieldDefinition, FieldLike, FieldStore, FieldType, FieldValue, Item, SerialColour,
-    Utf32CachedString, Vault,
+    kind, FieldDefinition, FieldLike, FieldStore, FieldType, FieldValue, FilterExpression, Item,
+    SerialColour, TextSearchQuery, Utf32CachedString, ValueMatchExpression, Vault,
 };
 use crate::errors::AppError;
 use crate::{fields, time_us};
-
-pub fn new_matcher() -> nucleo_matcher::Matcher {
-    nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths())
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SerdeRegex(#[serde(with = "serde_regex")] regex::Regex);
-
-impl Deref for SerdeRegex {
-    type Target = regex::Regex;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ValueMatchExpression {
-    Equals(FieldValue),
-    NotEquals(FieldValue),
-    IsOneOf(HashSet<FieldValue>),
-    LessThan(FieldValue),
-    GreaterThan(FieldValue),
-    Regex(SerdeRegex),
-}
-
-impl PartialEq for ValueMatchExpression {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Equals(x), Self::Equals(y))
-            | (Self::NotEquals(x), Self::NotEquals(y))
-            | (Self::LessThan(x), Self::LessThan(y))
-            | (Self::GreaterThan(x), Self::GreaterThan(y)) => x.eq(y),
-            (Self::IsOneOf(x), Self::IsOneOf(y)) => x.iter().eq(y.iter()),
-            (Self::Regex(x), Self::Regex(y)) => x.as_str().eq(y.as_str()),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for ValueMatchExpression {}
-
-#[derive(Debug, Default)]
-pub struct TextSearchQuery {
-    string: String,
-    pattern: nucleo_matcher::pattern::Pattern,
-    matcher: OnceLock<Mutex<nucleo_matcher::Matcher>>,
-    temp_idx_buf: Mutex<Vec<u32>>,
-}
-
-impl Clone for TextSearchQuery {
-    fn clone(&self) -> Self {
-        Self {
-            string: self.string.clone(),
-            pattern: self.pattern.clone(),
-            ..Default::default()
-        }
-    }
-}
-
-impl<T: Into<String>> From<T> for TextSearchQuery {
-    fn from(value: T) -> Self {
-        Self::new(value.into())
-    }
-}
-
-impl TextSearchQuery {
-    pub fn new(s: String) -> Self {
-        Self {
-            pattern: nucleo_matcher::pattern::Pattern::parse(
-                s.as_str(),
-                nucleo_matcher::pattern::CaseMatching::Smart,
-                nucleo_matcher::pattern::Normalization::Smart,
-            ),
-            string: s,
-            ..Default::default()
-        }
-    }
-
-    pub fn indices(&self, haystack: &Utf32CachedString) -> Option<(u32, Vec<u32>)> {
-        let mut l_idx_buf = self.temp_idx_buf.lock().unwrap();
-        let mut l_matcher = self
-            .matcher
-            .get_or_init(|| Mutex::new(new_matcher()))
-            .lock()
-            .unwrap();
-        l_idx_buf.deref_mut().clear();
-        self.pattern
-            .indices(haystack.utf32().slice(..), &mut l_matcher, &mut l_idx_buf)
-            .map(|score| (score, l_idx_buf.deref().clone()))
-    }
-
-    pub fn score(&self, haystack: &Utf32CachedString) -> Option<u32> {
-        let mut l_matcher = self
-            .matcher
-            .get_or_init(|| Mutex::new(new_matcher()))
-            .lock()
-            .unwrap();
-        self.pattern
-            .score(haystack.utf32().slice(..), &mut l_matcher)
-    }
-
-    pub fn matches(&self, haystack: &Utf32CachedString) -> bool {
-        self.score(haystack).is_some()
-    }
-}
-
-impl serde::Serialize for TextSearchQuery {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.string.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for TextSearchQuery {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(Self::new(String::deserialize(deserializer)?))
-    }
-}
-
-impl PartialEq for TextSearchQuery {
-    fn eq(&self, other: &Self) -> bool {
-        self.string.eq(&other.string)
-    }
-}
-
-impl Eq for TextSearchQuery {}
-
-#[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
-pub enum FilterExpression {
-    #[default]
-    None,
-    TextSearch(TextSearchQuery),
-    ExactTextSearch(ExactTextSearchQuery),
-    FolderMatch(Box<Path>),
-    TagMatch(Uuid),
-    FieldMatch(Uuid, ValueMatchExpression),
-    Not(Box<FilterExpression>),
-    Or(Box<FilterExpression>, Box<FilterExpression>),
-    And(Box<FilterExpression>, Box<FilterExpression>),
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ExactTextSearchQuery {
-    original: String,
-    lowercase: Vec<char>,
-    char_len: usize,
-}
-
-impl<T: Into<String>> From<T> for ExactTextSearchQuery {
-    fn from(value: T) -> Self {
-        Self::new(value.into())
-    }
-}
-
-impl PartialEq for ExactTextSearchQuery {
-    fn eq(&self, other: &Self) -> bool {
-        self.original == other.original
-    }
-}
-
-impl Eq for ExactTextSearchQuery {}
-
-impl serde::Serialize for ExactTextSearchQuery {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.original.serialize(serializer)
-    }
-}
-
-impl<'a> serde::Deserialize<'a> for ExactTextSearchQuery {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'a>,
-    {
-        Ok(Self::new(String::deserialize(deserializer)?))
-    }
-}
-
-impl ExactTextSearchQuery {
-    pub fn new(query: String) -> Self {
-        let lowercase: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
-        Self {
-            char_len: lowercase.len(),
-            lowercase,
-            original: query,
-        }
-    }
-
-    pub fn matches(&self, haystack: &Utf32CachedString) -> bool {
-        let mut scan_idx = 0;
-        for c in haystack
-            .utf32()
-            .slice(..)
-            .chars()
-            .flat_map(|c| c.to_lowercase())
-        {
-            if scan_idx == self.char_len {
-                return true;
-            }
-
-            scan_idx = if c == self.lowercase[scan_idx] {
-                scan_idx + 1
-            } else {
-                0
-            }
-        }
-        scan_idx == self.char_len
-    }
-}
 
 fn evaluate_match_expression_string(
     value: &str,
@@ -248,8 +28,13 @@ fn evaluate_match_expression_string(
 
             false
         }
+        ValueMatchExpression::Contains(x) => x.as_str()?.contains(x.as_str()?),
         ValueMatchExpression::LessThan(x) => value < x.as_str()?,
+        ValueMatchExpression::LessThanOrEqual(x) => value <= x.as_str()?,
+        ValueMatchExpression::GreaterThanOrEqual(x) => value >= x.as_str()?,
         ValueMatchExpression::GreaterThan(x) => value > x.as_str()?,
+        ValueMatchExpression::StartsWith(x) => value.starts_with(x.as_str()?),
+        ValueMatchExpression::EndsWith(x) => value.ends_with(x.as_str()?),
         ValueMatchExpression::Regex(x) => x.is_match(value),
     })
 }
@@ -273,9 +58,52 @@ where
             }
             false
         }
+        ValueMatchExpression::Contains(x) => value.to_string().contains(x.as_str()?),
         ValueMatchExpression::LessThan(x) => value < &*T::try_from(x.clone())?,
         ValueMatchExpression::GreaterThan(x) => value > &*T::try_from(x.clone())?,
+        ValueMatchExpression::LessThanOrEqual(x) => value <= &*T::try_from(x.clone())?,
+        ValueMatchExpression::GreaterThanOrEqual(x) => value >= &*T::try_from(x.clone())?,
+        ValueMatchExpression::StartsWith(x) => value.to_string().starts_with(x.as_str()?),
+        ValueMatchExpression::EndsWith(x) => value.to_string().ends_with(x.as_str()?),
         ValueMatchExpression::Regex(x) => x.is_match(&value.to_string()),
+    })
+}
+
+fn evaluate_match_expression_list(
+    value: &[FieldValue],
+    expr: &ValueMatchExpression,
+) -> anyhow::Result<bool> {
+    Ok(match expr {
+        ValueMatchExpression::Contains(x) => value.contains(x),
+        _ => value
+            .iter()
+            .map(|v| evaluate_match_expression(v, expr))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .any(|b| b),
+    })
+}
+
+fn evaluate_match_expression_dictionary(
+    value: &[(Utf32CachedString, FieldValue)],
+    expr: &ValueMatchExpression,
+) -> anyhow::Result<bool> {
+    Ok(match expr {
+        ValueMatchExpression::Contains(x) => {
+            let s = x.as_str_opt();
+            value
+                .iter()
+                .any(|(k, v)| s.is_some_and(|s| k.contains(s)) || v == x)
+        }
+        _ => value
+            .iter()
+            .map(|(k, v)| {
+                Ok(evaluate_match_expression_string(k, expr)?
+                    || evaluate_match_expression(v, expr)?)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into_iter()
+            .any(|b| b),
     })
 }
 
@@ -288,7 +116,6 @@ fn evaluate_match_expression(
         FieldValue::Container => false,
         FieldValue::Boolean(v) => evaluate_match_expression_typed::<bool, kind::Boolean>(v, expr)?,
         FieldValue::Int(v) => evaluate_match_expression_typed::<i64, kind::Int>(v, expr)?,
-        FieldValue::UInt(v) => evaluate_match_expression_typed::<u64, kind::UInt>(v, expr)?,
         FieldValue::Float(v) => evaluate_match_expression_typed::<
             ordered_float::OrderedFloat<f64>,
             kind::Float,
@@ -301,21 +128,8 @@ fn evaluate_match_expression(
             evaluate_match_expression_string(&v.0, expr)?
                 || evaluate_match_expression_string(&v.1, expr)?
         }
-        FieldValue::List(list) => list
-            .iter()
-            .map(|v| evaluate_match_expression(v, expr))
-            .collect::<anyhow::Result<Vec<_>>>()?
-            .into_iter()
-            .any(|b| b),
-        FieldValue::Dictionary(dict) => dict
-            .iter()
-            .map(|(k, v)| {
-                Ok(evaluate_match_expression_string(k, expr)?
-                    || evaluate_match_expression(v, expr)?)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?
-            .into_iter()
-            .any(|b| b),
+        FieldValue::List(list) => evaluate_match_expression_list(list, expr)?,
+        FieldValue::Dictionary(dict) => evaluate_match_expression_dictionary(dict, expr)?,
         FieldValue::DateTime(v) => evaluate_match_expression_typed::<
             chrono::DateTime<chrono::Utc>,
             kind::DateTime,
@@ -645,7 +459,7 @@ pub fn evaluate_field_search(
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use crate::data::ExactTextSearchQuery;
 
     #[test]
     fn test_exact_text_search_query_matches() {

@@ -14,7 +14,7 @@ build = "build.rs"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 anyhow = "1.0"
-built = { version = "0.7.2", features = ["chrono"] }
+built = { version = "0.7.3", features = ["chrono"] }
 thiserror = "1.0"
 paste = "1.0"
 derive_more = { version = "0.99.17", features = ["display"] }
@@ -34,7 +34,7 @@ rfd = "0.14.1"
 # async and concurrency
 dashmap = { version = "5.5", features = ["serde"] }
 poll-promise = { version = "0.3.0", features = ["tokio"] }
-tokio = { version = "1.37", features = ["full"] }
+tokio = { version = "1.38", features = ["full"] }
 moka = { version = "0.12.7", features = ["sync"] }
 crossbeam-queue = "0.3.11"
 
@@ -47,6 +47,7 @@ indexmap = "2.2"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 relativetime = { version = "0.1.4", features = ["chrono"] }
 url = "2.5"
+nom = "7.1"
 
 # text manip
 nucleo-matcher = "0.3.1"
@@ -64,10 +65,10 @@ serde_regex = "1.1"
 
 # get theme info
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.56.0", features = ["UI_ViewManagement"] }
+windows = { version = "0.57.0", features = ["UI_ViewManagement"] }
 
 [build-dependencies]
-built = { version = "0.7.2", features = ["chrono", "semver", "git2"] }
+built = { version = "0.7.3", features = ["chrono", "semver", "git2"] }
 
 [lints.clippy]
 pedantic = "warn"

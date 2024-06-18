@@ -6,14 +6,13 @@ use eframe::egui;
 use eframe::egui::{FontData, FontDefinitions};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
-use regex::Regex;
 use tracing::info;
 use uuid::Uuid;
+use crate::data::FilterExpression;
 
 use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::filter::FilterExpression;
 use crate::tasks::AsyncTaskResult::{ImportComplete, LinkComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
@@ -41,10 +40,6 @@ pub use crate::ui::modals::MessageDialog;
 use crate::ui::modals::{EditTag, LinkVault, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
-static EXACT_TEXT_REGEX: OnceLock<Regex> = OnceLock::new();
-fn exact_text_regex() -> &'static Regex {
-    EXACT_TEXT_REGEX.get_or_init(|| Regex::new(r#""(.+)""#).unwrap())
-}
 
 const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const MAX_RUNNING_TASKS: usize = 16;
@@ -448,14 +443,7 @@ impl App {
                         }
                     };
 
-                    let filter = if let Some((_, [text])) = exact_text_regex()
-                        .captures(self.search_text.as_str())
-                        .map(|c| c.extract())
-                    {
-                        FilterExpression::ExactTextSearch(text.into())
-                    } else {
-                        FilterExpression::TextSearch(self.search_text.clone().into())
-                    };
+                    let filter = self.search_text.parse::<FilterExpression>().unwrap_or_default();
 
                     self.state.blocking_read().set_filter_and_sorts(filter, sorts);
                 });

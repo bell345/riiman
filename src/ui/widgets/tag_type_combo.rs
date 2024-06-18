@@ -47,7 +47,6 @@ impl<'a> Widget for TagTypeCombo<'a> {
                 option!(Container);
                 option!(Boolean);
                 option!(Int);
-                option!(UInt);
                 option!(Float);
                 option!(Colour);
                 option!(String);

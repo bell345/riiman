@@ -1,7 +1,7 @@
-use crate::data::FieldDefinition;
+use crate::data::{FieldDefinition, TextSearchQuery};
 use crate::shortcut;
 use crate::state::AppStateRef;
-use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult, TextSearchQuery};
+use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
 use eframe::egui;
