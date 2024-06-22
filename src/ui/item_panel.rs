@@ -1,5 +1,5 @@
 use std::ops::Deref;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use eframe::egui;
@@ -16,10 +16,10 @@ use crate::ui::modals::EditTag;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
 
-pub struct ItemPanel<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> {
+pub struct ItemPanel<'a, Ref: Deref<Target = Item> + 'a> {
     id: egui::Id,
     items: &'a Vec<Ref>,
-    vault: &'b Vault,
+    vault: Arc<Vault>,
     state: State,
     app_state: AppStateRef,
 }
@@ -56,11 +56,11 @@ impl Default for CreateState {
     }
 }
 
-impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
+impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
     pub fn new(
         id: impl std::hash::Hash,
         items: &'a Vec<Ref>,
-        vault: &'b Vault,
+        vault: Arc<Vault>,
         app_state: AppStateRef,
     ) -> Self {
         Self {
@@ -88,12 +88,16 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
             }
 
             let result = ui.add(
-                widgets::FindTag::new(self.id.with("new_tag"), &mut state.tag_id, self.vault)
-                    .desired_width(desired_width)
-                    .show_tag(true)
-                    .create_request(&mut new_tag_name)
-                    .exclude_ids(exclude_ids)
-                    .exclude_types(&[FieldType::Container]),
+                widgets::FindTag::new(
+                    self.id.with("new_tag"),
+                    &mut state.tag_id,
+                    Arc::clone(&self.vault),
+                )
+                .desired_width(desired_width)
+                .show_tag(true)
+                .create_request(&mut new_tag_name)
+                .exclude_ids(exclude_ids)
+                .exclude_types(&[FieldType::Container]),
             );
 
             if state.focused {
@@ -150,7 +154,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
         let mut fields: Vec<_> = self
             .state
             .field_store
-            .iter_fields_with_defs(self.vault)
+            .iter_fields_with_defs(&self.vault)
             .collect();
         fields.sort_by_key(|r| r.definition().name.clone());
 
@@ -243,7 +247,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
     }
 
     pub fn view_ui(&mut self, ui: &mut Ui, item: &Item) {
-        let mut fields: Vec<_> = item.iter_fields_with_defs(self.vault).collect();
+        let mut fields: Vec<_> = item.iter_fields_with_defs(&self.vault).collect();
         fields.sort_by_key(|r| r.definition().name.clone());
 
         let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
@@ -303,7 +307,7 @@ impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> ItemPanel<'a, 'b, Ref> {
     }
 }
 
-impl<'a, 'b: 'a, Ref: Deref<Target = Item> + 'b> Widget for ItemPanel<'a, 'b, Ref> {
+impl<'a, Ref: Deref<Target = Item> + 'a> Widget for ItemPanel<'a, Ref> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         self.state = State::load(ui.ctx(), self.id).unwrap_or_default();
 

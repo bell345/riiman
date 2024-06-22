@@ -23,6 +23,6 @@ mod field_refs;
 mod field_store;
 mod filter;
 mod item;
-mod parse;
+pub mod parse;
 mod string;
 mod vault;

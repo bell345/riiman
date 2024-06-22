@@ -1,4 +1,7 @@
 use crate::data::{FieldValue, Utf32CachedString};
+use eframe::egui::text::{CCursor, CCursorRange, CursorRange};
+use eframe::egui::TextBuffer;
+use eframe::epaint::text::cursor::{Cursor, PCursor, RCursor};
 use itertools::Itertools;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_while, take_while_m_n};
@@ -8,6 +11,7 @@ use nom::error::ParseError;
 use nom::multi::{count, fold_many0, many0, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
 use nom::{Compare, IResult, InputLength, InputTake, InputTakeAtPosition, Parser};
+use nom_locate::LocatedSpan;
 use regex::Regex;
 use serde::{Deserializer, Serializer};
 use serde_regex::Serde;
@@ -265,15 +269,4 @@ pub enum FilterExpression {
     Not(Box<FilterExpression>),
     Or(Box<FilterExpression>, Box<FilterExpression>),
     And(Box<FilterExpression>, Box<FilterExpression>),
-}
-
-impl FromStr for FilterExpression {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match super::parse::filter_expression(s) {
-            Ok((_, exp)) => Ok(exp),
-            Err(_) => Err(()),
-        }
-    }
 }

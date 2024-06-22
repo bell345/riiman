@@ -47,10 +47,11 @@ indexmap = "2.2"
 base16ct = { version = "0.2.0", features = ["alloc"] }
 relativetime = { version = "0.1.4", features = ["chrono"] }
 url = "2.5"
-nom = "7.1"
 
 # text manip
 nucleo-matcher = "0.3.1"
+nom = "7.1"
+nom_locate = "4.2"
 
 # image manip
 magick_rust = "0.21.0"

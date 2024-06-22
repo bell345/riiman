@@ -194,7 +194,7 @@ pub fn evaluate_filter(
             generic_string_match(item, vault, |s| query.matches(s))?
         }
         FilterExpression::FolderMatch(x) => Path::new(item.path()).starts_with(x),
-        FilterExpression::TagMatch(id) => item.has_tag(vault, id)?,
+        FilterExpression::TagMatch(id) => item.has_tag(vault, id).is_ok_and(|b| b),
         FilterExpression::FieldMatch(id, expr) => {
             if let Some(v) = item.get_field_value(id) {
                 return evaluate_match_expression(&v, expr);

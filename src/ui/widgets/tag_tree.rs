@@ -10,6 +10,7 @@ use eframe::emath::Rect;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use std::collections::HashSet;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct TagTree<'a> {
@@ -229,9 +230,18 @@ impl<'a> Widget for TagTree<'a> {
             "TagTree",
         );
 
+        let r = self.app_state.blocking_read();
+        let Ok(vault) = r.catch(|| "tag tree".into(), || r.current_vault()) else {
+            return ui.label("");
+        };
+
         let mut state = State::load(ui.ctx(), self.widget_id).unwrap_or_default();
 
-        let text_res = ui.add(widgets::SearchBox::new(&mut state.search_text));
+        let text_res = ui.add(widgets::SearchBox::new(
+            self.widget_id.with("search_box"),
+            &mut state.search_text,
+            Arc::clone(&vault),
+        ));
 
         ui.separator();
 
@@ -239,10 +249,6 @@ impl<'a> Widget for TagTree<'a> {
 
         if state.tree.is_none() || text_res.changed() || self.updated {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
-            let r = self.app_state.blocking_read();
-            let Ok(vault) = r.catch(|| "tag tree".into(), || r.current_vault()) else {
-                return text_res;
-            };
 
             let Ok(search_results) = r.catch(
                 || "tag tree".into(),

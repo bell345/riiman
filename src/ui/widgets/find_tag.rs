@@ -6,6 +6,7 @@ use crate::shortcut;
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::tasks::filter::{evaluate_field_search, FieldMatchResult, MergedFieldMatchResult};
@@ -14,10 +15,10 @@ use crate::ui::widgets;
 
 const MAX_SUGGESTIONS: usize = 10;
 
-pub struct FindTag<'a, 'b> {
+pub struct FindTag<'a> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
-    vault: &'b Vault,
+    vault: Arc<Vault>,
     state: State,
 
     create_req: Option<&'a mut Option<String>>,
@@ -81,11 +82,11 @@ impl State {
     }
 }
 
-impl<'a, 'b> FindTag<'a, 'b> {
+impl<'a> FindTag<'a> {
     pub fn new(
         widget_id: impl std::hash::Hash,
         tag_id: &'a mut Option<Uuid>,
-        vault: &'b Vault,
+        vault: Arc<Vault>,
     ) -> Self {
         Self {
             widget_id: egui::Id::new(widget_id),
@@ -195,7 +196,7 @@ impl<'a, 'b> FindTag<'a, 'b> {
     fn new_search_results(&mut self) {
         self.state.search_query = TextSearchQuery::new(self.state.search_text.clone());
         let Ok(search_results) = evaluate_field_search(
-            self.vault,
+            &self.vault,
             &self.state.search_query,
             self.exclude_ids,
             self.filter_types.as_deref(),
@@ -308,7 +309,7 @@ impl<'a, 'b> FindTag<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Widget for FindTag<'a, 'b> {
+impl<'a> Widget for FindTag<'a> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         ui.ctx().check_for_id_clash(
             self.widget_id,
@@ -325,9 +326,13 @@ impl<'a, 'b> Widget for FindTag<'a, 'b> {
                 Default::default()
             };
             ui.add(
-                widgets::SearchBox::new(&mut self.state.search_text)
-                    .tags(&tags)
-                    .desired_width(self.desired_width),
+                widgets::SearchBox::new(
+                    self.widget_id.with("search_box"),
+                    &mut self.state.search_text,
+                    Arc::clone(&self.vault),
+                )
+                .tags(&tags)
+                .desired_width(self.desired_width),
             )
         };
 

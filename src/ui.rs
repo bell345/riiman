@@ -1,19 +1,21 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
+use crate::data::FilterExpression;
 use eframe::egui;
 use eframe::egui::{FontData, FontDefinitions};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use tracing::info;
 use uuid::Uuid;
-use crate::data::FilterExpression;
 
 use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::AsyncTaskResult::{ImportComplete, LinkComplete, ThumbnailLoaded, VaultLoaded, VaultSaved};
+use crate::tasks::AsyncTaskResult::{
+    ImportComplete, LinkComplete, ThumbnailLoaded, VaultLoaded, VaultSaved,
+};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
@@ -33,7 +35,7 @@ mod stepwise_range;
 mod theme;
 mod thumb_cache;
 mod thumb_grid;
-mod widgets;
+pub mod widgets;
 
 pub use crate::ui::modals::AppModal;
 pub use crate::ui::modals::MessageDialog;
@@ -129,8 +131,11 @@ impl App {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
 
-        let mut vault_name_to_file_paths: Vec<(String, String)> = stored_state.vault_name_to_file_paths.into_iter().collect();
-        vault_name_to_file_paths.sort_by_key(|(name, _)| Reverse(stored_state.current_vault_name.as_ref() == Some(name)));
+        let mut vault_name_to_file_paths: Vec<(String, String)> =
+            stored_state.vault_name_to_file_paths.into_iter().collect();
+        vault_name_to_file_paths.sort_by_key(|(name, _)| {
+            Reverse(stored_state.current_vault_name.as_ref() == Some(name))
+        });
         for (name, path) in vault_name_to_file_paths {
             let set_as_current = stored_state.current_vault_name.as_ref() == Some(&name);
             if set_as_current {
@@ -149,7 +154,9 @@ impl App {
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
 
-        self.state.blocking_read().set_filter_and_sorts(stored_state.filter, stored_state.sorts);
+        self.state
+            .blocking_read()
+            .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
 
         Some(())
     }
@@ -192,14 +199,18 @@ impl App {
                     self.thumbnail_grid.params.container_width = 0.0;
                     self.success("Import complete".to_string(), body);
                 }
-                Ok(LinkComplete { other_vault_name, results }) => {
+                Ok(LinkComplete {
+                    other_vault_name,
+                    results,
+                }) => {
                     self.state().save_current_vault();
                     self.state().save_vault_by_name(other_vault_name.clone());
 
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
                     let body = format!(
-                        "Link to vault {other_vault_name} complete. {success}/{total} images linked successfully.",
+                        "Link to vault {other_vault_name} complete. \
+                        {success}/{total} images linked successfully.",
                     );
                     self.success("Link complete".to_string(), body);
                 }
@@ -370,6 +381,8 @@ impl App {
             .max_height(24.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // contents are declared from right to left due to layout
+
                     let slider_range = THUMBNAIL_SLIDER_RANGE.get_or_init(|| {
                         StepwiseRange::new(&[0.0, 1.0, 2.0, 3.0], &[128.0, 256.0, 512.0, 1024.0])
                     });
@@ -400,12 +413,8 @@ impl App {
                         let state = self.state.blocking_read();
                         if let Some(vault) = state.current_vault_opt() {
                             ui.add(
-                                widgets::FindTag::new(
-                                    "sort_field",
-                                    &mut self.sort_field_id,
-                                    &vault,
-                                )
-                                .show_tag(true),
+                                widgets::FindTag::new("sort_field", &mut self.sort_field_id, vault)
+                                    .show_tag(true),
                             );
                         };
                     }
@@ -428,24 +437,37 @@ impl App {
                             ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
                         });
 
-                    ui.add(
-                        widgets::SearchBox::new(&mut self.search_text).desired_width(f32::INFINITY),
-                    );
+                    {
+                        let r = self.state.blocking_read();
+                        let Ok(vault) = r.current_vault() else {
+                            return;
+                        };
 
-                    let sorts = match self.sort_type {
-                        SortType::Path => vec![SortExpression::Path(self.sort_direction)],
-                        SortType::Field => {
-                            if let Some(field_id) = self.sort_field_id {
-                                vec![SortExpression::Field(field_id, self.sort_direction)]
-                            } else {
-                                vec![]
+                        let search_res = widgets::SearchBox::new(
+                            "main_search_box",
+                            &mut self.search_text,
+                            vault,
+                        )
+                        .desired_width(f32::INFINITY)
+                        .show(ui);
+
+                        let sorts = match self.sort_type {
+                            SortType::Path => vec![SortExpression::Path(self.sort_direction)],
+                            SortType::Field => {
+                                if let Some(field_id) = self.sort_field_id {
+                                    vec![SortExpression::Field(field_id, self.sort_direction)]
+                                } else {
+                                    vec![]
+                                }
                             }
-                        }
-                    };
+                        };
 
-                    let filter = self.search_text.parse::<FilterExpression>().unwrap_or_default();
+                        let filter = search_res
+                            .expression
+                            .map_or(FilterExpression::None, |expr| expr.expr);
 
-                    self.state.blocking_read().set_filter_and_sorts(filter, sorts);
+                        r.set_filter_and_sorts(filter, sorts);
+                    }
                 });
             });
     }
@@ -498,20 +520,12 @@ impl App {
                     .max_width(350.0)
                     .show_viewport(ui, |ui, _vp| -> Result<(), ()> {
                         let len = self.item_list_cache.len_items();
-                        ui.label(format!("{} item{}", len, if len == 1 { "" } else {"s"}));
+                        ui.label(format!("{} item{}", len, if len == 1 { "" } else { "s" }));
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
                             let mut select_mode = self.thumbnail_grid.select_mode(ui.ctx());
-                            ui.selectable_value(
-                                &mut select_mode,
-                                SelectMode::Single,
-                                "Single",
-                            );
-                            ui.selectable_value(
-                                &mut select_mode,
-                                SelectMode::Multiple,
-                                "Multiple",
-                            );
+                            ui.selectable_value(&mut select_mode, SelectMode::Single, "Single");
+                            ui.selectable_value(&mut select_mode, SelectMode::Multiple, "Multiple");
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
@@ -524,10 +538,10 @@ impl App {
                         ui.add(ItemPanel::new(
                             "item_panel",
                             &items,
-                            &vault,
+                            Arc::clone(&vault),
                             self.state.clone(),
                         ));
-                        
+
                         Ok(())
                     });
             },
@@ -541,8 +555,7 @@ impl App {
                     time!("Right panel UI", {
                         self.right_panel_ui(ui);
                     });
-                    let (is_new_item_list, vault_is_new) =
-                    time!("Item list update", {
+                    let (is_new_item_list, vault_is_new) = time!("Item list update", {
                         self.item_list_cache.update(self.state.clone())?
                     });
                     time!("Thumbnail grid update", {
@@ -581,8 +594,8 @@ impl App {
                 let expand_btn = egui::Button::new(
                     egui::RichText::new(btn_text).text_style(egui::TextStyle::Heading),
                 )
-                    .rounding(EXPAND_BTN_ROUNDING)
-                    .min_size(EXPAND_BTN_SIZE);
+                .rounding(EXPAND_BTN_ROUNDING)
+                .min_size(EXPAND_BTN_SIZE);
 
                 let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
                     EXPAND_BTN_SIZE,
@@ -667,7 +680,10 @@ mod font_names {
     pub const NOTO_SANS_SYMBOLS_2: &str = "NotoSansSymbols2-Regular";
     pub const NOTO_SANS_MATH: &str = "NotoSansMath-Regular";
     pub const NOTO_EMOJI: &str = "NotoEmoji-Regular";
+    pub const DUMMY_TAG_REPLACEMENT: &str = "DummyTagReplacement-Regular";
 }
+
+pub const DUMMY_TAG_REPLACEMENT_FAMILY: &str = "DummyTagReplacement";
 
 impl App {
     fn init_fonts() -> FontDefinitions {
@@ -734,6 +750,16 @@ impl App {
             FontData::from_static(include_bytes!(
                 "../res/font/NotoEmoji/NotoEmoji-Regular.ttf"
             )),
+        );
+
+        fonts.font_data.insert(
+            font_names::DUMMY_TAG_REPLACEMENT.to_owned(),
+            FontData::from_static(include_bytes!("../res/font/DummyTagReplacement.ttf")),
+        );
+
+        fonts.families.insert(
+            FontFamily::Name(DUMMY_TAG_REPLACEMENT_FAMILY.into()),
+            vec![font_names::DUMMY_TAG_REPLACEMENT.to_owned()],
         );
 
         {
