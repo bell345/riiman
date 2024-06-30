@@ -1,12 +1,12 @@
+use crate::data::{FieldStore, TagLike, Utf32CachedString};
 use dashmap::{DashMap, DashSet};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
-
-use crate::data::{FieldStore, Utf32CachedString};
-use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 #[allow(clippy::module_name_repetitions)]
@@ -21,7 +21,7 @@ pub struct Definition {
 }
 
 impl Definition {
-    pub fn known<T: kind::TagLike>(known_field: &KnownField<T>) -> Self {
+    pub fn known<T: TagLike>(known_field: &KnownField<T>) -> Self {
         Self {
             id: known_field.id,
             name: known_field.name.to_string().into(),
@@ -33,6 +33,15 @@ impl Definition {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
+            ..Default::default()
+        }
+    }
+
+    pub fn tag(id: Uuid, name: String) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            field_type: kind::Tag::get_type(),
             ..Default::default()
         }
     }

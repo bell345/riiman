@@ -2,6 +2,9 @@ use std::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue};
+use crate::fields;
+use crate::ui::theme;
 use eframe::egui::{
     vec2, Align, Color32, FontSelection, Galley, Painter, Pos2, Rect, Response, Rounding, Sense,
     Stroke, TextStyle, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType,
@@ -9,10 +12,6 @@ use eframe::egui::{
 use eframe::emath::Rot2;
 use eframe::epaint::{self, ClippedShape, Hsva, HsvaGamma, Primitive};
 use relativetime::RelativeTime;
-
-use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue};
-use crate::fields;
-use crate::ui::theme;
 
 pub struct Tag<'a> {
     definition: &'a FieldDefinition,
@@ -243,8 +242,8 @@ impl<'a> Tag<'a> {
         }
     }
 
-    pub fn paint(&self, ui: &Ui, rect: Rect, response: Option<Response>) {
-        let p = ui.painter_at(rect.expand(SELECTED_STROKE_WIDTH));
+    pub fn paint(&self, ui: &Ui, clip_rect: Rect, loc: Pos2, response: &Option<Response>) {
+        let p = ui.painter_at(clip_rect.expand(SELECTED_STROKE_WIDTH));
         let galley = self.galley(ui);
         let value_galley = self.value_galley(ui, galley.size().x);
         let has_value = value_galley.is_some();
@@ -285,7 +284,7 @@ impl<'a> Tag<'a> {
 
         // hanger
 
-        let hanger_bbox = Rect::from_min_size(rect.min, hanger_size);
+        let hanger_bbox = Rect::from_min_size(loc, hanger_size);
         self.paint_hanger(ui, &p, hanger_bbox, bg, fg);
 
         // label
@@ -308,7 +307,7 @@ impl<'a> Tag<'a> {
         }
 
         let label_offset = vec2(total_size.x - label_size.x - value_size.x, 0.0);
-        let label_bbox = Rect::from_min_size(rect.min + label_offset, label_size);
+        let label_bbox = Rect::from_min_size(loc + label_offset, label_size);
         p.add(epaint::RectShape::filled(label_bbox, label_rounding, bg));
 
         p.add(epaint::TextShape::new(
@@ -320,7 +319,7 @@ impl<'a> Tag<'a> {
         // value
         if let Some(value_galley) = value_galley {
             let value_offset = vec2(total_size.x - value_size.x, 0.0);
-            let value_bbox = Rect::from_min_size(rect.min + value_offset, value_size);
+            let value_bbox = Rect::from_min_size(loc + value_offset, value_size);
 
             p.add(epaint::RectShape::filled(
                 value_bbox,
@@ -341,7 +340,7 @@ impl<'a> Tag<'a> {
 
         // selected outline
         if self.selected {
-            let total_rect = Rect::from_min_size(rect.min, total_size);
+            let total_rect = Rect::from_min_size(loc, total_size);
             p.add(epaint::RectShape::stroke(
                 total_rect,
                 Rounding::same(BORDER_RADIUS),
@@ -363,7 +362,7 @@ impl<'a> Widget for Tag<'a> {
         res.widget_info(|| WidgetInfo::labeled(WidgetType::Label, galley.text()));
 
         if ui.is_rect_visible(res.rect) {
-            self.paint(ui, rect, Some(res.clone()));
+            self.paint(ui, rect, rect.min, &Some(res.clone()));
         }
 
         res

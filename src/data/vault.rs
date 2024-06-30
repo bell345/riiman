@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 
+use crate::data::field_refs::FieldDefRefOrPlaceholder;
 use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, Item};
 use crate::errors::{AppError, HierarchyError};
 use crate::fields;
@@ -88,6 +89,13 @@ impl Vault {
 
     pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
         self.definitions.get(def_id)
+    }
+
+    pub fn get_definition_or_placeholder(
+        &self,
+        def_id: &Uuid,
+    ) -> FieldDefRefOrPlaceholder<Ref<Uuid, FieldDefinition>> {
+        self.get_definition(def_id).into()
     }
 
     pub fn has_definition(&self, def_id: &Uuid) -> bool {

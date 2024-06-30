@@ -1,6 +1,4 @@
-use crate::data::{
-    FieldValue, FilterExpression, SerialColour, Utf32CachedString, ValueMatchExpression, Vault,
-};
+use crate::data::{FieldDefinition, FieldValue, FilterExpression, SerialColour, Utf32CachedString, ValueMatchExpression, Vault};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_while_m_n};
 use nom::character::complete::{alpha1, digit0, digit1, none_of, one_of};
@@ -536,7 +534,7 @@ fn not_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
             filter_expression,
             tag_ws(")"),
         ),
-        preceded(tag_ws("!"), filter_atom),
+        preceded(alt((tag_ws("!"), tag_ws("-"))), filter_atom),
         preceded(
             pair(tag_no_case("not"), many1(one_of(" \r\n\t\u{3000}"))),
             filter_atom,
@@ -819,7 +817,7 @@ impl FilterExpressionParseNode {
     pub fn replacement_size(&self, ui: &egui::Ui, vault: &Vault) -> Option<egui::Vec2> {
         match &self.expr {
             FilterExpression::TagMatch(id) | FilterExpression::FieldMatch(id, _) => {
-                let def = vault.get_definition(id)?;
+                let def = vault.get_definition_or_placeholder(id);
                 Some(crate::ui::widgets::Tag::new(&def).small(true).size(ui))
             }
             _ => None,
@@ -874,12 +872,12 @@ impl FilterExpressionParseResult {
                         continue;
                     }
                 };
-                
+
                 let sec = sections.swap_remove(sec_idx);
                 let FilterExpressionTextSection::Normal(start, end) = sec else {
                     continue;
                 };
-                
+
                 let node = node.clone();
                 sections.extend(match (start == repl_start, end == repl_end) {
                     (true, true) => vec![FilterExpressionTextSection::Replacement(start, node)],
@@ -894,17 +892,6 @@ impl FilterExpressionParseResult {
         });
         sections
     }
-}
-
-fn char_index_from_byte_index(s: &str, byte_index: usize) -> usize {
-    let mut n_chars = 0;
-    for (ci, (bi, _)) in s.char_indices().enumerate() {
-        n_chars += 1;
-        if bi <= byte_index {
-            return ci;
-        }
-    }
-    n_chars
 }
 
 fn ccursor_add(cur: CCursor, diff: isize) -> CCursor {
