@@ -85,7 +85,7 @@ impl Eq for ValueMatchExpression {}
 
 #[derive(Default)]
 pub struct TextSearchQuery {
-    string: String,
+    pub string: String,
     pattern: nucleo_matcher::pattern::Pattern,
     matcher: OnceLock<Mutex<nucleo_matcher::Matcher>>,
     temp_idx_buf: Mutex<Vec<u32>>,

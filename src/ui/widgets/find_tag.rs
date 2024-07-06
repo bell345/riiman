@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::tasks::filter::{evaluate_field_search, FieldMatchResult, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
+use crate::ui::input::update_index;
 use crate::ui::widgets;
 
 const MAX_SUGGESTIONS: usize = 10;
@@ -46,41 +47,6 @@ struct State {
 }
 
 impl CloneableTempState for State {}
-
-impl State {
-    fn update_index(
-        &mut self,
-        down_pressed: bool,
-        up_pressed: bool,
-        match_results_count: usize,
-        max_suggestions: usize,
-    ) {
-        self.selected_index = match self.selected_index {
-            // Increment selected index when down is pressed,
-            // limit it to the number of matches and max_suggestions
-            Some(index) if down_pressed => {
-                if index + 1 < match_results_count.min(max_suggestions) {
-                    Some(index + 1)
-                } else {
-                    Some(index)
-                }
-            }
-            // Decrement selected index if up is pressed. Deselect if at first index
-            Some(index) if up_pressed => {
-                if index == 0 {
-                    None
-                } else {
-                    Some(index - 1)
-                }
-            }
-            // If nothing is selected and down is pressed, select first item
-            None if down_pressed => Some(0),
-            // Do nothing if no keys are pressed
-            Some(index) => Some(index),
-            None => None,
-        }
-    }
-}
 
 impl<'a> FindTag<'a> {
     pub fn new(
@@ -254,11 +220,7 @@ impl<'a> FindTag<'a> {
                 .take(self.max_suggestions)
                 .enumerate()
             {
-                let selected = if let Some(x) = self.state.selected_index {
-                    x == i
-                } else {
-                    false
-                };
+                let selected = self.state.selected_index == Some(i);
 
                 match result {
                     AutocompleteResult::MatchResult(MergedFieldMatchResult { id, .. }) => {
@@ -342,7 +304,8 @@ impl<'a> Widget for FindTag<'a> {
             self.new_search_results();
         }
 
-        self.state.update_index(
+        self.state.selected_index = update_index(
+            self.state.selected_index,
             self.state.focused && shortcut!(ui, ArrowDown),
             self.state.focused && shortcut!(ui, ArrowUp),
             self.state.search_results.as_ref().unwrap().len(),

@@ -1,11 +1,15 @@
-use std::ops::Add;
+use std::ops::{Add, Range};
 use std::sync::{Arc, Mutex};
 
 use crate::data::parse::{
     FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
+    WHITESPACE,
 };
-use crate::data::{FieldDefinition, FilterExpression, Vault};
+use crate::data::{FieldDefinition, FieldType, FilterExpression, TextSearchQuery, Vault};
+use crate::shortcut;
+use crate::tasks::filter::evaluate_field_search;
 use crate::ui::cloneable_state::CloneablePersistedState;
+use crate::ui::input::update_index;
 use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 use eframe::egui::os::OperatingSystem;
 use eframe::egui::output::{IMEOutput, OutputEvent};
@@ -15,14 +19,15 @@ use eframe::egui::text_selection::text_cursor_state::cursor_rect;
 use eframe::egui::text_selection::visuals::{paint_cursor, paint_text_selection};
 use eframe::egui::util::undoer::Undoer;
 use eframe::egui::{
-    vec2, Align2, Color32, CursorIcon, Event, EventFilter, FontSelection, Galley, Key, Layout,
-    Margin, Modifiers, NumExt, Rect, Response, Sense, Shape, TextBuffer, Ui, Vec2, Widget,
-    WidgetInfo,
+    vec2, Align, Align2, Area, Color32, CursorIcon, Event, EventFilter, FontSelection, Frame,
+    Galley, Key, Layout, Margin, Modifiers, NumExt, Order, Rect, Response, Sense, Shape,
+    TextBuffer, Ui, Vec2, Widget, WidgetInfo,
 };
 use eframe::epaint::FontFamily;
 use eframe::{egui, epaint};
 use serde::{Deserialize, Serialize};
 use tracing::info;
+use uuid::Uuid;
 
 pub struct SearchBox<'a> {
     id: egui::Id,
@@ -34,13 +39,39 @@ pub struct SearchBox<'a> {
     vault: Arc<Vault>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+enum AutocompleteResult {
+    TagResult(Uuid),
+}
+
+struct AutocompleteReplacement {
+    range: (usize, usize),
+    result: AutocompleteResult,
+}
+
+impl AutocompleteReplacement {
+    fn apply(self, s: &mut String) {
+        let (start, end) = self.range;
+        let end = end.min(s.len());
+        let repl = match self.result {
+            AutocompleteResult::TagResult(tag_id) => format!("tag:{tag_id}"),
+        };
+        s.replace_range(start..end, repl.as_str());
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct State {
     cursor: TextCursorState,
     undoer: Arc<Mutex<Undoer<(CCursorRange, String)>>>,
     has_ime: bool,
+    focused: bool,
     ime_cursor_range: CursorRange,
     singleline_offset: f32,
+    search_range: Option<(usize, usize)>,
+    search_query: TextSearchQuery,
+    search_results: Vec<AutocompleteResult>,
+    selected_index: Option<usize>,
 }
 
 impl CloneablePersistedState for State {}
@@ -59,6 +90,45 @@ fn char_index_from_byte_index(s: &str, byte_index: usize) -> usize {
         }
     }
     n_chars
+}
+
+fn popup_below_widget_at_offset<R>(
+    ui: &Ui,
+    widget_response: &Response,
+    x_offset: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let popup_id = widget_response.id.with("popup");
+    if ui.memory(|mem| mem.has_focus(widget_response.id)) {
+        let mut pos = widget_response.rect.left_bottom();
+        pos.x = x_offset;
+        let inner = Area::new(popup_id)
+            .order(Order::Foreground)
+            .constrain(true)
+            .fixed_pos(pos)
+            .pivot(Align2::LEFT_TOP)
+            .show(ui.ctx(), |ui| {
+                let frame = Frame::popup(ui.style());
+                let frame_margin = frame.total_margin();
+                frame
+                    .show(ui, |ui| {
+                        ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                            ui.set_width(widget_response.rect.width() - frame_margin.sum().x);
+                            add_contents(ui)
+                        })
+                        .inner
+                    })
+                    .inner
+            })
+            .inner;
+
+        if ui.input(|i| i.key_pressed(Key::Escape)) || widget_response.clicked_elsewhere() {
+            ui.memory_mut(|mem| mem.surrender_focus(widget_response.id));
+        }
+        Some(inner)
+    } else {
+        None
+    }
 }
 
 impl<'a> SearchBox<'a> {
@@ -469,7 +539,7 @@ impl<'a> SearchBox<'a> {
                 for section in expr.sections() {
                     match section {
                         FilterExpressionTextSection::Normal(start, end) => {
-                            job.append(&text[start..end], 0.0, normal_fmt.clone())
+                            job.append(&text[start..end], 0.0, normal_fmt.clone());
                         }
                         FilterExpressionTextSection::Replacement(_, node) => job.append(
                             &String::from(
@@ -755,6 +825,115 @@ impl<'a> SearchBox<'a> {
         }
     }
 
+    fn new_search_results(&mut self, expr: &FilterExpressionParseResult, range: (usize, usize)) {
+        let (w_start, w_end) = range;
+        let word = &self.text[w_start..w_end];
+        self.state.search_query = TextSearchQuery::new(word.to_string());
+        self.state.search_range = Some((w_start, w_end));
+        self.state.search_results = vec![];
+        self.state.selected_index = None;
+
+        let Ok(search_results) = evaluate_field_search(
+            &self.vault,
+            &self.state.search_query,
+            Some(&expr.tag_ids()),
+            None,
+        ) else {
+            return;
+        };
+
+        let vec: Vec<_> = search_results
+            .into_iter()
+            .map(|res| AutocompleteResult::TagResult(res.id))
+            .collect();
+
+        self.state.search_results = vec;
+    }
+
+    fn popup_ui(
+        &mut self,
+        ui: &Ui,
+        expr: &FilterExpressionParseResult,
+        galley: &Galley,
+        output: &Response,
+    ) -> Option<AutocompleteReplacement> {
+        const MAX_SUGGESTIONS: usize = 10;
+        let mut replacement = None;
+
+        self.state.focused = output.has_focus();
+
+        self.state.selected_index = update_index(
+            self.state.selected_index,
+            self.state.focused && shortcut!(ui, ArrowDown),
+            self.state.focused && shortcut!(ui, ArrowUp),
+            self.state.search_results.len(),
+            MAX_SUGGESTIONS,
+        );
+
+        let accepted_by_keyboard = shortcut!(ui, Enter);
+        if let (Some(index), true) = (
+            self.state.selected_index,
+            ui.memory(|mem| mem.is_popup_open(self.id)) && accepted_by_keyboard,
+        ) {
+            let result = self.state.search_results.swap_remove(index);
+            if let Some((start, end)) = std::mem::take(&mut self.state.search_range) {
+                return Some(AutocompleteReplacement {
+                    result,
+                    range: (start, end),
+                });
+            }
+        }
+
+        match &self.state.cursor.char_range() {
+            Some(CCursorRange { primary, secondary }) if primary == secondary => {
+                let pos = galley.pos_from_ccursor(*primary);
+                let char_idx = expr.replacement_idx_to_text_idx(primary.index);
+                let (w_start, w_end) = find_word_at_position(self.text, char_idx)?;
+
+                if w_start < w_end
+                    && (self.state.search_query.string.as_str() != &self.text[w_start..w_end]
+                        || self.state.search_range != Some((w_start, w_end)))
+                {
+                    self.new_search_results(expr, (w_start, w_end));
+                }
+
+                if self.state.search_results.is_empty() {
+                    return None;
+                }
+
+                popup_below_widget_at_offset(ui, output, pos.min.x, |ui| {
+                    for (i, res) in self
+                        .state
+                        .search_results
+                        .iter()
+                        .take(MAX_SUGGESTIONS)
+                        .enumerate()
+                    {
+                        let selected = self.state.selected_index == Some(i);
+                        let out = match res {
+                            AutocompleteResult::TagResult(tag_id) => {
+                                let def = self.vault.get_definition_or_placeholder(tag_id);
+                                ui.add(widgets::Tag::new(&def).small(true).selected(selected))
+                            }
+                        };
+                        if out.clicked() {
+                            replacement = Some(AutocompleteReplacement {
+                                result: res.clone(),
+                                range: (w_start, w_end),
+                            });
+                        }
+                        if out.has_focus() {
+                            self.state.focused = true;
+                        }
+                    }
+                });
+
+                replacement
+            }
+            _ => None,
+        }
+    }
+
     pub fn show(mut self, ui: &mut Ui) -> SearchResponse {
         self.state = State::load(ui.ctx(), self.id).unwrap_or_default();
 
@@ -839,9 +1018,28 @@ impl<'a> SearchBox<'a> {
 
         let expr = self.text.parse::<FilterExpressionParseResult>().ok();
 
-        let ui = ui.child_ui(clip_rect, Layout::default());
         if let Some(expr) = expr.as_ref() {
+            let ui = ui.child_ui(clip_rect, Layout::default());
             self.paint_tags(&ui, expr, output.rect.min.to_vec2(), &galley, clip_rect);
+            let repl_opt = self.popup_ui(&ui, expr, &galley, &output);
+
+            if self.state.focused && !self.state.search_results.is_empty() {
+                ui.memory_mut(|mem| mem.open_popup(self.id));
+            }
+
+            if let Some(repl) = repl_opt {
+                ui.memory_mut(|mem| {
+                    if mem.is_popup_open(self.id) {
+                        mem.close_popup();
+                    }
+                });
+                self.state.focused = false;
+                self.state.search_query = Default::default();
+                self.state.search_range = None;
+                self.state.search_results = vec![];
+
+                repl.apply(self.text);
+            }
         }
 
         std::mem::take(&mut self.state).store(ui.ctx(), self.id);
@@ -856,5 +1054,38 @@ impl<'a> SearchBox<'a> {
 impl<'a> Widget for SearchBox<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         self.show(ui).response
+    }
+}
+
+fn find_word_at_position(s: &str, pos: usize) -> Option<(usize, usize)> {
+    let mut start = None;
+    for (i, c) in s.char_indices() {
+        if WHITESPACE.contains(c) {
+            if let Some(start) = start {
+                if pos <= i {
+                    return Some((start, i));
+                }
+            }
+
+            start = None;
+            continue;
+        }
+
+        if start.is_none() {
+            start = Some(i);
+        }
+    }
+
+    start.map(|start| (start, s.len()))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_find_word_at_position() {
+        let x = find_word_at_position("hello there", 2);
+        assert_eq!(Some((0, 4)), x);
     }
 }

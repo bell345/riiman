@@ -43,7 +43,7 @@ macro_rules! local {
 
 type Span<'a> = LocatedSpan<&'a str>;
 
-const WHITESPACE: &str = " \t\r\n\u{3000}";
+pub const WHITESPACE: &str = " \t\r\n\u{3000}";
 
 pub fn hex_digit(c: char) -> Option<u8> {
     Some(match c {
@@ -891,6 +891,23 @@ impl FilterExpressionParseResult {
             FilterExpressionTextSection::Normal(start, _) | FilterExpressionTextSection::Replacement(start, _) => *start,
         });
         sections
+    }
+
+    pub fn tag_ids(&self) -> Vec<Uuid> {
+        let mut results = vec![];
+        for node in &self.nodes {
+            if !node.children.is_empty() {
+                continue;
+            }
+            
+            match node.expr {
+                FilterExpression::TagMatch(id)
+                | FilterExpression::FieldMatch(id, _) => results.push(id),
+                _ => {}
+            }
+        }
+
+        results
     }
 }
 

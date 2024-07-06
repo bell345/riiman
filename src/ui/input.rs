@@ -7,3 +7,35 @@ macro_rules! shortcut {
         $ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::$key))
     };
 }
+pub fn update_index(
+    index: Option<usize>,
+    down_pressed: bool,
+    up_pressed: bool,
+    match_results_count: usize,
+    max_suggestions: usize,
+) -> Option<usize> {
+    match index {
+        // Increment selected index when down is pressed,
+        // limit it to the number of matches and max_suggestions
+        Some(index) if down_pressed => {
+            if index + 1 < match_results_count.min(max_suggestions) {
+                Some(index + 1)
+            } else {
+                Some(index)
+            }
+        }
+        // Decrement selected index if up is pressed. Deselect if at first index
+        Some(index) if up_pressed => {
+            if index == 0 {
+                None
+            } else {
+                Some(index - 1)
+            }
+        }
+        // If nothing is selected and down is pressed, select first item
+        None if down_pressed => Some(0),
+        // Do nothing if no keys are pressed
+        Some(index) => Some(index),
+        None => None,
+    }
+}
