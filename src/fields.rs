@@ -111,7 +111,10 @@ field_defs! {
         sidecar_last_updated: DateTime,
         #[id("7bb22e14-0ae3-481a-a85b-b5b826384297")]
         #[tag(meta::no_link)]
-        link: ItemRef
+        link: ItemRef,
+        #[id("ba3ef373-a26a-48d6-9205-5ded815c6f73")]
+        #[tag(meta::no_link)]
+        skip: Tag
     },
     #[id("49b61dab-ce73-4ac9-ac3a-fb20f928e1e3")]
     meta {

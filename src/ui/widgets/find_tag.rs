@@ -1,14 +1,15 @@
 // Heavily informed by Jake Hansen's `egui_autocomplete`:
 // https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 
-use crate::data::{FieldDefinition, FieldType, TextSearchQuery, Vault};
-use crate::shortcut;
+use std::sync::Arc;
+
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
-use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::data::{FieldDefinition, FieldType, TextSearchQuery, Vault};
+use crate::shortcut;
 use crate::tasks::filter::{evaluate_field_search, FieldMatchResult, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::input::update_index;
@@ -186,24 +187,24 @@ impl<'a> FindTag<'a> {
         self.state.search_results = Some(vec);
         self.state.selected_index = Some(0);
     }
+    
+    fn get_selected_option(&self) -> Option<&AutocompleteResult> {
+        let index = self.state.selected_index.as_ref()?;
+        let results = self.state.search_results.as_ref()?;
+        results.get(*index)
+    }
 
     fn popup_ui(&mut self, ui: &mut Ui, text_res: &Response) -> bool {
         let mut tag_selected = false;
 
-        let accepted_by_keyboard = shortcut!(ui, Tab) || shortcut!(ui, Enter);
-        if let (Some(index), true) = (
-            self.state.selected_index,
-            ui.memory(|mem| mem.is_popup_open(self.widget_id)) && accepted_by_keyboard,
-        ) {
-            if let Some(results) = self.state.search_results.as_ref() {
-                if let Some(result) = results.get(index) {
-                    tag_selected = true;
-                    match result {
-                        AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
-                        AutocompleteResult::CreateResult => {
-                            **self.create_req.as_mut().unwrap() =
-                                Some(self.state.search_text.clone());
-                        }
+        if let Some(result) = self.get_selected_option() {
+            if shortcut!(ui, Tab) || shortcut!(ui, Enter) {
+                tag_selected = true;
+                match result {
+                    AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
+                    AutocompleteResult::CreateResult => {
+                        **self.create_req.as_mut().unwrap() =
+                            Some(self.state.search_text.clone());
                     }
                 }
             }

@@ -1,16 +1,12 @@
-use std::ops::{Add, Range};
+use std::ops::Add;
 use std::sync::{Arc, Mutex};
 
-use crate::data::parse::{
-    FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
-    WHITESPACE,
+use eframe::{egui, epaint};
+use eframe::egui::{
+    Align, Align2, Area, Color32, CursorIcon, Event, EventFilter, FontSelection, Frame, Galley,
+    Key, Layout, Margin, Modifiers, NumExt, Order, Rect, Response, Sense, Shape, TextBuffer,
+    Ui, vec2, Vec2, Widget, WidgetInfo,
 };
-use crate::data::{FieldDefinition, FieldType, FilterExpression, TextSearchQuery, Vault};
-use crate::shortcut;
-use crate::tasks::filter::evaluate_field_search;
-use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::input::update_index;
-use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 use eframe::egui::os::OperatingSystem;
 use eframe::egui::output::{IMEOutput, OutputEvent};
 use eframe::egui::text::{CCursor, CCursorRange, CursorRange};
@@ -18,16 +14,20 @@ use eframe::egui::text_edit::TextCursorState;
 use eframe::egui::text_selection::text_cursor_state::cursor_rect;
 use eframe::egui::text_selection::visuals::{paint_cursor, paint_text_selection};
 use eframe::egui::util::undoer::Undoer;
-use eframe::egui::{
-    vec2, Align, Align2, Area, Color32, CursorIcon, Event, EventFilter, FontSelection, Frame,
-    Galley, Key, Layout, Margin, Modifiers, NumExt, Order, Rect, Response, Sense, Shape,
-    TextBuffer, Ui, Vec2, Widget, WidgetInfo,
-};
 use eframe::epaint::FontFamily;
-use eframe::{egui, epaint};
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use uuid::Uuid;
+
+use crate::data::{FieldDefinition, FilterExpression, TextSearchQuery, Vault};
+use crate::data::parse::{
+    FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
+    WHITESPACE,
+};
+use crate::shortcut;
+use crate::tasks::filter::evaluate_field_search;
+use crate::ui::{DUMMY_TAG_REPLACEMENT_FAMILY, widgets};
+use crate::ui::cloneable_state::CloneablePersistedState;
+use crate::ui::input::update_index;
 
 pub struct SearchBox<'a> {
     id: egui::Id,
@@ -37,6 +37,7 @@ pub struct SearchBox<'a> {
     margin: Margin,
     state: State,
     vault: Arc<Vault>,
+    interactive: bool
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,6 +142,7 @@ impl<'a> SearchBox<'a> {
             margin: Margin::symmetric(4.0, 2.0),
             state: Default::default(),
             vault,
+            interactive: false
         }
     }
 
@@ -151,6 +153,11 @@ impl<'a> SearchBox<'a> {
 
     pub fn tags(mut self, tags: &'a Vec<FieldDefinition>) -> Self {
         self.tags = Some(tags);
+        self
+    }
+    
+    pub fn interactive(mut self) -> Self {
+        self.interactive = true;
         self
     }
 
@@ -522,6 +529,7 @@ impl<'a> SearchBox<'a> {
         };
 
         let vault = Arc::clone(&self.vault);
+        let is_interactive = self.interactive;
         let layouter = move |ui: &Ui, text: &str, _wrap_width: f32| -> Arc<Galley> {
             let mut job = egui::text::LayoutJob::default();
             let style = ui.style();
@@ -535,7 +543,9 @@ impl<'a> SearchBox<'a> {
 
             job.append("", reserved_left, normal_fmt.clone());
 
-            if let Ok(expr) = text.parse::<FilterExpressionParseResult>() {
+            let expr_opt = text.parse::<FilterExpressionParseResult>();
+            if is_interactive && expr_opt.is_ok() {
+                let expr = expr_opt.unwrap();
                 for section in expr.sections() {
                     match section {
                         FilterExpressionTextSection::Normal(start, end) => {
@@ -793,7 +803,6 @@ impl<'a> SearchBox<'a> {
         for section in expr.sections() {
             if let FilterExpressionTextSection::Replacement(index, node) = section {
                 let char_idx = char_index_from_byte_index(self.text, index);
-                info!("index = {index}, char_idx = {char_idx}");
                 let cur = galley
                     .pos_from_ccursor(CCursor {
                         index: char_idx - index_offset,
@@ -870,17 +879,16 @@ impl<'a> SearchBox<'a> {
             MAX_SUGGESTIONS,
         );
 
-        let accepted_by_keyboard = shortcut!(ui, Enter);
-        if let (Some(index), true) = (
-            self.state.selected_index,
-            ui.memory(|mem| mem.is_popup_open(self.id)) && accepted_by_keyboard,
-        ) {
-            let result = self.state.search_results.swap_remove(index);
-            if let Some((start, end)) = std::mem::take(&mut self.state.search_range) {
-                return Some(AutocompleteReplacement {
-                    result,
-                    range: (start, end),
-                });
+        let accepted_by_keyboard = || shortcut!(ui, Enter);
+        if let Some(index) = self.state.selected_index {
+            if ui.memory(|mem| mem.is_popup_open(self.id)) && accepted_by_keyboard() {
+                let result = self.state.search_results.swap_remove(index);
+                if let Some((start, end)) = std::mem::take(&mut self.state.search_range) {
+                    return Some(AutocompleteReplacement {
+                        result,
+                        range: (start, end),
+                    });
+                }
             }
         }
 
@@ -1019,26 +1027,28 @@ impl<'a> SearchBox<'a> {
         let expr = self.text.parse::<FilterExpressionParseResult>().ok();
 
         if let Some(expr) = expr.as_ref() {
-            let ui = ui.child_ui(clip_rect, Layout::default());
-            self.paint_tags(&ui, expr, output.rect.min.to_vec2(), &galley, clip_rect);
-            let repl_opt = self.popup_ui(&ui, expr, &galley, &output);
+            if self.interactive {
+                let ui = ui.child_ui(clip_rect, Layout::default());
+                self.paint_tags(&ui, expr, output.rect.min.to_vec2(), &galley, clip_rect);
+                let repl_opt = self.popup_ui(&ui, expr, &galley, &output);
 
-            if self.state.focused && !self.state.search_results.is_empty() {
-                ui.memory_mut(|mem| mem.open_popup(self.id));
-            }
+                if self.state.focused && !self.state.search_results.is_empty() {
+                    ui.memory_mut(|mem| mem.open_popup(self.id));
+                }
 
-            if let Some(repl) = repl_opt {
-                ui.memory_mut(|mem| {
-                    if mem.is_popup_open(self.id) {
-                        mem.close_popup();
-                    }
-                });
-                self.state.focused = false;
-                self.state.search_query = Default::default();
-                self.state.search_range = None;
-                self.state.search_results = vec![];
+                if let Some(repl) = repl_opt {
+                    ui.memory_mut(|mem| {
+                        if mem.is_popup_open(self.id) {
+                            mem.close_popup();
+                        }
+                    });
+                    self.state.focused = false;
+                    self.state.search_query = Default::default();
+                    self.state.search_range = None;
+                    self.state.search_results = vec![];
 
-                repl.apply(self.text);
+                    repl.apply(self.text);
+                }
             }
         }
 

@@ -183,7 +183,7 @@ impl ThumbnailGrid {
             .collect()
     }
 
-    fn handle_tab(&mut self, ui: &mut egui::Ui) {
+    fn handle_tab(&mut self, ui: &mut egui::Ui, thumbnails: &[ThumbnailPosition]) {
         let selected_paths = self.get_selected_paths();
         let selected_id = selected_paths.first().map(egui::Id::new);
 
@@ -193,9 +193,7 @@ impl ThumbnailGrid {
             && self.state.select_mode == SelectMode::Single
             && shortcut!(ui, Tab)
         {
-            if let Some((i, _)) = self
-                .info
-                .thumbnails
+            if let Some((i, _)) = thumbnails
                 .iter()
                 .find_position(|pos| selected_paths.contains(&pos.path))
             {
@@ -204,8 +202,8 @@ impl ThumbnailGrid {
                 } else {
                     1
                 };
-                let next_path = self.info.thumbnails
-                    [wrap_index(i, self.info.thumbnails.len(), delta)]
+                let next_path = thumbnails
+                    [wrap_index(i, thumbnails.len(), delta)]
                 .path
                 .clone();
                 self.set_scroll = true;
@@ -484,7 +482,7 @@ impl ThumbnailGrid {
                 let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
                 ui.set_height(max_y);
 
-                self.handle_tab(ui);
+                self.handle_tab(ui, &grid.thumbnails);
 
                 self.double_clicked = false;
                 self.has_focus = false;

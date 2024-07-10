@@ -7,6 +7,27 @@ macro_rules! shortcut {
         $ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::$key))
     };
 }
+
+#[macro_export]
+macro_rules! shortcut_peek {
+    ($ui:ident, $modifier:ident + $key:ident) => {
+        $ui.input(|i| i.events.iter().any(|e| matches!(e, egui::data::input::Event::Key {
+            key: ev_key,
+            modifiers: ev_mods,
+            pressed: true,
+            ..
+        } if *ev_key == egui::Key::$key && ev_mods.matches_logically(egui::Modifiers::$modifier))))
+    };
+    ($ui:ident, $key:ident) => {
+        $ui.input(|i| i.events.iter().any(|e| matches!(e, egui::data::input::Event::Key {
+            key: ev_key,
+            modifiers: ev_mods,
+            pressed: true,
+            ..
+        } if *ev_key == egui::Key::$key && ev_mods.matches_logically(egui::Modifiers::NONE))))
+    };
+}
+
 pub fn update_index(
     index: Option<usize>,
     down_pressed: bool,

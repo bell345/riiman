@@ -72,6 +72,7 @@ struct AppStorage {
     thumbnail_row_height: f32,
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
+    search_text: String
 }
 
 impl AppStorage {
@@ -151,6 +152,8 @@ impl App {
                 ))
             });
         }
+        
+        self.search_text = stored_state.search_text;
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
 
@@ -449,6 +452,7 @@ impl App {
                             vault,
                         )
                         .desired_width(f32::INFINITY)
+                        .interactive()
                         .show(ui);
 
                         let sorts = match self.sort_type {
@@ -659,6 +663,7 @@ impl eframe::App for App {
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
             sorts: state.sorts().clone(),
             filter: state.filter().clone(),
+            search_text: self.search_text.clone()
         };
 
         storage.set_string(
