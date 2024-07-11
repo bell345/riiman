@@ -1,5 +1,5 @@
 use crate::data::{FieldDefinition, TextSearchQuery};
-use crate::shortcut;
+use crate::take_shortcut;
 use crate::state::AppStateRef;
 use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
@@ -284,8 +284,8 @@ impl<'a> Widget for TagTree<'a> {
         }
 
         state.update_index(
-            state.focused && shortcut!(ui, ArrowDown),
-            state.focused && shortcut!(ui, ArrowUp),
+            state.focused && take_shortcut!(ui, ArrowDown),
+            state.focused && take_shortcut!(ui, ArrowUp),
         );
 
         egui::ScrollArea::vertical()

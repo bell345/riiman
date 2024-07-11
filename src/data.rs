@@ -15,6 +15,7 @@ pub use filter::FilterExpression;
 pub use filter::TextSearchQuery;
 pub use filter::ValueMatchExpression;
 pub use item::Item;
+pub use shortcut::ShortcutAction;
 pub use string::Utf32CachedString;
 pub use vault::Vault;
 
@@ -26,3 +27,4 @@ mod item;
 pub mod parse;
 mod string;
 mod vault;
+mod shortcut;

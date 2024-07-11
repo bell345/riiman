@@ -3,9 +3,12 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use dashmap::{DashMap, DashSet};
+use eframe::egui;
+use eframe::egui::KeyboardShortcut;
+use indexmap::IndexMap;
 use poll_promise::Promise;
 
-use crate::data::{FieldStore, FilterExpression, Vault};
+use crate::data::{FieldStore, FilterExpression, ShortcutAction, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::tasks::sort::{SortDirection, SortExpression};
@@ -21,14 +24,37 @@ pub(crate) struct AppState {
     unresolved_vaults: DashSet<String>,
     current_vault_name: Mutex<Option<String>>,
     vault_loading: Mutex<bool>,
+    shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
 
     filter: Mutex<FilterExpression>,
     sorts: Mutex<Vec<SortExpression>>,
 }
 
+macro_rules! shortcut {
+    ($modifier:ident + $key:ident) => {
+        KeyboardShortcut::new(egui::Modifiers::$modifier, egui::Key::$key)
+    };
+    ($key:ident) => {
+        KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::$key)
+    };
+}
+
+const DEFAULT_SHORTCUTS: [KeyboardShortcut; 10] = [
+    shortcut!(CTRL + Num1),
+    shortcut!(CTRL + Num2),
+    shortcut!(CTRL + Num3),
+    shortcut!(CTRL + Num4),
+    shortcut!(CTRL + Num5),
+    shortcut!(CTRL + Num6),
+    shortcut!(CTRL + Num7),
+    shortcut!(CTRL + Num8),
+    shortcut!(CTRL + Num9),
+    shortcut!(CTRL + Num0)
+];
+
 impl Default for AppState {
     fn default() -> Self {
-        Self {
+        let res = Self {
             task_queue: Default::default(),
             results: Default::default(),
             error_queue: Default::default(),
@@ -37,9 +63,16 @@ impl Default for AppState {
             unresolved_vaults: Default::default(),
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
+            shortcuts: Default::default(),
             filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
             sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
+        };
+        
+        for shortcut in DEFAULT_SHORTCUTS {
+            res.shortcuts.lock().unwrap().insert(shortcut, ShortcutAction::None);
         }
+        
+        res
     }
 }
 
@@ -241,6 +274,21 @@ impl AppState {
     pub fn set_filter_and_sorts(&self, filter: FilterExpression, sorts: Vec<SortExpression>) {
         *self.filter.lock().unwrap() = filter;
         *self.sorts.lock().unwrap() = sorts;
+    }
+    
+    pub fn shortcuts(&self) -> Vec<(KeyboardShortcut, ShortcutAction)> {
+        self.shortcuts.lock().unwrap().iter().map(|(k, v)| (*k, *v)).collect()
+    }
+    
+    pub fn set_shortcut(&self, shortcut: KeyboardShortcut, action: ShortcutAction) {
+        self.shortcuts.lock().unwrap().insert(shortcut, action);
+    }
+    
+    pub fn set_shortcuts(&self, shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>) {
+        let mut l = self.shortcuts.lock().unwrap();
+        for (shortcut, action) in shortcuts {
+            l.insert(shortcut, action);
+        }
     }
 }
 

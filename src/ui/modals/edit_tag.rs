@@ -9,7 +9,7 @@ use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
-use crate::{fields, shortcut};
+use crate::{fields, take_shortcut};
 
 #[derive(Default)]
 pub struct EditTag {
@@ -559,13 +559,13 @@ impl AppModal for EditTag {
             .id("edit_tag_window".into())
             .open(&mut opened)
             .show(ctx, |ui| {
-                self.operation = if shortcut!(ui, Escape) {
+                self.operation = if take_shortcut!(ui, Escape) {
                     Operation::Close
-                } else if shortcut!(ui, CTRL + N) {
+                } else if take_shortcut!(ui, CTRL + N) {
                     Operation::Add
-                } else if shortcut!(ui, CTRL + Z) {
+                } else if take_shortcut!(ui, CTRL + Z) {
                     Operation::Reset
-                } else if shortcut!(ui, CTRL + S) {
+                } else if take_shortcut!(ui, CTRL + S) {
                     Operation::Save
                 } else {
                     self.operation

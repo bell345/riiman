@@ -1,5 +1,5 @@
 #[macro_export]
-macro_rules! shortcut {
+macro_rules! take_shortcut {
     ($ui:ident, $modifier:ident + $key:ident) => {
         $ui.input_mut(|i| i.consume_key(egui::Modifiers::$modifier, egui::Key::$key))
     };
@@ -9,7 +9,7 @@ macro_rules! shortcut {
 }
 
 #[macro_export]
-macro_rules! shortcut_peek {
+macro_rules! peek_shortcut {
     ($ui:ident, $modifier:ident + $key:ident) => {
         $ui.input(|i| i.events.iter().any(|e| matches!(e, egui::data::input::Event::Key {
             key: ev_key,

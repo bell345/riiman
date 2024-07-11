@@ -6,10 +6,8 @@ use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
 use uuid::Uuid;
 
-use crate::data::{
-    FieldDefinition, FieldStore, FieldType, FieldValue, Item, SimpleFieldStore, Vault,
-};
-use crate::shortcut;
+use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue, Item, ShortcutAction, SimpleFieldStore, Vault};
+use crate::take_shortcut;
 use crate::state::AppStateRef;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTag;
@@ -105,7 +103,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
                 state.focused = false;
             }
 
-            if shortcut!(ui, Escape) {
+            if take_shortcut!(ui, Escape) {
                 state.cancelled = true;
             }
 
@@ -231,11 +229,11 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
         };
 
         ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() || shortcut!(ui, Escape) {
+            if ui.button("Cancel").clicked() || take_shortcut!(ui, Escape) {
                 self.state.is_editing = false;
             }
 
-            if ui.button("OK").clicked() || shortcut!(ui, Enter) {
+            if ui.button("OK").clicked() || take_shortcut!(ui, Enter) {
                 item.clear();
                 item.update(&self.state.field_store);
                 if item.blocking_update_link(self.app_state.clone()).is_err() {
@@ -273,7 +271,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
 
         let is_viewing = !self.state.is_editing && !self.state.is_adding;
 
-        if ui.button("Edit tags").clicked() || (is_viewing && shortcut!(ui, CTRL + E)) {
+        if ui.button("Edit tags").clicked() || (is_viewing && take_shortcut!(ui, CTRL + E)) {
             self.state.is_editing = true;
             self.state.widest_tag_width = 100.0;
             self.state.field_store.clear();
@@ -281,10 +279,39 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
         }
 
         if !self.state.is_adding && ui.button("Add tag").clicked()
-            || (is_viewing && shortcut!(ui, Backtick))
+            || (is_viewing && take_shortcut!(ui, Backtick))
         {
             self.state.is_adding = true;
             self.state.quick_create_state = Default::default();
+        }
+        
+        let shortcuts = self.app_state.blocking_read().shortcuts();
+        for (shortcut, action) in shortcuts {
+            if matches!(action, ShortcutAction::None) {
+                continue;
+            }
+            
+            if ui.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
+                match action {
+                    ShortcutAction::None => {}
+                    ShortcutAction::ToggleTag(tag_id) => {
+                        if item.has_field(&tag_id) {
+                            item.remove_field(&tag_id);
+                        } else {
+                            match self.vault.get_definition(&tag_id) {
+                                Some(def) if def.field_type == FieldType::Tag => {
+                                    item.set_field_value(tag_id, FieldValue::Tag);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if item.blocking_update_link(self.app_state.clone()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -7,14 +7,16 @@ mod link_vault;
 mod manage_vaults;
 mod message;
 mod new_vault;
+mod tag_shortcuts;
 
 pub use delete_def::DeleteDefinition;
 pub use download::Download;
 pub use edit_tag::EditTag;
 pub use link_vault::LinkVault;
 pub use manage_vaults::ManageVaults;
-pub use message::MessageDialog;
-pub use new_vault::NewVaultDialog;
+pub use message::Message;
+pub use new_vault::NewVault;
+pub use tag_shortcuts::TagShortcuts;
 
 pub trait AppModal: Send + Sync + 'static {
     fn id(&self) -> eframe::egui::Id;

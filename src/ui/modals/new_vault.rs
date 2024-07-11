@@ -8,14 +8,14 @@ use crate::tasks;
 use crate::ui::modals::AppModal;
 
 #[derive(Default)]
-pub struct NewVaultDialog {
+pub struct NewVault {
     modal: Option<Modal>,
     new_vault_name: String,
     error_message: Option<String>,
     opened: bool,
 }
 
-impl AppModal for NewVaultDialog {
+impl AppModal for NewVault {
     fn id(&self) -> eframe::egui::Id {
         "new_vault_name_modal".into()
     }

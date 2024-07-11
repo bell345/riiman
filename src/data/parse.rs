@@ -1,4 +1,7 @@
-use crate::data::{FieldDefinition, FieldValue, FilterExpression, SerialColour, Utf32CachedString, ValueMatchExpression, Vault};
+use crate::data::{
+    FieldDefinition, FieldValue, FilterExpression, SerialColour, Utf32CachedString,
+    ValueMatchExpression, Vault,
+};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_while_m_n};
 use nom::character::complete::{alpha1, digit0, digit1, none_of, one_of};
@@ -496,7 +499,7 @@ fn folder_match(s: Span) -> IResult<Span, FilterExpressionParseNode> {
 }
 
 fn tag_match(s: Span) -> IResult<Span, FilterExpressionParseNode> {
-    record_range(map(preceded(alt((tag("tag:"), tag("field:"))), uuid), |id| {
+    record_range(map(preceded(tag("field:"), uuid), |id| {
         FilterExpression::TagMatch(id)
     }))(s)
 }
@@ -570,7 +573,7 @@ fn field_match_operator(s: Span) -> IResult<Span, ValueMatchExpressionDiscrimina
             )),
             |_| ValueMatchExpressionDiscriminants::Regex,
         ),
-        map(alt((tag("="), tag("=="), tag_no_case("eq"))), |_| {
+        map(alt((tag("=="), tag("="), tag_no_case("eq"))), |_| {
             ValueMatchExpressionDiscriminants::Equals
         }),
         map(
@@ -620,47 +623,47 @@ fn field_match_operator(s: Span) -> IResult<Span, ValueMatchExpressionDiscrimina
 
 fn field_match(s: Span) -> IResult<Span, FilterExpressionParseNode> {
     record_range(|s| {
-        let (s, (id, op)) = pair(preceded(alt((tag_ws("field:"), tag_ws("tag:"))), uuid), field_match_operator)(s)?;
-        map(
-            move |s| match op {
-                ValueMatchExpressionDiscriminants::Equals => {
-                    map(field_value, ValueMatchExpression::Equals)(s)
-                }
-                ValueMatchExpressionDiscriminants::NotEquals => {
-                    map(field_value, ValueMatchExpression::NotEquals)(s)
-                }
-                ValueMatchExpressionDiscriminants::IsOneOf => map_opt(list_value, |l| {
-                    Some(ValueMatchExpression::IsOneOf(
-                        l.as_list_opt()?.iter().cloned().collect(),
-                    ))
-                })(s),
-                ValueMatchExpressionDiscriminants::Contains => {
-                    map(field_value, ValueMatchExpression::Contains)(s)
-                }
-                ValueMatchExpressionDiscriminants::LessThan => {
-                    map(field_value, ValueMatchExpression::LessThan)(s)
-                }
-                ValueMatchExpressionDiscriminants::LessThanOrEqual => {
-                    map(field_value, ValueMatchExpression::LessThanOrEqual)(s)
-                }
-                ValueMatchExpressionDiscriminants::GreaterThan => {
-                    map(field_value, ValueMatchExpression::GreaterThan)(s)
-                }
-                ValueMatchExpressionDiscriminants::GreaterThanOrEqual => {
-                    map(field_value, ValueMatchExpression::GreaterThanOrEqual)(s)
-                }
-                ValueMatchExpressionDiscriminants::StartsWith => {
-                    map(field_value, ValueMatchExpression::StartsWith)(s)
-                }
-                ValueMatchExpressionDiscriminants::EndsWith => {
-                    map(field_value, ValueMatchExpression::EndsWith)(s)
-                }
-                ValueMatchExpressionDiscriminants::Regex => {
-                    map(regex_literal, |re| ValueMatchExpression::Regex(re.into()))(s)
-                }
-            },
-            move |expr| FilterExpression::FieldMatch(id, expr),
-        )(s)
+        let (s, (id, op)) = pair(preceded(tag_ws("field:"), uuid), field_match_operator)(s)?;
+
+        let (s, expr) = match op {
+            ValueMatchExpressionDiscriminants::Equals => {
+                map(field_value, ValueMatchExpression::Equals)(s)
+            }
+            ValueMatchExpressionDiscriminants::NotEquals => {
+                map(field_value, ValueMatchExpression::NotEquals)(s)
+            }
+            ValueMatchExpressionDiscriminants::IsOneOf => map_opt(list_value, |l| {
+                Some(ValueMatchExpression::IsOneOf(
+                    l.as_list_opt()?.iter().cloned().collect(),
+                ))
+            })(s),
+            ValueMatchExpressionDiscriminants::Contains => {
+                map(field_value, ValueMatchExpression::Contains)(s)
+            }
+            ValueMatchExpressionDiscriminants::LessThan => {
+                map(field_value, ValueMatchExpression::LessThan)(s)
+            }
+            ValueMatchExpressionDiscriminants::LessThanOrEqual => {
+                map(field_value, ValueMatchExpression::LessThanOrEqual)(s)
+            }
+            ValueMatchExpressionDiscriminants::GreaterThan => {
+                map(field_value, ValueMatchExpression::GreaterThan)(s)
+            }
+            ValueMatchExpressionDiscriminants::GreaterThanOrEqual => {
+                map(field_value, ValueMatchExpression::GreaterThanOrEqual)(s)
+            }
+            ValueMatchExpressionDiscriminants::StartsWith => {
+                map(field_value, ValueMatchExpression::StartsWith)(s)
+            }
+            ValueMatchExpressionDiscriminants::EndsWith => {
+                map(field_value, ValueMatchExpression::EndsWith)(s)
+            }
+            ValueMatchExpressionDiscriminants::Regex => {
+                map(regex_literal, |re| ValueMatchExpression::Regex(re.into()))(s)
+            }
+        }?;
+
+        Ok((s, FilterExpression::FieldMatch(id, expr)))
     })(s)
 }
 
@@ -798,6 +801,7 @@ impl FilterExpressionParseNode {
         for child in &self.children {
             list.extend(child.flat_nodes());
         }
+
         list
     }
 
@@ -833,9 +837,11 @@ impl FilterExpressionParseNode {
             return None;
         }
 
+        #[allow(clippy::cast_sign_loss)]
+        #[allow(clippy::cast_possible_truncation)]
         let x = (size.x as u32).min(PRIVATE_USE_AREA_SIZE - 1);
-        // SAFETY: x is bounded to [0, 0x0FFF], thus argument is bounded to [0xE000, 0xEFFF]
-        Some(unsafe { char::from_u32_unchecked(PRIVATE_USE_AREA_START + x) })
+        // x is bounded to [0, 0x0FFF], thus argument is bounded to [0xE000, 0xEFFF]
+        char::from_u32(PRIVATE_USE_AREA_START + x)
     }
 }
 
@@ -850,7 +856,7 @@ pub struct FilterExpressionParseResult {
 #[derive(Debug)]
 pub enum FilterExpressionTextSection {
     Normal(usize, usize),
-    Replacement(usize, FilterExpressionParseNode)
+    Replacement(usize, FilterExpressionParseNode),
 }
 
 impl FilterExpressionParseResult {
@@ -881,14 +887,25 @@ impl FilterExpressionParseResult {
                 let node = node.clone();
                 sections.extend(match (start == repl_start, end == repl_end) {
                     (true, true) => vec![FilterExpressionTextSection::Replacement(start, node)],
-                    (true, false) => vec![FilterExpressionTextSection::Replacement(start, node), FilterExpressionTextSection::Normal(repl_end, end)],
-                    (false, true) => vec![FilterExpressionTextSection::Normal(start, repl_start), FilterExpressionTextSection::Replacement(repl_start, node)],
-                    (false, false) => vec![FilterExpressionTextSection::Normal(start, repl_start), FilterExpressionTextSection::Replacement(repl_start, node), FilterExpressionTextSection::Normal(repl_end, end)]
+                    (true, false) => vec![
+                        FilterExpressionTextSection::Replacement(start, node),
+                        FilterExpressionTextSection::Normal(repl_end, end),
+                    ],
+                    (false, true) => vec![
+                        FilterExpressionTextSection::Normal(start, repl_start),
+                        FilterExpressionTextSection::Replacement(repl_start, node),
+                    ],
+                    (false, false) => vec![
+                        FilterExpressionTextSection::Normal(start, repl_start),
+                        FilterExpressionTextSection::Replacement(repl_start, node),
+                        FilterExpressionTextSection::Normal(repl_end, end),
+                    ],
                 });
             }
         }
         sections.sort_by_key(|sec| match sec {
-            FilterExpressionTextSection::Normal(start, _) | FilterExpressionTextSection::Replacement(start, _) => *start,
+            FilterExpressionTextSection::Normal(start, _)
+            | FilterExpressionTextSection::Replacement(start, _) => *start,
         });
         sections
     }
@@ -899,10 +916,11 @@ impl FilterExpressionParseResult {
             if !node.children.is_empty() {
                 continue;
             }
-            
+
             match node.expr {
-                FilterExpression::TagMatch(id)
-                | FilterExpression::FieldMatch(id, _) => results.push(id),
+                FilterExpression::TagMatch(id) | FilterExpression::FieldMatch(id, _) => {
+                    results.push(id);
+                }
                 _ => {}
             }
         }
@@ -911,6 +929,7 @@ impl FilterExpressionParseResult {
     }
 }
 
+#[allow(clippy::cast_possible_wrap)]
 fn ccursor_add(cur: CCursor, diff: isize) -> CCursor {
     CCursor {
         index: usize::try_from((cur.index as isize) + diff)
@@ -920,6 +939,7 @@ fn ccursor_add(cur: CCursor, diff: isize) -> CCursor {
     }
 }
 
+#[allow(clippy::cast_possible_wrap)]
 fn cursor_add(cur: Cursor, diff: isize) -> Cursor {
     Cursor {
         ccursor: ccursor_add(cur.ccursor, diff),
@@ -940,6 +960,7 @@ fn cursor_add(cur: Cursor, diff: isize) -> Cursor {
     }
 }
 
+#[allow(clippy::cast_possible_wrap)]
 pub trait ReplacementStringConversion {
     fn replacement_idx_to_text_idx(&self, idx: usize) -> usize;
     fn replacement_ccursor_to_text_ccursor(&self, cur: CCursor) -> CCursor {
@@ -1164,11 +1185,11 @@ mod test {
     }
 
     fn assert_ok<T: PartialEq>(v: T, res: IResult<Span, T>) {
-        assert!(matches!(res, Ok((_, val)) if val == v))
+        assert!(matches!(res, Ok((_, val)) if val == v));
     }
 
     fn assert_ok_fe(v: FilterExpression, res: IResult<Span, FilterExpressionParseNode>) {
-        assert!(matches!(res, Ok((_, val)) if val.expr == v))
+        assert!(matches!(res, Ok((_, val)) if val.expr == v));
     }
 
     fn s(s: &str) -> Span {

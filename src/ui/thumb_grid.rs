@@ -1,4 +1,4 @@
-use crate::shortcut;
+use crate::take_shortcut;
 use crate::state::AppStateRef;
 use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
 use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
@@ -191,7 +191,7 @@ impl ThumbnailGrid {
             .memory(|r| r.focused())
             .is_some_and(|f| Some(f) == selected_id)
             && self.state.select_mode == SelectMode::Single
-            && shortcut!(ui, Tab)
+            && take_shortcut!(ui, Tab)
         {
             if let Some((i, _)) = thumbnails
                 .iter()

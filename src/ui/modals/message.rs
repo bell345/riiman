@@ -4,7 +4,7 @@ use egui_modal::{Icon, Modal};
 use uuid::Uuid;
 
 #[derive(Default)]
-pub struct MessageDialog {
+pub struct Message {
     id: Uuid,
     modal: Option<Modal>,
     title: Option<String>,
@@ -21,7 +21,7 @@ pub enum MessageType {
     Error,
 }
 
-impl MessageDialog {
+impl Message {
     pub fn error(message: String) -> Self {
         tracing::error!(message);
         Self {
@@ -58,7 +58,7 @@ impl MessageDialog {
     }
 }
 
-impl AppModal for MessageDialog {
+impl AppModal for Message {
     fn id(&self) -> eframe::egui::Id {
         eframe::egui::Id::new(self.id)
     }

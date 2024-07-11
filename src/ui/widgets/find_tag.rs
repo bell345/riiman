@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use uuid::Uuid;
 
 use crate::data::{FieldDefinition, FieldType, TextSearchQuery, Vault};
-use crate::shortcut;
+use crate::take_shortcut;
 use crate::tasks::filter::{evaluate_field_search, FieldMatchResult, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::input::update_index;
@@ -198,7 +198,7 @@ impl<'a> FindTag<'a> {
         let mut tag_selected = false;
 
         if let Some(result) = self.get_selected_option() {
-            if shortcut!(ui, Tab) || shortcut!(ui, Enter) {
+            if take_shortcut!(ui, Tab) || take_shortcut!(ui, Enter) {
                 tag_selected = true;
                 match result {
                     AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
@@ -307,8 +307,8 @@ impl<'a> Widget for FindTag<'a> {
 
         self.state.selected_index = update_index(
             self.state.selected_index,
-            self.state.focused && shortcut!(ui, ArrowDown),
-            self.state.focused && shortcut!(ui, ArrowUp),
+            self.state.focused && take_shortcut!(ui, ArrowDown),
+            self.state.focused && take_shortcut!(ui, ArrowUp),
             self.state.search_results.as_ref().unwrap().len(),
             MAX_SUGGESTIONS,
         );

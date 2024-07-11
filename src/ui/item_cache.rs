@@ -56,12 +56,8 @@ impl ItemCache {
         };
         let vault_is_new = self.params.vault_name == params.vault_name;
 
-        let items = r
-            .catch(
-                || "item_cache".into(),
-                || get_filtered_and_sorted_items(&vault, &r.filter(), &r.sorts()),
-            )
-            .ok()?;
+        // TODO: handle errors sanely and properly
+        let items = get_filtered_and_sorted_items(&vault, &r.filter(), &r.sorts()).ok()?;
         self.params = params;
         self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
 

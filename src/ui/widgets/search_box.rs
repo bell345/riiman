@@ -23,7 +23,7 @@ use crate::data::parse::{
     FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
     WHITESPACE,
 };
-use crate::shortcut;
+use crate::take_shortcut;
 use crate::tasks::filter::evaluate_field_search;
 use crate::ui::{DUMMY_TAG_REPLACEMENT_FAMILY, widgets};
 use crate::ui::cloneable_state::CloneablePersistedState;
@@ -55,7 +55,7 @@ impl AutocompleteReplacement {
         let (start, end) = self.range;
         let end = end.min(s.len());
         let repl = match self.result {
-            AutocompleteResult::TagResult(tag_id) => format!("tag:{tag_id}"),
+            AutocompleteResult::TagResult(tag_id) => format!("field:{tag_id}"),
         };
         s.replace_range(start..end, repl.as_str());
     }
@@ -109,12 +109,10 @@ fn popup_below_widget_at_offset<R>(
             .fixed_pos(pos)
             .pivot(Align2::LEFT_TOP)
             .show(ui.ctx(), |ui| {
-                let frame = Frame::popup(ui.style());
-                let frame_margin = frame.total_margin();
-                frame
+                Frame::popup(ui.style())
                     .show(ui, |ui| {
                         ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                            ui.set_width(widget_response.rect.width() - frame_margin.sum().x);
+                            ui.set_width(400.0);
                             add_contents(ui)
                         })
                         .inner
@@ -873,13 +871,13 @@ impl<'a> SearchBox<'a> {
 
         self.state.selected_index = update_index(
             self.state.selected_index,
-            self.state.focused && shortcut!(ui, ArrowDown),
-            self.state.focused && shortcut!(ui, ArrowUp),
+            self.state.focused && take_shortcut!(ui, ArrowDown),
+            self.state.focused && take_shortcut!(ui, ArrowUp),
             self.state.search_results.len(),
             MAX_SUGGESTIONS,
         );
 
-        let accepted_by_keyboard = || shortcut!(ui, Enter);
+        let accepted_by_keyboard = || take_shortcut!(ui, Enter);
         if let Some(index) = self.state.selected_index {
             if ui.memory(|mem| mem.is_popup_open(self.id)) && accepted_by_keyboard() {
                 let result = self.state.search_results.swap_remove(index);

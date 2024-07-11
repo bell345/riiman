@@ -2,9 +2,9 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use crate::data::FilterExpression;
+use crate::data::{FilterExpression, ShortcutAction};
 use eframe::egui;
-use eframe::egui::{FontData, FontDefinitions};
+use eframe::egui::{FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use tracing::info;
@@ -38,8 +38,6 @@ mod thumb_grid;
 pub mod widgets;
 
 pub use crate::ui::modals::AppModal;
-pub use crate::ui::modals::MessageDialog;
-use crate::ui::modals::{EditTag, LinkVault, NewVaultDialog};
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -66,13 +64,15 @@ pub(crate) struct App {
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct AppStorage {
     vault_name_to_file_paths: HashMap<String, String>,
     current_vault_name: Option<String>,
     thumbnail_row_height: f32,
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
-    search_text: String
+    search_text: String,
+    shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>
 }
 
 impl AppStorage {
@@ -117,11 +117,11 @@ impl App {
     }
 
     fn error(&mut self, message: String) {
-        self.add_modal_dialog(MessageDialog::error(message));
+        self.add_modal_dialog(modals::Message::error(message));
     }
 
     fn success(&mut self, title: String, message: String) {
-        self.add_modal_dialog(MessageDialog::success(message).with_title(title));
+        self.add_modal_dialog(modals::Message::success(message).with_title(title));
     }
 
     fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
@@ -157,9 +157,11 @@ impl App {
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
 
-        self.state
-            .blocking_read()
-            .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
+        {
+            let r = self.state.blocking_read();
+            r.set_filter_and_sorts(stored_state.filter, stored_state.sorts);
+            r.set_shortcuts(stored_state.shortcuts);
+        }
 
         Some(())
     }
@@ -251,7 +253,7 @@ impl App {
             {
                 info!("New vault clicked!");
 
-                self.add_modal_dialog(NewVaultDialog::default());
+                self.add_modal_dialog(modals::NewVault::default());
 
                 ui.close_menu();
             }
@@ -336,11 +338,15 @@ impl App {
     fn tag_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Tags", |ui| {
             if ui.button("New...").clicked() {
-                self.add_modal_dialog(EditTag::create());
+                self.add_modal_dialog(modals::EditTag::create());
                 ui.close_menu();
             }
             if ui.button("Edit...").clicked() {
-                self.add_modal_dialog(EditTag::select());
+                self.add_modal_dialog(modals::EditTag::select());
+                ui.close_menu();
+            }
+            if ui.button("Shortcuts...").clicked() {
+                self.add_modal_dialog(modals::TagShortcuts::default());
                 ui.close_menu();
             }
         });
@@ -349,7 +355,7 @@ impl App {
     fn link_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Link", |ui| {
             if ui.button("Other Vault...").clicked() {
-                self.add_modal_dialog(LinkVault::default());
+                self.add_modal_dialog(modals::LinkVault::default());
                 ui.close_menu();
             }
             if ui.button("Sidecars...").clicked() {
@@ -387,7 +393,7 @@ impl App {
                     // contents are declared from right to left due to layout
 
                     let slider_range = THUMBNAIL_SLIDER_RANGE.get_or_init(|| {
-                        StepwiseRange::new(&[0.0, 1.0, 2.0, 3.0], &[128.0, 256.0, 512.0, 1024.0])
+                        StepwiseRange::new(&[0.0, 1.0, 2.0, 3.0, 4.0], &[128.0, 256.0, 512.0, 1024.0, 2048.0])
                     });
                     let mut slider_value =
                         slider_range.lerp_in(self.thumbnail_grid.params.max_row_height);
@@ -663,7 +669,8 @@ impl eframe::App for App {
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
             sorts: state.sorts().clone(),
             filter: state.filter().clone(),
-            search_text: self.search_text.clone()
+            search_text: self.search_text.clone(),
+            shortcuts: state.shortcuts()
         };
 
         storage.set_string(
