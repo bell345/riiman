@@ -1,6 +1,6 @@
 use crate::data::{FieldDefinition, TextSearchQuery};
-use crate::take_shortcut;
 use crate::state::AppStateRef;
+use crate::take_shortcut;
 use crate::tasks::filter::{evaluate_field_search, MergedFieldMatchResult};
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::widgets;
@@ -231,7 +231,7 @@ impl<'a> Widget for TagTree<'a> {
         );
 
         let r = self.app_state.blocking_read();
-        let Ok(vault) = r.catch(|| "tag tree".into(), || r.current_vault()) else {
+        let Ok(vault) = r.catch(|| "tag tree", || r.current_vault()) else {
             return ui.label("");
         };
 
@@ -251,7 +251,7 @@ impl<'a> Widget for TagTree<'a> {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
 
             let Ok(search_results) = r.catch(
-                || "tag tree".into(),
+                || "tag tree",
                 || evaluate_field_search(&vault, &state.search_query, None, None),
             ) else {
                 return text_res;

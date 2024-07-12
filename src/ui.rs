@@ -13,9 +13,6 @@ use uuid::Uuid;
 use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
-use crate::tasks::AsyncTaskResult::{
-    ImportComplete, LinkComplete, ThumbnailLoaded, VaultLoaded, VaultSaved,
-};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
@@ -72,7 +69,7 @@ struct AppStorage {
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
     search_text: String,
-    shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>
+    shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>,
 }
 
 impl AppStorage {
@@ -152,7 +149,7 @@ impl App {
                 ))
             });
         }
-        
+
         self.search_text = stored_state.search_text;
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
@@ -178,7 +175,7 @@ impl App {
         for result in results {
             match result {
                 Ok(AsyncTaskResult::None | AsyncTaskResult::FoundGalleryDl { .. }) => {}
-                Ok(VaultLoaded {
+                Ok(AsyncTaskResult::VaultLoaded {
                     name,
                     set_as_current,
                 }) if set_as_current => {
@@ -192,8 +189,10 @@ impl App {
                         ));
                     }
                 }
-                Ok(VaultLoaded { .. } | VaultSaved(_)) => self.state().reset_vault_loading(),
-                Ok(ImportComplete { path, results }) => {
+                Ok(AsyncTaskResult::VaultLoaded { .. } | AsyncTaskResult::VaultSaved(_)) => {
+                    self.state().reset_vault_loading();
+                }
+                Ok(AsyncTaskResult::ImportComplete { path, results }) => {
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
                     let body = format!(
@@ -204,7 +203,7 @@ impl App {
                     self.thumbnail_grid.params.container_width = 0.0;
                     self.success("Import complete".to_string(), body);
                 }
-                Ok(LinkComplete {
+                Ok(AsyncTaskResult::LinkComplete {
                     other_vault_name,
                     results,
                 }) => {
@@ -219,11 +218,23 @@ impl App {
                     );
                     self.success("Link complete".to_string(), body);
                 }
-                Ok(ThumbnailLoaded { params, image }) => {
+                Ok(AsyncTaskResult::ThumbnailLoaded { params, image }) => {
                     let hndl =
                         ctx.load_texture(params.tex_name(), image, egui::TextureOptions::default());
                     self.thumbnail_grid
                         .commit(params, ThumbnailCacheItem::Loaded(hndl));
+                }
+                Ok(AsyncTaskResult::PreviewReady { image }) => {
+                    let hndl = ctx.load_texture(
+                        "preview",
+                        image,
+                        egui::TextureOptions {
+                            wrap_mode: egui::TextureWrapMode::ClampToEdge,
+                            magnification: egui::TextureFilter::Nearest,
+                            minification: egui::TextureFilter::Linear,
+                        },
+                    );
+                    self.state().set_preview(hndl);
                 }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented".to_string());
@@ -308,10 +319,11 @@ impl App {
     }
 
     fn import_menu_ui(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Import", |ui| {
+        ui.menu_button("Import", |ui| -> Result<(), ()> {
             if ui.button("Import...").clicked() {
-                self.add_task("Import one".into(), |state, p| {
-                    Promise::spawn_async(crate::tasks::import::select_and_import_one(state, p))
+                let vault = self.state.blocking_current_vault(|| "Import one")?;
+                self.add_task("Import one".into(), |_, p| {
+                    Promise::spawn_async(crate::tasks::import::select_and_import_one(vault, p))
                 });
 
                 ui.close_menu();
@@ -320,8 +332,9 @@ impl App {
             if ui.button("Import all files").clicked() {
                 info!("Import all clicked!");
 
-                self.add_task("Import to vault".into(), |state, p| {
-                    Promise::spawn_async(crate::tasks::import::import_images_recursively(state, p))
+                let vault = self.state.blocking_current_vault(|| "Import one")?;
+                self.add_task("Import to vault".into(), |_, p| {
+                    Promise::spawn_async(crate::tasks::import::import_images_recursively(vault, p))
                 });
 
                 ui.close_menu();
@@ -332,6 +345,8 @@ impl App {
 
                 ui.close_menu();
             }
+
+            Ok(())
         });
     }
 
@@ -367,6 +382,20 @@ impl App {
         });
     }
 
+    fn transform_menu_ui(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Transform", |ui| {
+            if ui.button("Images...").clicked() {
+                ui.close_menu();
+            }
+            if ui.button("Paths...").clicked() {
+                ui.close_menu();
+            }
+            if ui.button("Tasks...").clicked() {
+                ui.close_menu();
+            }
+        });
+    }
+
     fn top_panel_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -378,6 +407,8 @@ impl App {
                     self.tag_menu_ui(ui);
 
                     self.link_menu_ui(ui);
+
+                    self.transform_menu_ui(ui);
                 }
 
                 ui.add_space(16.0);
@@ -393,7 +424,10 @@ impl App {
                     // contents are declared from right to left due to layout
 
                     let slider_range = THUMBNAIL_SLIDER_RANGE.get_or_init(|| {
-                        StepwiseRange::new(&[0.0, 1.0, 2.0, 3.0, 4.0], &[128.0, 256.0, 512.0, 1024.0, 2048.0])
+                        StepwiseRange::new(
+                            &[0.0, 1.0, 2.0, 3.0, 4.0],
+                            &[128.0, 256.0, 512.0, 1024.0, 2048.0],
+                        )
                     });
                     let mut slider_value =
                         slider_range.lerp_in(self.thumbnail_grid.params.max_row_height);
@@ -539,7 +573,7 @@ impl App {
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
-                        let vault = self.state.blocking_current_vault(|| "right panel".into())?;
+                        let vault = self.state.blocking_current_vault(|| "right panel")?;
 
                         let items = self.thumbnail_grid.view_selected_paths(|paths| {
                             self.item_list_cache.resolve_refs(&vault, paths)
@@ -620,6 +654,45 @@ impl App {
             });
         });
     }
+
+    fn preview_window_ui(&mut self, ctx: &egui::Context) {
+        let state = Arc::clone(&self.state);
+        let hndl_opt = state.blocking_read().preview_handle();
+        if let Some(hndl) = hndl_opt {
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("preview"),
+                egui::ViewportBuilder::default()
+                    .with_title("Preview")
+                    .with_min_inner_size((200.0, 100.0)),
+                move |ctx, cls| {
+                    assert!(
+                        cls == egui::ViewportClass::Deferred,
+                        "This egui backend doesn't support multiple viewports"
+                    );
+
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::none())
+                        .show(ctx, |ui| {
+                            ui.with_layout(
+                                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                                |ui| {
+                                    let img = egui::Image::new(egui::ImageSource::Texture(
+                                        egui::load::SizedTexture::from_handle(&hndl),
+                                    ))
+                                    .bg_fill(egui::Color32::from_gray(20))
+                                    .shrink_to_fit();
+
+                                    ui.add(img);
+                                },
+                            );
+                        });
+                    if ctx.input(|i| i.viewport().close_requested()) {
+                        state.blocking_read().close_preview();
+                    }
+                },
+            );
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -653,6 +726,8 @@ impl eframe::App for App {
 
         self.central_panel_ui(ctx);
 
+        self.preview_window_ui(ctx);
+
         self.focused = ctx.memory(|m| m.focused());
         self.thumbnail_grid.view_selected_paths(|paths| {
             if self.focused.is_none() && paths.len() == 1 {
@@ -670,7 +745,7 @@ impl eframe::App for App {
             sorts: state.sorts().clone(),
             filter: state.filter().clone(),
             search_text: self.search_text.clone(),
-            shortcuts: state.shortcuts()
+            shortcuts: state.shortcuts(),
         };
 
         storage.set_string(

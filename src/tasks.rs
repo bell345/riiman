@@ -9,18 +9,20 @@ use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
 
 use crate::state::AppStateRef;
-use crate::tasks::image::ThumbnailParams;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 pub use crate::tasks::thumb_grid::ThumbnailGridParams;
+use crate::tasks::thumbnail::ThumbnailParams;
 
 pub(crate) mod download;
 pub(crate) mod filter;
-pub(crate) mod image;
+mod image;
 pub(crate) mod import;
 pub(crate) mod link;
 mod progress;
 pub(crate) mod sort;
 pub(crate) mod thumb_grid;
+pub(crate) mod thumbnail;
+pub(crate) mod transform;
 pub(crate) mod vault;
 
 #[derive(Debug)]
@@ -46,6 +48,9 @@ pub enum AsyncTaskResult {
     FoundGalleryDl {
         path: String,
         version: String,
+    },
+    PreviewReady {
+        image: ColorImage,
     },
 }
 

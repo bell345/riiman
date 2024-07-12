@@ -274,9 +274,9 @@ impl EditTag {
         };
 
         ui.group(|ui| {
-            let Ok(aliases) = r.catch::<Vec<_>, anyhow::Error>(
-                || "edit_tag".into(),
-                || {
+            let Ok(aliases) = r.catch(
+                || "edit_tag",
+                || -> anyhow::Result<Vec<_>> {
                     Ok(def
                         .get_or_insert_known_field_value(fields::meta::ALIASES, vec![])?
                         .into_iter()
@@ -349,9 +349,7 @@ impl EditTag {
         ui.heading("Edit properties");
 
         egui::ScrollArea::vertical().show_viewport(ui, |ui, _vp| -> Result<(), ()> {
-            let vault = self
-                .app_state
-                .blocking_current_vault(|| "edit tag".into())?;
+            let vault = self.app_state.blocking_current_vault(|| "edit tag")?;
 
             egui_extras::TableBuilder::new(ui)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -392,7 +390,7 @@ impl EditTag {
                         row.col(|ui| {
                             let visuals = ui.style().visuals.widgets.inactive;
                             let Ok(mut colour) = self.app_state.blocking_catch(
-                                || "edit tag colour".into(),
+                                || "edit tag colour",
                                 |_| {
                                     def.get_or_insert_known_field_value(
                                         fields::meta::COLOUR,
@@ -449,10 +447,7 @@ impl EditTag {
                 return Err("Name must not be empty".into());
             }
 
-            let Ok(vault) = self
-                .app_state
-                .blocking_current_vault(|| "verify edit tag".into())
-            else {
+            let Ok(vault) = self.app_state.blocking_current_vault(|| "verify edit tag") else {
                 return Err("No vault found".into());
             };
 
@@ -493,7 +488,7 @@ impl EditTag {
                     if let Some(id) = widget_state.selected_tag_ids.first() {
                         let vault = self
                             .app_state
-                            .blocking_current_vault(|| "edit tag set definition".into())?;
+                            .blocking_current_vault(|| "edit tag set definition")?;
                         let def = vault.get_definition(id).map(|r| r.clone());
                         if let Some(def) = def {
                             self.set_existing_definition(def);
@@ -576,9 +571,7 @@ impl AppModal for EditTag {
                 self.bottom_button_ui(ui);
 
                 egui::CentralPanel::default().show_inside(ui, |ui| -> Result<(), ()> {
-                    let vault = self
-                        .app_state
-                        .blocking_current_vault(|| "edit tag".into())?;
+                    let vault = self.app_state.blocking_current_vault(|| "edit tag")?;
 
                     if let Some(def) = self.definition.as_ref() {
                         if self.is_new || vault.get_definition(&def.id).is_some() {

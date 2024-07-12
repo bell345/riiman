@@ -21,39 +21,57 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self {
-            opened: true,
-        }
+        Self { opened: true }
     }
 }
 
 impl CloneableTempState for State {}
 
 impl TagShortcuts {
-    fn table_row(&mut self, shortcut: KeyboardShortcut, action: ShortcutAction, row: &mut egui_extras::Strip, state: AppStateRef) {
+    fn table_row(
+        &mut self,
+        shortcut: KeyboardShortcut,
+        action: ShortcutAction,
+        row: &mut egui_extras::Strip,
+        state: AppStateRef,
+    ) {
         let id = self.id().with(shortcut);
-        
+
         row.cell(|ui| {
             ui.label(shortcut.format(&egui::ModifierNames::NAMES, false));
         });
 
         row.cell(|ui| {
-            let Ok(vault) = state.blocking_current_vault(|| "tag shortcuts window".into()) else { return; };
+            let Ok(vault) = state.blocking_current_vault(|| "tag shortcuts window") else {
+                return;
+            };
             match action {
                 ShortcutAction::None => {
                     let mut tag_id_opt = None;
-                    ui.add(widgets::FindTag::new(id.with("find_tag"), &mut tag_id_opt, vault).filter_types(&[FieldType::Tag]));
+                    ui.add(
+                        widgets::FindTag::new(id.with("find_tag"), &mut tag_id_opt, vault)
+                            .filter_types(&[FieldType::Tag]),
+                    );
                     if let Some(new_tag_id) = tag_id_opt {
-                        state.blocking_read().set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                        state
+                            .blocking_read()
+                            .set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
                     }
                 }
                 ShortcutAction::ToggleTag(tag_id) => {
                     let mut tag_id_opt = Some(tag_id);
-                    ui.add(widgets::FindTag::new(id.with("find_tag"), &mut tag_id_opt, vault).show_tag(true).filter_types(&[FieldType::Tag]).exclude_ids(&[tag_id]));
+                    ui.add(
+                        widgets::FindTag::new(id.with("find_tag"), &mut tag_id_opt, vault)
+                            .show_tag(true)
+                            .filter_types(&[FieldType::Tag])
+                            .exclude_ids(&[tag_id]),
+                    );
                     match tag_id_opt {
                         Some(new_tag_id) if new_tag_id != tag_id => {
-                            state.blocking_read().set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
-                        },
+                            state
+                                .blocking_read()
+                                .set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                        }
                         _ => {}
                     }
                 }
@@ -62,7 +80,9 @@ impl TagShortcuts {
 
         row.cell(|ui| {
             if matches!(action, ShortcutAction::ToggleTag(_)) && ui.button("Clear").clicked() {
-                state.blocking_read().set_shortcut(shortcut, ShortcutAction::None);
+                state
+                    .blocking_read()
+                    .set_shortcut(shortcut, ShortcutAction::None);
             }
         });
     }
@@ -83,7 +103,12 @@ impl TagShortcuts {
                                         .size(egui_extras::Size::remainder())
                                         .size(egui_extras::Size::exact(100.0))
                                         .horizontal(|mut strip| {
-                                            self.table_row(shortcut, action, &mut strip, state.clone());
+                                            self.table_row(
+                                                shortcut,
+                                                action,
+                                                &mut strip,
+                                                state.clone(),
+                                            );
                                         });
                                 });
                             }
@@ -111,13 +136,16 @@ impl AppModal for TagShortcuts {
             .open(&mut opened)
             .min_width(500.0)
             .show(ctx, |ui| {
-                egui::TopBottomPanel::bottom(self.id().with("bottom_panel")).show_inside(ui, |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            do_close = true;
-                        }
-                    });
-                });
+                egui::TopBottomPanel::bottom(self.id().with("bottom_panel")).show_inside(
+                    ui,
+                    |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Close").clicked() {
+                                do_close = true;
+                            }
+                        });
+                    },
+                );
 
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     self.edit_ui(ui, app_state.clone());

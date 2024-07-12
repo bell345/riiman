@@ -1,7 +1,9 @@
-use crate::take_shortcut;
 use crate::state::AppStateRef;
-use crate::tasks::image::{load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams};
+use crate::take_shortcut;
 use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
+use crate::tasks::thumbnail::{
+    load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams,
+};
 use crate::tasks::{ThumbnailGridInfo, ThumbnailGridParams};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::item_cache::ItemCache;
@@ -16,6 +18,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 use std::path::Path;
+use std::sync::Arc;
 use tracing::info;
 
 const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
@@ -202,10 +205,9 @@ impl ThumbnailGrid {
                 } else {
                     1
                 };
-                let next_path = thumbnails
-                    [wrap_index(i, thumbnails.len(), delta)]
-                .path
-                .clone();
+                let next_path = thumbnails[wrap_index(i, thumbnails.len(), delta)]
+                    .path
+                    .clone();
                 self.set_scroll = true;
                 self.state.middle_item = Some(next_path.clone());
                 ui.ctx().memory_mut(|wr| {
@@ -430,6 +432,8 @@ impl ThumbnailGrid {
         item_cache_is_new: bool,
         vault_is_new: bool,
     ) -> Option<egui::scroll_area::ScrollAreaOutput<()>> {
+        let vault = state.blocking_current_vault(|| "Thumbnail grid").ok()?;
+
         self.state = State::load(ui.ctx(), self.id()).unwrap_or_default();
 
         self.params.container_width = ui.available_width().floor();
@@ -438,14 +442,13 @@ impl ThumbnailGrid {
         if item_cache_is_new || thumbnail_grid_is_new {
             self.set_scroll = true;
             ui.ctx().request_repaint();
-            let params = self.params.clone();
 
-            let r = state.blocking_read();
-            let vault = r.catch(|| "thumb grid".into(), || r.current_vault()).ok()?;
+            let params = self.params.clone();
             let items = item_cache.resolve_all_refs(&vault);
 
-            self.info = r
-                .catch(|| "thumb grid".into(), || compute(params, &items))
+            self.info = state
+                .blocking_read()
+                .catch(|| "Thumb grid", || compute(params, &items))
                 .ok()?;
         }
 
@@ -514,18 +517,18 @@ impl ThumbnailGrid {
 
         let r = state.blocking_read();
         for params in self.lq_cache.drain_requests() {
+            let vault = Arc::clone(&vault);
             r.add_task(
                 format!("Load thumbnail for {}", params.path.display()),
-                Box::new(move |s, p| {
-                    Promise::spawn_async(load_image_thumbnail_with_fs(s, p, params))
-                }),
+                move |_, p| Promise::spawn_async(load_image_thumbnail_with_fs(vault, params, p)),
             );
         }
 
         for params in self.cache.drain_requests() {
+            let vault = Arc::clone(&vault);
             r.add_task(
                 format!("Load thumbnail for {}", params.path.display()),
-                Box::new(move |s, p| Promise::spawn_async(load_image_thumbnail(s, p, params))),
+                move |_, p| Promise::spawn_async(load_image_thumbnail(vault, params, p)),
             );
         }
 

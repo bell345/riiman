@@ -216,7 +216,7 @@ macro_rules! define_kinds {
         )]
         pub enum Type {
             $(
-                $( #[display(fmt = $display )] )?
+                $( #[display($display)] )?
                 $( #[serde(alias = $alias )] )?
                 $name ,
             )*

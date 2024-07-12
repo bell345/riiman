@@ -1,14 +1,20 @@
 use std::ops::Deref;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
+use poll_promise::Promise;
 use uuid::Uuid;
 
-use crate::data::{FieldDefinition, FieldStore, FieldType, FieldValue, Item, ShortcutAction, SimpleFieldStore, Vault};
-use crate::take_shortcut;
+use crate::data::{
+    FieldDefinition, FieldStore, FieldType, FieldValue, Item, ShortcutAction, SimpleFieldStore,
+    Vault,
+};
 use crate::state::AppStateRef;
+use crate::take_shortcut;
+use crate::tasks::transform::load_transformed_image_preview;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTag;
 use crate::ui::widgets;
@@ -284,13 +290,13 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             self.state.is_adding = true;
             self.state.quick_create_state = Default::default();
         }
-        
+
         let shortcuts = self.app_state.blocking_read().shortcuts();
         for (shortcut, action) in shortcuts {
             if matches!(action, ShortcutAction::None) {
                 continue;
             }
-            
+
             if ui.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
                 match action {
                     ShortcutAction::None => {}
@@ -317,6 +323,20 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
 
     pub fn single_ui(&mut self, ui: &mut Ui, item: &Item) {
         ui.label(egui::RichText::new(item.path()).text_style(egui::TextStyle::Heading));
+
+        if ui.button("Open Preview").clicked() {
+            let r = self.app_state.blocking_read();
+            let path = Path::new(item.path());
+            let Ok(abs_path) = r.catch(
+                || format!("resolving abs path for {}", path.display()),
+                || self.vault.resolve_abs_path(path),
+            ) else {
+                return;
+            };
+            r.add_task("Load image preview".into(), move |_, p| {
+                Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
+            });
+        }
 
         if self.state.is_editing {
             self.edit_ui(ui, item);

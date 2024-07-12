@@ -25,6 +25,7 @@ pub(crate) struct AppState {
     current_vault_name: Mutex<Option<String>>,
     vault_loading: Mutex<bool>,
     shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
+    preview: Mutex<Option<egui::TextureHandle>>,
 
     filter: Mutex<FilterExpression>,
     sorts: Mutex<Vec<SortExpression>>,
@@ -49,7 +50,7 @@ const DEFAULT_SHORTCUTS: [KeyboardShortcut; 10] = [
     shortcut!(CTRL + Num7),
     shortcut!(CTRL + Num8),
     shortcut!(CTRL + Num9),
-    shortcut!(CTRL + Num0)
+    shortcut!(CTRL + Num0),
 ];
 
 impl Default for AppState {
@@ -64,14 +65,18 @@ impl Default for AppState {
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
             shortcuts: Default::default(),
+            preview: Default::default(),
             filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
             sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
         };
-        
+
         for shortcut in DEFAULT_SHORTCUTS {
-            res.shortcuts.lock().unwrap().insert(shortcut, ShortcutAction::None);
+            res.shortcuts
+                .lock()
+                .unwrap()
+                .insert(shortcut, ShortcutAction::None);
         }
-        
+
         res
     }
 }
@@ -191,16 +196,16 @@ impl AppState {
         self.add_task_impl(name, task_factory, true);
     }
 
-    pub fn catch<T, E: Into<anyhow::Error>>(
+    pub fn catch<T, E: Into<anyhow::Error>, S: Into<String>>(
         &self,
-        context: impl FnOnce() -> String,
+        context: impl FnOnce() -> S,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, ()> {
         match f() {
             Ok(r) => Ok(r),
             Err(e) => {
                 let mut queue = self.error_queue.lock().unwrap();
-                queue.push(e.into().context(context()));
+                queue.push(e.into().context(context().into()));
                 Err(())
             }
         }
@@ -275,20 +280,37 @@ impl AppState {
         *self.filter.lock().unwrap() = filter;
         *self.sorts.lock().unwrap() = sorts;
     }
-    
+
     pub fn shortcuts(&self) -> Vec<(KeyboardShortcut, ShortcutAction)> {
-        self.shortcuts.lock().unwrap().iter().map(|(k, v)| (*k, *v)).collect()
+        self.shortcuts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect()
     }
-    
+
     pub fn set_shortcut(&self, shortcut: KeyboardShortcut, action: ShortcutAction) {
         self.shortcuts.lock().unwrap().insert(shortcut, action);
     }
-    
+
     pub fn set_shortcuts(&self, shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>) {
         let mut l = self.shortcuts.lock().unwrap();
         for (shortcut, action) in shortcuts {
             l.insert(shortcut, action);
         }
+    }
+
+    pub fn preview_handle(&self) -> Option<egui::TextureHandle> {
+        self.preview.lock().unwrap().clone()
+    }
+
+    pub fn set_preview(&self, texture: egui::TextureHandle) {
+        *self.preview.lock().unwrap() = Some(texture);
+    }
+
+    pub fn close_preview(&self) {
+        *self.preview.lock().unwrap() = None;
     }
 }
 
@@ -308,18 +330,18 @@ impl AppStateRef {
         Self::Filled(inner)
     }
 
-    pub fn blocking_catch<T, E: Into<anyhow::Error>>(
+    pub fn blocking_catch<T, E: Into<anyhow::Error>, S: Into<String>>(
         &self,
-        context: impl FnOnce() -> String,
+        context: impl FnOnce() -> S,
         f: impl FnOnce(&AppState) -> Result<T, E>,
     ) -> Result<T, ()> {
         let r = self.blocking_read();
         r.catch(context, || f(&r))
     }
 
-    pub fn blocking_current_vault(
+    pub fn blocking_current_vault<S: Into<String>>(
         &self,
-        context: impl FnOnce() -> String,
+        context: impl FnOnce() -> S,
     ) -> Result<Arc<Vault>, ()> {
         self.blocking_catch(context, |r| r.current_vault())
     }

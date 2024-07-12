@@ -1,19 +1,18 @@
-use std::fs::Metadata;
-use std::future::Future;
-use std::path::{Path, PathBuf};
-
-use crate::data::FieldStore;
+use crate::data::{FieldStore, Vault};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
+use std::fs::Metadata;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs::DirEntry;
 use tokio::task::JoinSet;
 use tracing::info;
 
 use crate::errors::AppError;
 use crate::fields;
-use crate::state::AppStateRef;
-use crate::tasks::image::{commit_thumbnail_to_fs, ThumbnailParams};
+use crate::tasks::thumbnail::{commit_thumbnail_to_fs, ThumbnailParams};
 use crate::tasks::vault::save_vault;
 use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
@@ -23,15 +22,11 @@ const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
 async fn import_single_image(
-    state: AppStateRef,
+    vault: Arc<Vault>,
     path: Box<Path>,
     last_modified: DateTime<Utc>,
 ) -> SingleImportResult {
-    let item = state
-        .read()
-        .await
-        .current_vault()?
-        .get_cloned_item_or_default(&path)?;
+    let item = vault.get_cloned_item_or_default(&path)?;
 
     let mime_type = item
         .get_known_field_value(fields::general::MEDIA_TYPE)?
@@ -42,7 +37,7 @@ async fn import_single_image(
                 .into()
         });
     if !mime_type.starts_with("image/") {
-        state.read().await.current_vault()?.remove_item(&path)?;
+        vault.remove_item(&path)?;
 
         return Err(AppError::WrongMimeType {
             expected: "image/*".to_string(),
@@ -61,7 +56,7 @@ async fn import_single_image(
     item.set_known_field_value(fields::general::LAST_MODIFIED, last_modified);
 
     commit_thumbnail_to_fs(
-        state.clone(),
+        &vault,
         &ThumbnailParams {
             path: path.clone(),
             last_modified: Some(last_modified),
@@ -83,17 +78,13 @@ async fn import_single_image(
         item.set_known_field_value(fields::image::WIDTH, width);
     }
 
-    {
-        let r = state.read().await;
-        let vault = r.current_vault()?;
-        vault.update_item(&path, item)?;
-    }
+    vault.update_item(&path, item)?;
 
     Ok(path)
 }
 
 pub async fn select_and_import_one(
-    state: AppStateRef,
+    vault: Arc<Vault>,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     let dialog =
@@ -122,7 +113,7 @@ pub async fn select_and_import_one(
         0.0,
         path.display().to_string(),
     ));
-    let res = import_single_image(state.clone(), path.into(), last_modified).await;
+    let res = import_single_image(vault, path.into(), last_modified).await;
 
     Ok(AsyncTaskResult::ImportComplete {
         path: path.into(),
@@ -225,7 +216,7 @@ pub fn on_import_result_send_progress(
 }
 
 pub async fn import_images_recursively(
-    state: AppStateRef,
+    vault: Arc<Vault>,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     #[cfg(target_arch = "wasm32")]
@@ -234,7 +225,7 @@ pub async fn import_images_recursively(
         return Err(WasmNotImplemented);
     }
 
-    let root_dir = state.read().await.current_vault()?.root_dir()?;
+    let root_dir = vault.root_dir()?;
 
     let entries = scan_recursively(
         root_dir.as_path(),
@@ -254,17 +245,13 @@ pub async fn import_images_recursively(
     let results = process_many(
         entries,
         progress.sub_task("Import", 0.90),
-        |(path, last_modified)| import_single_image(state.clone(), path, last_modified),
+        |(path, last_modified)| import_single_image(Arc::clone(&vault), path, last_modified),
         on_import_result_send_progress,
         CONCURRENT_TASKS_LIMIT,
     )
     .await?;
 
-    {
-        let r = state.read().await;
-        let curr_vault = r.current_vault()?;
-        save_vault(curr_vault, progress.sub_task("Save", 0.05)).await?;
-    }
+    save_vault(vault, progress.sub_task("Save", 0.05)).await?;
 
     Ok(AsyncTaskResult::ImportComplete {
         path: root_dir.into(),

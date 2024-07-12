@@ -1,4 +1,4 @@
-use crate::tasks::image::ThumbnailParams;
+use crate::tasks::thumbnail::ThumbnailParams;
 use chrono::{DateTime, TimeDelta, Utc};
 use eframe::egui;
 use std::ops::Add;
