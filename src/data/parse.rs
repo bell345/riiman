@@ -19,6 +19,7 @@ use chrono::{
     DateTime, FixedOffset, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, ParseResult,
     TimeZone, Utc,
 };
+use const_format::concatcp;
 use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange, CursorRange};
 use eframe::egui::text_selection::text_cursor_state::byte_index_from_char_index;
@@ -47,6 +48,7 @@ macro_rules! local {
 type Span<'a> = LocatedSpan<&'a str>;
 
 pub const WHITESPACE: &str = " \t\r\n\u{3000}";
+pub const NON_WORD_CHARACTERS: &str = concatcp!(WHITESPACE, ":;,\"(){}[]|&");
 
 pub fn hex_digit(c: char) -> Option<u8> {
     Some(match c {
@@ -174,7 +176,7 @@ fn escaped_string_literal(s: Span) -> IResult<Span, String> {
 
 const KEYWORDS: [&str; 3] = ["and", "or", "not"];
 fn auto_string_literal(s: Span) -> IResult<Span, String> {
-    map_opt(many1(none_of(" \r\n\t\u{3000}:;,\"(){}[]|&")), |v| {
+    map_opt(many1(none_of(NON_WORD_CHARACTERS)), |v| {
         let s = v.into_iter().collect::<String>();
         if KEYWORDS.contains(&s.as_str()) {
             None

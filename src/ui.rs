@@ -1,12 +1,13 @@
-use std::cmp::Reverse;
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
-
-use crate::data::{FilterExpression, ShortcutAction};
+use crate::data::{FilterExpression, PreviewOptions, ShortcutAction};
+use chrono::TimeDelta;
 use eframe::egui;
-use eframe::egui::{FontData, FontDefinitions, KeyboardShortcut};
+use eframe::egui::{pos2, vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
+use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use tracing::info;
 use uuid::Uuid;
 
@@ -16,12 +17,13 @@ use crate::state::{AppState, AppStateRef};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
-use crate::time;
+use crate::tasks::transform::load_transformed_image_preview;
 use crate::ui::item_cache::ItemCache;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_cache::ThumbnailCacheItem;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
+use crate::{take_shortcut, time};
 
 mod cloneable_state;
 mod input;
@@ -165,6 +167,7 @@ impl App {
 
     fn setup(&mut self, ctx: &egui::Context, storage: Option<&dyn eframe::Storage>) {
         ctx.style_mut(|style| style.animation_time = 0.0);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         self.load_persistent_state(storage);
     }
 
@@ -614,8 +617,17 @@ impl App {
                 })
                 .inner;
 
-            if self.thumbnail_grid.double_clicked {
-                self.expand_right_panel ^= true;
+            if let Some(path) = self.thumbnail_grid.double_clicked.as_ref() {
+                if let Ok(vault) = self.state.blocking_current_vault(|| "double click") {
+                    let path = Path::new(path.as_str());
+                    if let Ok(abs_path) = vault.resolve_abs_path(path) {
+                        self.add_task("Load image preview".into(), move |_, p| {
+                            Promise::spawn_blocking(move || {
+                                load_transformed_image_preview(abs_path, p)
+                            })
+                        });
+                    }
+                }
             }
 
             time!("Expand button UI", {
@@ -657,41 +669,112 @@ impl App {
 
     fn preview_window_ui(&mut self, ctx: &egui::Context) {
         let state = Arc::clone(&self.state);
-        let hndl_opt = state.blocking_read().preview_handle();
-        if let Some(hndl) = hndl_opt {
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("preview"),
-                egui::ViewportBuilder::default()
-                    .with_title("Preview")
-                    .with_min_inner_size((200.0, 100.0)),
-                move |ctx, cls| {
-                    assert!(
-                        cls == egui::ViewportClass::Deferred,
-                        "This egui backend doesn't support multiple viewports"
-                    );
+        let Some(hndl) = state.blocking_read().preview_texture() else {
+            return;
+        };
 
-                    egui::CentralPanel::default()
-                        .frame(egui::Frame::none())
-                        .show(ctx, |ui| {
-                            ui.with_layout(
-                                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                                |ui| {
-                                    let img = egui::Image::new(egui::ImageSource::Texture(
+        let viewport_id = egui::ViewportId::from_hash_of("preview");
+
+        ctx.show_viewport_deferred(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("Preview")
+                .with_min_inner_size((200.0, 100.0)),
+            move |ctx, cls| {
+                assert!(
+                    cls == egui::ViewportClass::Deferred,
+                    "This egui backend doesn't support multiple viewports"
+                );
+
+                let PreviewOptions {
+                    cursor_position,
+                    lens_magnification,
+                    lens_size,
+                    ..
+                } = state.blocking_read().preview_opts();
+
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none())
+                    .show(ctx, |ui| {
+                        ui.with_layout(
+                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            |ui| {
+                                let img = egui::Image::from_texture(
+                                    egui::load::SizedTexture::from_handle(&hndl),
+                                )
+                                .bg_fill(egui::Color32::from_gray(20))
+                                .shrink_to_fit();
+
+                                let res = ui.add(img);
+
+                                let img_ratio = hndl.aspect_ratio();
+                                let win_size = res.rect.size();
+
+                                let img_size = if res.rect.aspect_ratio() >= img_ratio {
+                                    vec2(win_size.y * img_ratio, win_size.y)
+                                } else {
+                                    vec2(win_size.x, win_size.x / img_ratio)
+                                };
+
+                                let img_pos = if res.rect.aspect_ratio() >= img_ratio {
+                                    pos2((win_size.x - img_size.x) / 2.0, 0.0)
+                                } else {
+                                    pos2(0.0, (win_size.y - img_size.y) / 2.0)
+                                };
+
+                                if let Some(cursor_pos) = cursor_position {
+                                    let cur_uv = ((cursor_pos - img_pos) / img_size).to_pos2();
+                                    let size = egui::Vec2::splat(lens_size);
+                                    let size_uv = size / lens_magnification / img_size;
+
+                                    let lens_img = egui::Image::from_texture(
                                         egui::load::SizedTexture::from_handle(&hndl),
-                                    ))
-                                    .bg_fill(egui::Color32::from_gray(20))
-                                    .shrink_to_fit();
+                                    )
+                                    .uv(egui::Rect::from_min_size(cur_uv - size_uv / 2.0, size_uv))
+                                    .fit_to_original_size(lens_magnification)
+                                    .max_size(size)
+                                    .maintain_aspect_ratio(false)
+                                    .rounding(egui::Rounding::same(lens_size))
+                                    .bg_fill(egui::Color32::from_gray(20));
 
-                                    ui.add(img);
-                                },
-                            );
-                        });
-                    if ctx.input(|i| i.viewport().close_requested()) {
-                        state.blocking_read().close_preview();
-                    }
-                },
-            );
-        }
+                                    ui.put(
+                                        egui::Rect::from_min_size(cursor_pos - size / 2.0, size),
+                                        lens_img,
+                                    );
+                                }
+
+                                state.blocking_read().preview_mut(|opts| {
+                                    if ui.ui_contains_pointer()
+                                        && ui.input(|i| i.pointer.primary_down())
+                                    {
+                                        opts.cursor_position = ui.input(|i| i.pointer.latest_pos());
+                                    } else {
+                                        opts.cursor_position = None;
+                                    }
+
+                                    let double_clicked = ui.ui_contains_pointer()
+                                        && ui.input(|i| {
+                                            i.pointer
+                                                .button_double_clicked(egui::PointerButton::Primary)
+                                        });
+
+                                    if take_shortcut!(ui, F11) || double_clicked {
+                                        opts.fullscreen ^= true;
+                                        ctx.send_viewport_cmd_to(
+                                            viewport_id,
+                                            egui::ViewportCommand::Fullscreen(opts.fullscreen),
+                                        );
+                                    }
+                                });
+                            },
+                        );
+                    });
+
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    state.blocking_read().close_preview();
+                }
+            },
+        );
     }
 }
 

@@ -50,7 +50,7 @@ pub struct ThumbnailGrid {
     set_scroll: bool,
     last_vp: Option<egui::Rect>,
 
-    pub double_clicked: bool,
+    pub double_clicked: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -83,7 +83,7 @@ impl Default for ThumbnailGrid {
             has_focus: false,
             set_scroll: false,
             last_vp: None,
-            double_clicked: false,
+            double_clicked: None,
         }
     }
 }
@@ -335,7 +335,7 @@ impl ThumbnailGrid {
             self.next_pressing = Some(item.path.clone());
         }
         if res.double_clicked() {
-            self.double_clicked = true;
+            self.double_clicked = Some(item.path.clone());
         }
         if res.has_focus() {
             info!("has focus: {}", item.path.clone());
@@ -487,7 +487,7 @@ impl ThumbnailGrid {
 
                 self.handle_tab(ui, &grid.thumbnails);
 
-                self.double_clicked = false;
+                self.double_clicked = None;
                 self.has_focus = false;
 
                 for item in &grid.thumbnails {

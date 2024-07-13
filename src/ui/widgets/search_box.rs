@@ -1,12 +1,6 @@
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
 
-use eframe::{egui, epaint};
-use eframe::egui::{
-    Align, Align2, Area, Color32, CursorIcon, Event, EventFilter, FontSelection, Frame, Galley,
-    Key, Layout, Margin, Modifiers, NumExt, Order, Rect, Response, Sense, Shape, TextBuffer,
-    Ui, vec2, Vec2, Widget, WidgetInfo,
-};
 use eframe::egui::os::OperatingSystem;
 use eframe::egui::output::{IMEOutput, OutputEvent};
 use eframe::egui::text::{CCursor, CCursorRange, CursorRange};
@@ -14,20 +8,26 @@ use eframe::egui::text_edit::TextCursorState;
 use eframe::egui::text_selection::text_cursor_state::cursor_rect;
 use eframe::egui::text_selection::visuals::{paint_cursor, paint_text_selection};
 use eframe::egui::util::undoer::Undoer;
+use eframe::egui::{
+    vec2, Align, Align2, Area, Color32, CursorIcon, Event, EventFilter, FontSelection, Frame,
+    Galley, Key, Layout, Margin, Modifiers, NumExt, Order, Rect, Response, Sense, Shape,
+    TextBuffer, Ui, Vec2, Widget, WidgetInfo,
+};
 use eframe::epaint::FontFamily;
+use eframe::{egui, epaint};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::data::{FieldDefinition, FilterExpression, TextSearchQuery, Vault};
 use crate::data::parse::{
     FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
-    WHITESPACE,
+    NON_WORD_CHARACTERS,
 };
+use crate::data::{FieldDefinition, FilterExpression, TextSearchQuery, Vault};
 use crate::take_shortcut;
 use crate::tasks::filter::evaluate_field_search;
-use crate::ui::{DUMMY_TAG_REPLACEMENT_FAMILY, widgets};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::input::update_index;
+use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 
 pub struct SearchBox<'a> {
     id: egui::Id,
@@ -37,7 +37,7 @@ pub struct SearchBox<'a> {
     margin: Margin,
     state: State,
     vault: Arc<Vault>,
-    interactive: bool
+    interactive: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -140,7 +140,7 @@ impl<'a> SearchBox<'a> {
             margin: Margin::symmetric(4.0, 2.0),
             state: Default::default(),
             vault,
-            interactive: false
+            interactive: false,
         }
     }
 
@@ -153,7 +153,7 @@ impl<'a> SearchBox<'a> {
         self.tags = Some(tags);
         self
     }
-    
+
     pub fn interactive(mut self) -> Self {
         self.interactive = true;
         self
@@ -194,7 +194,7 @@ impl<'a> SearchBox<'a> {
         let events = ui.input(|i| {
             i.filtered_events(&EventFilter {
                 horizontal_arrows: true,
-                vertical_arrows: true,
+                vertical_arrows: false,
                 tab: false,
                 ..Default::default()
             })
@@ -1068,7 +1068,7 @@ impl<'a> Widget for SearchBox<'a> {
 fn find_word_at_position(s: &str, pos: usize) -> Option<(usize, usize)> {
     let mut start = None;
     for (i, c) in s.char_indices() {
-        if WHITESPACE.contains(c) {
+        if NON_WORD_CHARACTERS.contains(c) {
             if let Some(start) = start {
                 if pos <= i {
                     return Some((start, i));
@@ -1094,6 +1094,9 @@ mod test {
     #[test]
     fn test_find_word_at_position() {
         let x = find_word_at_position("hello there", 2);
-        assert_eq!(Some((0, 4)), x);
+        assert_eq!(Some((0, 5)), x);
+
+        let x = find_word_at_position("((abc def) ghi)", 2);
+        assert_eq!(Some((2, 5)), x);
     }
 }

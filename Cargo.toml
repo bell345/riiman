@@ -1,6 +1,6 @@
 [package]
 name = "riiman"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Thomas Bell <github.com/bell345>"]
 license = "MIT"
 edition = "2021"
@@ -21,6 +21,7 @@ derive_more = { version = "1.0.0-beta.6", features = ["display"] }
 itertools = "0.13.0"
 ordered-float = { version = "4.2", features = ["serde"] }
 strum = { version = "0.26.2", features = ["derive"] }
+const_format = "0.2.32"
 
 # running scripts
 tempfile = "3.10"

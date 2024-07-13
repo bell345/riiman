@@ -8,7 +8,7 @@ use eframe::egui::KeyboardShortcut;
 use indexmap::IndexMap;
 use poll_promise::Promise;
 
-use crate::data::{FieldStore, FilterExpression, ShortcutAction, Vault};
+use crate::data::{FieldStore, FilterExpression, PreviewOptions, ShortcutAction, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::tasks::sort::{SortDirection, SortExpression};
@@ -24,8 +24,10 @@ pub(crate) struct AppState {
     unresolved_vaults: DashSet<String>,
     current_vault_name: Mutex<Option<String>>,
     vault_loading: Mutex<bool>,
+
     shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
-    preview: Mutex<Option<egui::TextureHandle>>,
+
+    preview: Mutex<PreviewOptions>,
 
     filter: Mutex<FilterExpression>,
     sorts: Mutex<Vec<SortExpression>>,
@@ -301,16 +303,25 @@ impl AppState {
         }
     }
 
-    pub fn preview_handle(&self) -> Option<egui::TextureHandle> {
+    pub fn preview_opts(&self) -> PreviewOptions {
         self.preview.lock().unwrap().clone()
     }
 
-    pub fn set_preview(&self, texture: egui::TextureHandle) {
-        *self.preview.lock().unwrap() = Some(texture);
+    pub fn preview_mut<R>(&self, f: impl FnOnce(&mut PreviewOptions) -> R) -> R {
+        let mut l = self.preview.lock().unwrap();
+        f(&mut l)
+    }
+
+    pub fn preview_texture(&self) -> Option<egui::TextureHandle> {
+        self.preview.lock().unwrap().texture_handle()
+    }
+
+    pub fn set_preview(&self, hndl: egui::TextureHandle) {
+        self.preview.lock().unwrap().set_texture(hndl);
     }
 
     pub fn close_preview(&self) {
-        *self.preview.lock().unwrap() = None;
+        self.preview.lock().unwrap().clear();
     }
 }
 
