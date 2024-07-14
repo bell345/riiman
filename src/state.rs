@@ -178,24 +178,24 @@ impl AppState {
 
     pub fn add_task(
         &self,
-        name: String,
+        name: impl Into<String>,
         task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
             + Send
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(name, task_factory, false);
+        self.add_task_impl(name.into(), task_factory, false);
     }
 
     pub fn add_task_request(
         &self,
-        name: String,
+        name: impl Into<String>,
         task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
             + Send
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(name, task_factory, true);
+        self.add_task_impl(name.into(), task_factory, true);
     }
 
     pub fn catch<T, E: Into<anyhow::Error>, S: Into<String>>(
@@ -259,7 +259,7 @@ impl AppState {
 
     pub fn save_current_vault(&self) {
         *self.vault_loading.lock().unwrap() = true;
-        self.add_task("Save vault".into(), |state, p| {
+        self.add_task("Save vault", |state, p| {
             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
         });
     }

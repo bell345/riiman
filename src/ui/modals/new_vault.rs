@@ -10,7 +10,7 @@ use crate::ui::modals::AppModal;
 #[derive(Default)]
 pub struct NewVault {
     modal: Option<Modal>,
-    new_vault_name: String,
+    name: String,
     error_message: Option<String>,
     opened: bool,
 }
@@ -27,7 +27,7 @@ impl AppModal for NewVault {
             modal.title(ui, "New vault");
             modal.frame(ui, |ui| {
                 ui.label("Enter name of new vault:");
-                ui.text_edit_singleline(&mut self.new_vault_name);
+                ui.text_edit_singleline(&mut self.name);
 
                 if let Some(msg) = &self.error_message {
                     ui.colored_label(Color32::RED, msg);
@@ -35,17 +35,17 @@ impl AppModal for NewVault {
             });
             modal.buttons(ui, |ui| {
                 if modal.suggested_button(ui, "Create").clicked() {
-                    if self.new_vault_name.trim().is_empty() {
+                    if self.name.trim().is_empty() {
                         self.error_message = "Please enter a vault name.".to_string().into();
                         modal.open();
                     } else {
-                        let Self { new_vault_name, .. } = std::mem::take(self);
+                        let Self { name, .. } = std::mem::take(self);
                         let r = state.blocking_read();
                         r.set_vault_loading();
-                        r.add_task("Create vault".into(), |s, p| {
+                        r.add_task("Create vault", |s, p| {
                             Promise::spawn_async(tasks::vault::save_new_vault(
                                 s,
-                                Vault::new(new_vault_name),
+                                Vault::new(name),
                                 p,
                             ))
                         });

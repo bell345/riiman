@@ -1,5 +1,4 @@
 use crate::data::{FilterExpression, PreviewOptions, ShortcutAction};
-use chrono::TimeDelta;
 use eframe::egui;
 use eframe::egui::{pos2, vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
@@ -88,7 +87,7 @@ impl App {
 
     fn add_task(
         &mut self,
-        name: String,
+        name: impl Into<String>,
         task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
             + Send
             + Sync
@@ -278,7 +277,7 @@ impl App {
                 info!("Open vault clicked!");
 
                 self.state().set_vault_loading();
-                self.add_task("Load vault".into(), |s, p| {
+                self.add_task("Load vault", |s, p| {
                     Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                 });
 
@@ -325,7 +324,7 @@ impl App {
         ui.menu_button("Import", |ui| -> Result<(), ()> {
             if ui.button("Import...").clicked() {
                 let vault = self.state.blocking_current_vault(|| "Import one")?;
-                self.add_task("Import one".into(), |_, p| {
+                self.add_task("Import one", |_, p| {
                     Promise::spawn_async(crate::tasks::import::select_and_import_one(vault, p))
                 });
 
@@ -336,7 +335,7 @@ impl App {
                 info!("Import all clicked!");
 
                 let vault = self.state.blocking_current_vault(|| "Import one")?;
-                self.add_task("Import to vault".into(), |_, p| {
+                self.add_task("Import to vault", |_, p| {
                     Promise::spawn_async(crate::tasks::import::import_images_recursively(vault, p))
                 });
 
@@ -377,7 +376,7 @@ impl App {
                 ui.close_menu();
             }
             if ui.button("Sidecars...").clicked() {
-                self.add_task("Link sidecars".into(), |state, p| {
+                self.add_task("Link sidecars", |state, p| {
                     Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
                 });
                 ui.close_menu();
@@ -621,7 +620,7 @@ impl App {
                 if let Ok(vault) = self.state.blocking_current_vault(|| "double click") {
                     let path = Path::new(path.as_str());
                     if let Ok(abs_path) = vault.resolve_abs_path(path) {
-                        self.add_task("Load image preview".into(), move |_, p| {
+                        self.add_task("Load image preview", move |_, p| {
                             Promise::spawn_blocking(move || {
                                 load_transformed_image_preview(abs_path, p)
                             })
@@ -631,14 +630,14 @@ impl App {
             }
 
             time!("Expand button UI", {
-                const EXPAND_BTN_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
+                const EXPAND_BTN_SIZE: egui::Vec2 = vec2(32.0, 32.0);
                 const EXPAND_BTN_ROUNDING: egui::Rounding = egui::Rounding {
                     nw: 0.0,
                     ne: 0.0,
                     sw: 8.0,
                     se: 8.0,
                 };
-                const EXPAND_BTN_MARGIN: egui::Vec2 = egui::vec2(16.0, 0.0);
+                const EXPAND_BTN_MARGIN: egui::Vec2 = vec2(16.0, 0.0);
 
                 let btn_text = if self.expand_right_panel {
                     // right pointing triangle

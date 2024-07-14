@@ -39,8 +39,6 @@ const ROW_HEIGHT: f32 = 18.0;
 
 impl Download {
     fn select_gallery_dl(&mut self, app_state: AppStateRef) {
-        self.params.location = None;
-        self.params.version = None;
         self.loading_find = true;
         let r = app_state.blocking_read();
         r.add_task_request(self.find_request_id(), |state, p| {

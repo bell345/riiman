@@ -333,7 +333,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             ) else {
                 return;
             };
-            r.add_task("Load image preview".into(), move |_, p| {
+            r.add_task("Load image preview", move |_, p| {
                 Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
             });
         }
