@@ -13,6 +13,7 @@ pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 pub use crate::tasks::thumb_grid::ThumbnailGridParams;
 use crate::tasks::thumbnail::ThumbnailParams;
 
+pub(crate) mod choose;
 pub(crate) mod download;
 pub(crate) mod filter;
 mod image;
@@ -52,6 +53,8 @@ pub enum AsyncTaskResult {
     PreviewReady {
         image: ColorImage,
     },
+    SelectedDirectory(String),
+    SelectedFile(String),
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;

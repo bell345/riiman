@@ -73,7 +73,7 @@ impl AppModal for LinkVault {
                             .blocking_read()
                             .add_task_request(request_name, |s, p| {
                                 Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
-                                    s, p, true,
+                                    s, p, false,
                                 ))
                             });
                     }

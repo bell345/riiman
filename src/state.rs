@@ -235,7 +235,7 @@ impl AppState {
         self.dialog_queue.lock().unwrap().drain(..).collect()
     }
 
-    pub fn try_take_request_result(&self, name: &String) -> Option<AsyncTaskReturn> {
+    pub fn try_take_request_result(&self, name: &str) -> Option<AsyncTaskReturn> {
         self.results.remove(name).map(|(_, v)| v)
     }
 

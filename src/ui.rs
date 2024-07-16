@@ -176,7 +176,12 @@ impl App {
         let (results, request_results) = self.tasks.iter_ready();
         for result in results {
             match result {
-                Ok(AsyncTaskResult::None | AsyncTaskResult::FoundGalleryDl { .. }) => {}
+                Ok(
+                    AsyncTaskResult::None
+                    | AsyncTaskResult::FoundGalleryDl { .. }
+                    | AsyncTaskResult::SelectedDirectory(_)
+                    | AsyncTaskResult::SelectedFile(_),
+                ) => {}
                 Ok(AsyncTaskResult::VaultLoaded {
                     name,
                     set_as_current,
@@ -375,7 +380,7 @@ impl App {
                 self.add_modal_dialog(modals::LinkVault::default());
                 ui.close_menu();
             }
-            if ui.button("Sidecars...").clicked() {
+            if ui.button("Sidecars").clicked() {
                 self.add_task("Link sidecars", |state, p| {
                     Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
                 });
@@ -387,6 +392,7 @@ impl App {
     fn transform_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Transform", |ui| {
             if ui.button("Images...").clicked() {
+                self.add_modal_dialog(modals::TransformImages::default());
                 ui.close_menu();
             }
             if ui.button("Paths...").clicked() {
