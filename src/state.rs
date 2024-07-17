@@ -1,19 +1,27 @@
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, MutexGuard};
-
+use chrono::TimeDelta;
 use dashmap::{DashMap, DashSet};
 use eframe::egui;
 use eframe::egui::KeyboardShortcut;
 use indexmap::IndexMap;
 use poll_promise::Promise;
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::data::{FieldStore, FilterExpression, PreviewOptions, ShortcutAction, Vault};
+use crate::data::{
+    FieldStore, FilterExpression, PreviewOptions, ShortcutAction, ThumbnailCache,
+    ThumbnailCacheItem, ThumbnailParams, Vault,
+};
 use crate::errors::AppError;
 use crate::fields;
 use crate::tasks::sort::{SortDirection, SortExpression};
 use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 use crate::ui::AppModal;
+
+const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
+const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
+const THUMBNAIL_LQ_LOAD_INTERVAL_MS: i64 = 10;
+pub const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 
 pub(crate) struct AppState {
     task_queue: Mutex<Vec<(String, TaskFactory, bool)>>,
@@ -28,6 +36,9 @@ pub(crate) struct AppState {
     shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
 
     preview: Mutex<PreviewOptions>,
+
+    thumbnail_cache: ThumbnailCache,
+    thumbnail_cache_lq: ThumbnailCache,
 
     filter: Mutex<FilterExpression>,
     sorts: Mutex<Vec<SortExpression>>,
@@ -68,6 +79,16 @@ impl Default for AppState {
             vault_loading: Default::default(),
             shortcuts: Default::default(),
             preview: Default::default(),
+            thumbnail_cache: ThumbnailCache::new(
+                THUMBNAIL_CACHE_SIZE,
+                TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
+                false,
+            ),
+            thumbnail_cache_lq: ThumbnailCache::new(
+                THUMBNAIL_CACHE_SIZE,
+                TimeDelta::milliseconds(THUMBNAIL_LQ_LOAD_INTERVAL_MS),
+                true,
+            ),
             filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
             sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
         };
@@ -323,6 +344,33 @@ impl AppState {
 
     pub fn close_preview(&self) {
         self.preview.lock().unwrap().clear();
+    }
+
+    pub fn commit_thumbnail(&self, params: ThumbnailParams, item: ThumbnailCacheItem) {
+        if params.height == THUMBNAIL_LOW_QUALITY_HEIGHT {
+            self.thumbnail_cache_lq.commit(params.clone(), item.clone());
+        }
+        self.thumbnail_cache.commit(params, item);
+    }
+
+    pub fn resolve_thumbnail(&self, params: ThumbnailParams) -> ThumbnailCacheItem {
+        let mut thumb = ThumbnailCacheItem::Loading;
+        if params.height != THUMBNAIL_LOW_QUALITY_HEIGHT {
+            thumb = self.thumbnail_cache.read(params.clone());
+        }
+        if thumb == ThumbnailCacheItem::Loading {
+            thumb = self
+                .thumbnail_cache_lq
+                .read(params.with_height(THUMBNAIL_LOW_QUALITY_HEIGHT));
+        }
+
+        thumb
+    }
+
+    pub fn drain_thumbnail_requests(&self) -> Vec<ThumbnailParams> {
+        let mut requests = self.thumbnail_cache_lq.drain_requests();
+        requests.extend(self.thumbnail_cache.drain_requests());
+        requests
     }
 }
 

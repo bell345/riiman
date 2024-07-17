@@ -1,16 +1,29 @@
-use crate::data::{FieldStore, Item};
+use crate::data::{FieldStore, Item, ThumbnailParams, Vault};
 use crate::fields;
 use chrono::{DateTime, Utc};
 use eframe::egui;
 use eframe::egui::{pos2, Pos2};
 use std::ops::Deref;
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct ThumbnailPosition {
-    pub path: String,
+    pub rel_path: String,
+    pub abs_path: String,
     pub last_modified: Option<DateTime<Utc>>,
     pub inner_bounds: egui::Rect,
     pub outer_bounds: egui::Rect,
+}
+
+impl ThumbnailPosition {
+    pub fn params(&self, height: usize) -> ThumbnailParams {
+        ThumbnailParams {
+            rel_path: self.rel_path.clone(),
+            abs_path: self.abs_path.clone(),
+            last_modified: self.last_modified,
+            height,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -57,6 +70,7 @@ pub struct ThumbnailGridInfo {
 
 pub fn compute(
     params: ThumbnailGridParams,
+    vault: &Vault,
     items: &[impl Deref<Target = Item>],
 ) -> anyhow::Result<ThumbnailGridInfo> {
     let row_width = params.container_width.floor();
@@ -92,16 +106,22 @@ pub fn compute(
     };
 
     for item in items {
+        // TODO: should we ignore non-image items?
         let Some(size) = item.get_image_size()? else {
             continue;
         };
+
+        let rel_path = item.path().to_owned();
+        let abs_path = vault.resolve_abs_path(Path::new(&rel_path))?;
+        let last_modified = item.get_known_field_value(fields::general::LAST_MODIFIED)?;
 
         let new_size = egui::Vec2::new(size.x / size.y * inner_height, inner_height);
         let bounds = egui::Rect::from_min_size(curr_pos + params.padding, new_size);
         let outer_bounds = bounds.expand2(params.padding);
         curr_row.push(ThumbnailPosition {
-            path: item.path().to_string(),
-            last_modified: item.get_known_field_value(fields::general::LAST_MODIFIED)?,
+            rel_path,
+            abs_path,
+            last_modified,
             inner_bounds: bounds,
             outer_bounds,
         });

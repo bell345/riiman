@@ -4,14 +4,13 @@ use std::path::Path;
 use eframe::egui::ColorImage;
 use poll_promise::Promise;
 
-use progress::ProgressReceiver;
-use progress::ProgressSenderAsync;
-pub use progress::ProgressSenderRef;
-
+use crate::data::ThumbnailParams;
 use crate::state::AppStateRef;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 pub use crate::tasks::thumb_grid::ThumbnailGridParams;
-use crate::tasks::thumbnail::ThumbnailParams;
+use progress::ProgressReceiver;
+use progress::ProgressSenderAsync;
+pub use progress::ProgressSenderRef;
 
 pub(crate) mod choose;
 pub(crate) mod download;

@@ -45,20 +45,22 @@ impl ItemCache {
         None
     }
 
-    pub fn update(&mut self, state: AppStateRef) -> Option<(bool, bool)> {
+    pub fn update(&mut self, state: AppStateRef) -> Option<bool> {
         let vault = state.current_vault_opt()?;
 
         let Some(params) = self.new_params_opt(state.clone(), &vault) else {
-            return Some((false, false));
+            return Some(false);
         };
-        let vault_is_new = self.params.vault_name == params.vault_name;
 
         // TODO: handle errors sanely and properly
         let items = get_filtered_and_sorted_items(&vault, &state.filter(), &state.sorts()).ok()?;
         self.params = params;
-        self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
+        self.item_paths = items
+            .iter()
+            .filter_map(|i| vault.resolve_abs_path(Path::new(i.path())).ok())
+            .collect();
 
-        Some((true, vault_is_new))
+        Some(true)
     }
 
     pub fn resolve_all_refs<'a, 'b: 'a>(&'a self, vault: &'b Vault) -> Vec<Ref<String, Item>> {

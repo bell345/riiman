@@ -1,4 +1,4 @@
-use crate::data::{FilterExpression, PreviewOptions, ShortcutAction};
+use crate::data::{FilterExpression, PreviewOptions, ShortcutAction, ThumbnailCacheItem};
 use eframe::egui;
 use eframe::egui::{pos2, vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
@@ -20,7 +20,6 @@ use crate::tasks::transform::load_transformed_image_preview;
 use crate::ui::item_cache::ItemCache;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
-use crate::ui::thumb_cache::ThumbnailCacheItem;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
 use crate::{take_shortcut, time};
 
@@ -31,7 +30,6 @@ mod item_panel;
 mod modals;
 mod stepwise_range;
 mod theme;
-mod thumb_cache;
 mod thumb_grid;
 pub mod widgets;
 
@@ -220,8 +218,8 @@ impl App {
                 Ok(AsyncTaskResult::ThumbnailLoaded { params, image }) => {
                     let hndl =
                         ctx.load_texture(params.tex_name(), image, egui::TextureOptions::default());
-                    self.thumbnail_grid
-                        .commit(params, ThumbnailCacheItem::Loaded(hndl));
+                    self.state
+                        .commit_thumbnail(params, ThumbnailCacheItem::Loaded(hndl));
                 }
                 Ok(AsyncTaskResult::PreviewReady { image }) => {
                     let hndl = ctx.load_texture(
@@ -590,7 +588,7 @@ impl App {
                     time!("Right panel UI", {
                         self.right_panel_ui(ui);
                     });
-                    let (is_new_item_list, vault_is_new) = time!("Item list update", {
+                    let is_new_item_list = time!("Item list update", {
                         self.item_list_cache.update(self.state.clone())?
                     });
                     time!("Thumbnail grid update", {
@@ -599,7 +597,6 @@ impl App {
                             self.state.clone(),
                             &self.item_list_cache,
                             is_new_item_list,
-                            vault_is_new,
                         )
                     })
                 })

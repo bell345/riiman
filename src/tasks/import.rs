@@ -1,4 +1,4 @@
-use crate::data::{FieldStore, Vault};
+use crate::data::{FieldStore, ThumbnailParams, Vault};
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
@@ -12,13 +12,13 @@ use tracing::info;
 
 use crate::errors::AppError;
 use crate::fields;
-use crate::tasks::thumbnail::{commit_thumbnail_to_fs, ThumbnailParams};
+use crate::state::THUMBNAIL_LOW_QUALITY_HEIGHT;
+use crate::tasks::thumbnail::commit_thumbnail_to_fs;
 use crate::tasks::vault::save_vault;
 use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
 };
 
-const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
 async fn import_single_image(
@@ -55,14 +55,14 @@ async fn import_single_image(
 
     item.set_known_field_value(fields::general::LAST_MODIFIED, last_modified);
 
-    commit_thumbnail_to_fs(
-        &vault,
-        &ThumbnailParams {
-            path: path.clone(),
-            last_modified: Some(last_modified),
-            height: THUMBNAIL_LOW_QUALITY_HEIGHT,
-        },
-    )
+    let rel_path = vault.resolve_rel_path(&path)?;
+    let abs_path = vault.resolve_abs_path(&path)?;
+    commit_thumbnail_to_fs(&ThumbnailParams {
+        rel_path: rel_path.to_string(),
+        abs_path,
+        last_modified: Some(last_modified),
+        height: THUMBNAIL_LOW_QUALITY_HEIGHT,
+    })
     .await
     .map_err(|e| anyhow!(e))?;
 

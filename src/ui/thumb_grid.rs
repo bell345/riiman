@@ -1,14 +1,12 @@
-use crate::state::AppStateRef;
+use crate::data::ThumbnailCacheItem;
+use crate::state::{AppStateRef, THUMBNAIL_LOW_QUALITY_HEIGHT};
 use crate::take_shortcut;
 use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
-use crate::tasks::thumbnail::{
-    load_image_thumbnail, load_image_thumbnail_with_fs, ThumbnailParams,
-};
+use crate::tasks::thumbnail::{load_image_thumbnail, load_image_thumbnail_with_fs};
 use crate::tasks::{ThumbnailGridInfo, ThumbnailGridParams};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::item_cache::ItemCache;
 use crate::ui::theme::get_accent_color;
-use crate::ui::thumb_cache::{ThumbnailCache, ThumbnailCacheItem};
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use eframe::egui;
@@ -17,14 +15,8 @@ use itertools::Itertools;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
-use std::path::Path;
-use std::sync::Arc;
 use tracing::info;
 
-const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
-const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
-const THUMBNAIL_LQ_LOAD_INTERVAL_MS: i64 = 10;
-const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS: i64 = 1500;
 
 const ROUNDING: egui::Rounding = egui::Rounding::same(4.0);
@@ -34,13 +26,12 @@ const CHECKBOX_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
 const CHECKBOX_INTERACT_SIZE: f32 = 16.0;
 const HIGHLIGHT_PADDING: f32 = 2.0;
 
+#[derive(Default)]
 pub struct ThumbnailGrid {
     pub params: ThumbnailGridParams,
     info: ThumbnailGridInfo,
+    app_state: AppStateRef,
     state: State,
-
-    cache: ThumbnailCache,
-    lq_cache: ThumbnailCache,
 
     scroll_cooldown: Option<DateTime<Utc>>,
     next_hover: Option<String>,
@@ -58,34 +49,6 @@ pub enum SelectMode {
     #[default]
     Single,
     Multiple,
-}
-
-impl Default for ThumbnailGrid {
-    fn default() -> Self {
-        Self {
-            params: Default::default(),
-            info: Default::default(),
-            state: Default::default(),
-            cache: ThumbnailCache::new(
-                THUMBNAIL_CACHE_SIZE,
-                TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
-                false,
-            ),
-            lq_cache: ThumbnailCache::new(
-                THUMBNAIL_CACHE_SIZE,
-                TimeDelta::milliseconds(THUMBNAIL_LQ_LOAD_INTERVAL_MS),
-                true,
-            ),
-            scroll_cooldown: None,
-            next_hover: None,
-            next_middle: None,
-            next_pressing: None,
-            has_focus: false,
-            set_scroll: false,
-            last_vp: None,
-            double_clicked: None,
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -118,38 +81,6 @@ impl ThumbnailGrid {
     #[allow(clippy::unused_self)]
     fn id(&self) -> egui::Id {
         "thumbnail_grid".into()
-    }
-
-    pub fn commit(&mut self, params: ThumbnailParams, item: ThumbnailCacheItem) {
-        if params.height == crate::ui::THUMBNAIL_LOW_QUALITY_HEIGHT {
-            self.lq_cache.commit(params.clone(), item.clone());
-        }
-        self.cache.commit(params, item);
-    }
-
-    fn resolve_thumbnail(&self, item: &ThumbnailPosition) -> ThumbnailCacheItem {
-        let path: Box<Path> = Path::new(item.path.as_str()).into();
-        #[allow(clippy::cast_possible_truncation)]
-        #[allow(clippy::cast_sign_loss)]
-        let height = self.params.max_row_height as usize;
-
-        let mut thumb = ThumbnailCacheItem::Loading;
-        if height > THUMBNAIL_LOW_QUALITY_HEIGHT {
-            thumb = self.cache.read(&ThumbnailParams {
-                path: path.clone(),
-                last_modified: item.last_modified,
-                height,
-            });
-        }
-        if thumb == ThumbnailCacheItem::Loading {
-            thumb = self.lq_cache.read(&ThumbnailParams {
-                path: path.clone(),
-                last_modified: item.last_modified,
-                height: THUMBNAIL_LOW_QUALITY_HEIGHT,
-            });
-        }
-
-        thumb
     }
 
     pub fn select_mode(&self, ctx: &egui::Context) -> SelectMode {
@@ -198,7 +129,7 @@ impl ThumbnailGrid {
         {
             if let Some((i, _)) = thumbnails
                 .iter()
-                .find_position(|pos| selected_paths.contains(&pos.path))
+                .find_position(|pos| selected_paths.contains(&pos.abs_path))
             {
                 let delta = if ui.input(|i| i.modifiers.shift) {
                     -1
@@ -206,7 +137,7 @@ impl ThumbnailGrid {
                     1
                 };
                 let next_path = thumbnails[wrap_index(i, thumbnails.len(), delta)]
-                    .path
+                    .abs_path
                     .clone();
                 self.set_scroll = true;
                 self.state.middle_item = Some(next_path.clone());
@@ -244,11 +175,13 @@ impl ThumbnailGrid {
     fn update_item(&mut self, ui: &mut egui::Ui, item: &ThumbnailPosition, vp: &ViewportInfo) {
         let outer_bounds = item.outer_bounds.translate(vp.abs_min);
         let inner_bounds = item.inner_bounds.translate(vp.abs_min);
-        let text = egui::Label::new(item.path.clone());
+        let text = egui::Label::new(&item.rel_path);
 
         // scroll to item if resize event has occurred
-        if (self.set_scroll || vp.resized) && Some(&item.path) == self.state.middle_item.as_ref() {
-            info!("do scroll to {} at {:?}", &item.path, &outer_bounds);
+        if (self.set_scroll || vp.resized)
+            && Some(&item.abs_path) == self.state.middle_item.as_ref()
+        {
+            info!("do scroll to {} at {:?}", &item.rel_path, &outer_bounds);
             info!("set_scroll = {}, resized = {}", self.set_scroll, vp.resized);
             ui.scroll_to_rect(outer_bounds, Some(egui::Align::Center));
             self.set_scroll = false;
@@ -262,11 +195,14 @@ impl ThumbnailGrid {
             && self.next_middle.is_none()
             && item.outer_bounds.contains(vp.middle)
         {
-            self.next_middle = Some(item.path.clone());
+            self.next_middle = Some(item.abs_path.clone());
         }
 
         if vp.rect.intersects(item.outer_bounds) {
-            let thumb = self.resolve_thumbnail(item);
+            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_sign_loss)]
+            let height = self.params.max_row_height.floor() as usize;
+            let thumb = self.app_state.resolve_thumbnail(item.params(height));
 
             if let ThumbnailCacheItem::Loaded(hndl) = thumb {
                 self.render_thumbnail(ui, vp, item, &hndl);
@@ -284,7 +220,7 @@ impl ThumbnailGrid {
         item: &ThumbnailPosition,
         hndl: &TextureHandle,
     ) {
-        let id = egui::Id::new(item.path.clone());
+        let id = egui::Id::new(item.abs_path.clone());
         let outer_bounds = item.outer_bounds.translate(vp.abs_min);
         let inner_bounds = item.inner_bounds.translate(vp.abs_min);
 
@@ -292,7 +228,7 @@ impl ThumbnailGrid {
             let check_ref = self
                 .state
                 .checked_items
-                .entry(item.path.clone())
+                .entry(item.abs_path.clone())
                 .or_default();
             *check_ref.value()
         };
@@ -309,7 +245,7 @@ impl ThumbnailGrid {
         .bg_fill(egui::Color32::from_gray(20))
         .shrink_to_fit();
 
-        let tint = if Some(&item.path) == self.state.hovering_item.as_ref() {
+        let tint = if Some(&item.abs_path) == self.state.hovering_item.as_ref() {
             HOVER_TINT
         } else {
             egui::Color32::WHITE
@@ -322,23 +258,23 @@ impl ThumbnailGrid {
 
         let res = ui
             .push_id(id, |ui| {
-                ui.put(inner_bounds, img_btn).on_hover_text(&item.path)
+                ui.put(inner_bounds, img_btn).on_hover_text(&item.abs_path)
             })
             .inner;
         ui.ctx()
             .check_for_id_clash(res.id, res.rect, "thumbnail image");
 
         if res.hover_pos().map_or(false, |p| outer_bounds.contains(p)) {
-            self.next_hover = Some(item.path.clone());
+            self.next_hover = Some(item.abs_path.clone());
         }
         if res.is_pointer_button_down_on() {
-            self.next_pressing = Some(item.path.clone());
+            self.next_pressing = Some(item.abs_path.clone());
         }
         if res.double_clicked() {
-            self.double_clicked = Some(item.path.clone());
+            self.double_clicked = Some(item.abs_path.clone());
         }
         if res.has_focus() {
-            info!("has focus: {}", item.path.clone());
+            info!("has focus: {}", item.rel_path);
             self.has_focus = true;
             ui.memory_mut(|wr| {
                 wr.set_focus_lock_filter(
@@ -353,8 +289,8 @@ impl ThumbnailGrid {
             });
         }
 
-        if Some(&item.path) == self.state.hovering_item.as_ref()
-            || Some(&item.path) == self.state.pressing_item.as_ref()
+        if Some(&item.abs_path) == self.state.hovering_item.as_ref()
+            || Some(&item.abs_path) == self.state.pressing_item.as_ref()
             || res.is_pointer_button_down_on()
             || checked
         {
@@ -374,7 +310,7 @@ impl ThumbnailGrid {
             let mut check_ref = self
                 .state
                 .checked_items
-                .entry(item.path.clone())
+                .entry(item.abs_path.clone())
                 .or_default();
 
             let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
@@ -386,10 +322,10 @@ impl ThumbnailGrid {
                 .hover_pos()
                 .map_or(false, |p| checkbox_res.rect.contains(p))
             {
-                self.next_hover = Some(item.path.clone());
+                self.next_hover = Some(item.abs_path.clone());
             }
             if checkbox_res.is_pointer_button_down_on() {
-                self.next_pressing = Some(item.path.clone());
+                self.next_pressing = Some(item.abs_path.clone());
             }
 
             // clicked on image but not on checkbox -> select only this image
@@ -405,7 +341,7 @@ impl ThumbnailGrid {
     }
 
     fn request_exclusive_focus(&mut self, ui: &mut egui::Ui, item: &ThumbnailPosition) {
-        let id = egui::Id::new(item.path.clone());
+        let id = egui::Id::new(item.abs_path.clone());
 
         ui.memory_mut(|wr| {
             wr.request_focus(id);
@@ -421,19 +357,17 @@ impl ThumbnailGrid {
         });
 
         self.state.checked_items.clear();
-        self.state.checked_items.insert(item.path.clone(), true);
+        self.state.checked_items.insert(item.abs_path.clone(), true);
     }
 
     pub fn update(
         &mut self,
         ui: &mut egui::Ui,
-        state: AppStateRef,
+        app_state: AppStateRef,
         item_cache: &ItemCache,
         item_cache_is_new: bool,
-        vault_is_new: bool,
     ) -> Option<egui::scroll_area::ScrollAreaOutput<()>> {
-        let vault = state.current_vault_catch(|| "Thumbnail grid").ok()?;
-
+        self.app_state = app_state;
         self.state = State::load(ui.ctx(), self.id()).unwrap_or_default();
 
         self.params.container_width = ui.available_width().floor();
@@ -443,11 +377,16 @@ impl ThumbnailGrid {
             self.set_scroll = true;
             ui.ctx().request_repaint();
 
+            let vault = self
+                .app_state
+                .current_vault_catch(|| "Thumbnail grid")
+                .ok()?;
             let params = self.params.clone();
             let items = item_cache.resolve_all_refs(&vault);
 
-            self.info = state
-                .catch(|| "Thumb grid", || compute(params, &items))
+            self.info = self
+                .app_state
+                .catch(|| "Thumb grid", || compute(params, &vault, &items))
                 .ok()?;
         }
 
@@ -462,11 +401,6 @@ impl ThumbnailGrid {
             for path in to_remove {
                 self.state.checked_items.remove(&path);
             }
-        }
-
-        if vault_is_new {
-            self.cache.clear();
-            self.lq_cache.clear();
         }
 
         let res = egui::ScrollArea::vertical()
@@ -514,19 +448,16 @@ impl ThumbnailGrid {
                 self.last_vp = Some(vp.rect);
             });
 
-        for params in self.lq_cache.drain_requests() {
-            let vault = Arc::clone(&vault);
-            state.add_task(
-                format!("Load thumbnail for {}", params.path.display()),
-                move |_, p| Promise::spawn_async(load_image_thumbnail_with_fs(vault, params, p)),
-            );
-        }
-
-        for params in self.cache.drain_requests() {
-            let vault = Arc::clone(&vault);
-            state.add_task(
-                format!("Load thumbnail for {}", params.path.display()),
-                move |_, p| Promise::spawn_async(load_image_thumbnail(vault, params, p)),
+        for params in self.app_state.drain_thumbnail_requests() {
+            self.app_state.add_task(
+                format!("Load thumbnail for {}", params.abs_path),
+                move |_, p| {
+                    if params.height <= THUMBNAIL_LOW_QUALITY_HEIGHT {
+                        Promise::spawn_async(load_image_thumbnail_with_fs(params, p))
+                    } else {
+                        Promise::spawn_async(load_image_thumbnail(params, p))
+                    }
+                },
             );
         }
 

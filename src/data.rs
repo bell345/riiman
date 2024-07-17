@@ -18,6 +18,7 @@ pub use item::Item;
 pub use preview::PreviewOptions;
 pub use shortcut::ShortcutAction;
 pub use string::Utf32CachedString;
+pub use thumbnail::{ThumbnailCache, ThumbnailCacheItem, ThumbnailParams, ThumbnailPosition};
 pub use transform::Params as TransformParams;
 pub use vault::Vault;
 
@@ -30,5 +31,6 @@ pub mod parse;
 mod preview;
 mod shortcut;
 mod string;
+mod thumbnail;
 pub mod transform;
 mod vault;
