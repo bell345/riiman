@@ -34,10 +34,9 @@ impl AppModal for LinkVault {
         let request_name = "link_vault_modal_load_request".to_string();
         let modal = Modal::new(ctx, self.id().value());
 
-        let r = state.blocking_read();
-        let curr_name = r.current_vault_name().expect("vault to be loaded");
-        let vault_names = r.valid_vault_names();
-        match r.try_take_request_result(&request_name) {
+        let curr_name = state.current_vault_name().expect("vault to be loaded");
+        let vault_names = state.valid_vault_names();
+        match state.try_take_request_result(&request_name) {
             None => {}
             Some(Ok(AsyncTaskResult::VaultLoaded {
                 name: loaded_vault_name,
@@ -49,7 +48,6 @@ impl AppModal for LinkVault {
             Some(Err(e)) if AppError::UserCancelled.is_err(&e) => {}
             Some(Err(e)) => self.error_message = Some(e.to_string()),
         }
-        drop(r);
 
         modal.show(|ui| {
             modal.title(ui, "Link vault");
@@ -69,13 +67,11 @@ impl AppModal for LinkVault {
                         });
                     ui.label("-- or --");
                     if ui.button("Load a vault...").clicked() {
-                        state
-                            .blocking_read()
-                            .add_task_request(request_name, |s, p| {
-                                Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
-                                    s, p, false,
-                                ))
-                            });
+                        state.add_task_request(request_name, |s, p| {
+                            Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
+                                s, p, false,
+                            ))
+                        });
                     }
 
                     if let Some(msg) = &self.error_message {
@@ -88,16 +84,13 @@ impl AppModal for LinkVault {
                     match self.verify() {
                         Ok(()) => {
                             let other_vault_name = self.selected_vault_name.clone();
-                            state.blocking_read().add_task(
-                                format!("Link with {other_vault_name}"),
-                                |s, p| {
-                                    Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
-                                        other_vault_name,
-                                        s,
-                                        p,
-                                    ))
-                                },
-                            );
+                            state.add_task(format!("Link with {other_vault_name}"), |s, p| {
+                                Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
+                                    other_vault_name,
+                                    s,
+                                    p,
+                                ))
+                            });
                         }
                         Err(e) => {
                             self.error_message = Some(e);

@@ -40,9 +40,8 @@ impl AppModal for NewVault {
                         modal.open();
                     } else {
                         let Self { name, .. } = std::mem::take(self);
-                        let r = state.blocking_read();
-                        r.set_vault_loading();
-                        r.add_task("Create vault", |s, p| {
+                        state.set_vault_loading();
+                        state.add_task("Create vault", |s, p| {
                             Promise::spawn_async(tasks::vault::save_new_vault(
                                 s,
                                 Vault::new(name),

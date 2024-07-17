@@ -85,11 +85,7 @@ impl TransformImages {
         request_name: &str,
         check_fn: impl FnOnce(AsyncTaskResult) -> Result<R, AsyncTaskResult>,
     ) -> Result<R, ()> {
-        match self
-            .app_state
-            .blocking_read()
-            .try_take_request_result(request_name)
-        {
+        match self.app_state.try_take_request_result(request_name) {
             None => {}
             Some(Ok(res)) => match check_fn(res) {
                 Ok(r) => return Ok(r),
@@ -200,13 +196,11 @@ impl TransformImages {
     ) {
         let id = |suf: &str| id_prefix.with(suf).value().to_string();
 
-        let (curr_name, vault_names) = {
-            let r = self.app_state.blocking_read();
-            (
-                r.current_vault_name().expect("vault to be loaded"),
-                r.valid_vault_names(),
-            )
-        };
+        let curr_name = self
+            .app_state
+            .current_vault_name()
+            .expect("vault to be loaded");
+        let vault_names = self.app_state.valid_vault_names();
 
         egui::Grid::new(self.id().with("destination_choice_grid"))
             .num_columns(2)
@@ -239,14 +233,12 @@ impl TransformImages {
                             });
 
                         if ui.button("Load a vault...").clicked() {
-                            self.app_state.blocking_read().add_task_request(
-                                id(request::LOAD_VAULT),
-                                |s, p| {
+                            self.app_state
+                                .add_task_request(id(request::LOAD_VAULT), |s, p| {
                                     Promise::spawn_async(
                                         crate::tasks::vault::choose_and_load_vault(s, p, false),
                                     )
-                                },
-                            );
+                                });
                         }
                     });
                 });
@@ -262,7 +254,6 @@ impl TransformImages {
                         ui.text_edit_singleline(&mut p.destination_options.directory_path);
                         if ui.button("Select...").clicked() {
                             self.app_state
-                                .blocking_read()
                                 .add_task_request(id(request::CHOOSE_DIRECTORY), |_, _| {
                                     Promise::spawn_async(crate::tasks::choose::choose_folder())
                                 });
@@ -282,7 +273,6 @@ impl TransformImages {
                         ui.text_edit_singleline(&mut p.destination_options.archive_path);
                         if ui.button("Select...").clicked() {
                             self.app_state
-                                .blocking_read()
                                 .add_task_request(id(request::CHOOSE_ARCHIVE), |_, _| {
                                     Promise::spawn_async(crate::tasks::choose::choose_archive())
                                 });

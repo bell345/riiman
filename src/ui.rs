@@ -93,12 +93,12 @@ impl App {
             + Sync
             + 'static,
     ) {
-        self.state.blocking_read().add_task(name, task_factory);
+        self.state.add_task(name, task_factory);
     }
 
     fn add_queued_tasks(&mut self) {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
-        for (name, task_factory, is_request) in self.state.blocking_read().drain_tasks(capacity) {
+        for (name, task_factory, is_request) in self.state.drain_tasks(capacity) {
             if is_request {
                 self.tasks
                     .add_request(name, |tx| task_factory(self.state.clone(), tx));
@@ -122,10 +122,6 @@ impl App {
         self.add_modal_dialog(modals::Message::success(message).with_title(title));
     }
 
-    fn state(&self) -> tokio::sync::RwLockReadGuard<AppState> {
-        self.state.blocking_read()
-    }
-
     fn load_persistent_state(&mut self, storage: Option<&dyn eframe::Storage>) -> Option<()> {
         let stored_state: AppStorage =
             serde_json::from_str(&storage?.get_string(AppStorage::KEY)?).ok()?;
@@ -138,7 +134,7 @@ impl App {
         for (name, path) in vault_name_to_file_paths {
             let set_as_current = stored_state.current_vault_name.as_ref() == Some(&name);
             if set_as_current {
-                self.state.blocking_read().set_vault_loading();
+                self.state.set_vault_loading();
             }
 
             self.add_task(format!("Load vault {name}"), move |s, p| {
@@ -155,11 +151,9 @@ impl App {
 
         self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
 
-        {
-            let r = self.state.blocking_read();
-            r.set_filter_and_sorts(stored_state.filter, stored_state.sorts);
-            r.set_shortcuts(stored_state.shortcuts);
-        }
+        self.state
+            .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
+        self.state.set_shortcuts(stored_state.shortcuts);
 
         Some(())
     }
@@ -186,10 +180,8 @@ impl App {
                     name,
                     set_as_current,
                 }) if set_as_current => {
-                    let r = self.state.blocking_read();
-                    r.reset_vault_loading();
-                    if r.set_current_vault_name(name.clone()).is_err() {
-                        drop(r);
+                    self.state.reset_vault_loading();
+                    if self.state.set_current_vault_name(name.clone()).is_err() {
                         self.error(format!(
                             "Failed to set current vault with name '{name}' \
                              as it could not be found"
@@ -197,7 +189,7 @@ impl App {
                     }
                 }
                 Ok(AsyncTaskResult::VaultLoaded { .. } | AsyncTaskResult::VaultSaved(_)) => {
-                    self.state().reset_vault_loading();
+                    self.state.reset_vault_loading();
                 }
                 Ok(AsyncTaskResult::ImportComplete { path, results }) => {
                     let total = results.len();
@@ -214,8 +206,8 @@ impl App {
                     other_vault_name,
                     results,
                 }) => {
-                    self.state().save_current_vault();
-                    self.state().save_vault_by_name(other_vault_name.clone());
+                    self.state.save_current_vault();
+                    self.state.save_vault_by_name(other_vault_name.clone());
 
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -241,7 +233,7 @@ impl App {
                             minification: egui::TextureFilter::Linear,
                         },
                     );
-                    self.state().set_preview(hndl);
+                    self.state.set_preview(hndl);
                 }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented".to_string());
@@ -251,20 +243,18 @@ impl App {
             ctx.request_repaint();
         }
 
-        self.state
-            .blocking_read()
-            .push_request_results(request_results);
+        self.state.push_request_results(request_results);
     }
 
     fn vault_menu_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let vault_text = if self.state().has_unresolved_vaults() {
+        let vault_text = if self.state.has_unresolved_vaults() {
             egui::RichText::new("Vault \u{ff01}").color(theme::ERROR_TEXT)
         } else {
             egui::RichText::new("Vault")
         };
 
         ui.menu_button(vault_text, |ui| {
-            let vault_loading = self.state().vault_loading();
+            let vault_loading = self.state.vault_loading();
             if ui
                 .add_enabled(!vault_loading, egui::Button::new("New..."))
                 .clicked()
@@ -281,7 +271,7 @@ impl App {
             {
                 info!("Open vault clicked!");
 
-                self.state().set_vault_loading();
+                self.state.set_vault_loading();
                 self.add_task("Load vault", |s, p| {
                     Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                 });
@@ -289,25 +279,25 @@ impl App {
                 ui.close_menu();
             }
 
-            if self.state().current_vault().is_ok()
+            if self.state.current_vault().is_ok()
                 && ui
                     .add_enabled(!vault_loading, egui::Button::new("Save"))
                     .clicked()
             {
                 info!("Save vault clicked!");
 
-                self.state.blocking_read().save_current_vault();
+                self.state.save_current_vault();
 
                 ui.close_menu();
             }
 
-            let manage_text = if self.state().has_unresolved_vaults() {
+            let manage_text = if self.state.has_unresolved_vaults() {
                 egui::RichText::new("Manage... \u{ff01}").color(theme::ERROR_TEXT)
             } else {
                 egui::RichText::new("Manage...")
             };
 
-            if !self.state().known_vault_names().is_empty()
+            if !self.state.known_vault_names().is_empty()
                 && ui
                     .add_enabled(!vault_loading, egui::Button::new(manage_text))
                     .clicked()
@@ -328,7 +318,7 @@ impl App {
     fn import_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Import", |ui| -> Result<(), ()> {
             if ui.button("Import...").clicked() {
-                let vault = self.state.blocking_current_vault(|| "Import one")?;
+                let vault = self.state.current_vault_catch(|| "Import one")?;
                 self.add_task("Import one", |_, p| {
                     Promise::spawn_async(crate::tasks::import::select_and_import_one(vault, p))
                 });
@@ -339,7 +329,7 @@ impl App {
             if ui.button("Import all files").clicked() {
                 info!("Import all clicked!");
 
-                let vault = self.state.blocking_current_vault(|| "Import one")?;
+                let vault = self.state.current_vault_catch(|| "Import one")?;
                 self.add_task("Import to vault", |_, p| {
                     Promise::spawn_async(crate::tasks::import::import_images_recursively(vault, p))
                 });
@@ -409,7 +399,7 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 self.vault_menu_ui(ctx, ui);
 
-                if self.state().current_vault().is_ok() {
+                if self.state.current_vault().is_ok() {
                     self.import_menu_ui(ui);
 
                     self.tag_menu_ui(ui);
@@ -461,8 +451,7 @@ impl App {
                     }
 
                     if self.sort_type == SortType::Field {
-                        let state = self.state.blocking_read();
-                        if let Some(vault) = state.current_vault_opt() {
+                        if let Some(vault) = self.state.current_vault_opt() {
                             ui.add(
                                 widgets::FindTag::new("sort_field", &mut self.sort_field_id, vault)
                                     .show_tag(true),
@@ -488,38 +477,32 @@ impl App {
                             ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
                         });
 
-                    {
-                        let r = self.state.blocking_read();
-                        let Ok(vault) = r.current_vault() else {
-                            return;
-                        };
+                    let Ok(vault) = self.state.current_vault() else {
+                        return;
+                    };
 
-                        let search_res = widgets::SearchBox::new(
-                            "main_search_box",
-                            &mut self.search_text,
-                            vault,
-                        )
-                        .desired_width(f32::INFINITY)
-                        .interactive()
-                        .show(ui);
+                    let search_res =
+                        widgets::SearchBox::new("main_search_box", &mut self.search_text, vault)
+                            .desired_width(f32::INFINITY)
+                            .interactive()
+                            .show(ui);
 
-                        let sorts = match self.sort_type {
-                            SortType::Path => vec![SortExpression::Path(self.sort_direction)],
-                            SortType::Field => {
-                                if let Some(field_id) = self.sort_field_id {
-                                    vec![SortExpression::Field(field_id, self.sort_direction)]
-                                } else {
-                                    vec![]
-                                }
+                    let sorts = match self.sort_type {
+                        SortType::Path => vec![SortExpression::Path(self.sort_direction)],
+                        SortType::Field => {
+                            if let Some(field_id) = self.sort_field_id {
+                                vec![SortExpression::Field(field_id, self.sort_direction)]
+                            } else {
+                                vec![]
                             }
-                        };
+                        }
+                    };
 
-                        let filter = search_res
-                            .expression
-                            .map_or(FilterExpression::None, |expr| expr.expr);
+                    let filter = search_res
+                        .expression
+                        .map_or(FilterExpression::None, |expr| expr.expr);
 
-                        r.set_filter_and_sorts(filter, sorts);
-                    }
+                    self.state.set_filter_and_sorts(filter, sorts);
                 });
             });
     }
@@ -581,7 +564,7 @@ impl App {
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
-                        let vault = self.state.blocking_current_vault(|| "right panel")?;
+                        let vault = self.state.current_vault_catch(|| "right panel")?;
 
                         let items = self.thumbnail_grid.view_selected_paths(|paths| {
                             self.item_list_cache.resolve_refs(&vault, paths)
@@ -623,7 +606,7 @@ impl App {
                 .inner;
 
             if let Some(path) = self.thumbnail_grid.double_clicked.as_ref() {
-                if let Ok(vault) = self.state.blocking_current_vault(|| "double click") {
+                if let Ok(vault) = self.state.current_vault_catch(|| "double click") {
                     let path = Path::new(path.as_str());
                     if let Ok(abs_path) = vault.resolve_abs_path(path) {
                         self.add_task("Load image preview", move |_, p| {
@@ -674,7 +657,7 @@ impl App {
 
     fn preview_window_ui(&mut self, ctx: &egui::Context) {
         let state = Arc::clone(&self.state);
-        let Some(hndl) = state.blocking_read().preview_texture() else {
+        let Some(hndl) = state.preview_texture() else {
             return;
         };
 
@@ -696,7 +679,7 @@ impl App {
                     lens_magnification,
                     lens_size,
                     ..
-                } = state.blocking_read().preview_opts();
+                } = state.preview_opts();
 
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none())
@@ -748,35 +731,35 @@ impl App {
                                     );
                                 }
 
-                                state.blocking_read().preview_mut(|opts| {
-                                    if ui.ui_contains_pointer()
-                                        && ui.input(|i| i.pointer.primary_down())
-                                    {
-                                        opts.cursor_position = ui.input(|i| i.pointer.latest_pos());
-                                    } else {
-                                        opts.cursor_position = None;
-                                    }
+                                let mut opts = state.preview_mut();
 
-                                    let double_clicked = ui.ui_contains_pointer()
-                                        && ui.input(|i| {
-                                            i.pointer
-                                                .button_double_clicked(egui::PointerButton::Primary)
-                                        });
+                                if ui.ui_contains_pointer()
+                                    && ui.input(|i| i.pointer.primary_down())
+                                {
+                                    opts.cursor_position = ui.input(|i| i.pointer.latest_pos());
+                                } else {
+                                    opts.cursor_position = None;
+                                }
 
-                                    if take_shortcut!(ui, F11) || double_clicked {
-                                        opts.fullscreen ^= true;
-                                        ctx.send_viewport_cmd_to(
-                                            viewport_id,
-                                            egui::ViewportCommand::Fullscreen(opts.fullscreen),
-                                        );
-                                    }
-                                });
+                                let double_clicked = ui.ui_contains_pointer()
+                                    && ui.input(|i| {
+                                        i.pointer
+                                            .button_double_clicked(egui::PointerButton::Primary)
+                                    });
+
+                                if take_shortcut!(ui, F11) || double_clicked {
+                                    opts.fullscreen ^= true;
+                                    ctx.send_viewport_cmd_to(
+                                        viewport_id,
+                                        egui::ViewportCommand::Fullscreen(opts.fullscreen),
+                                    );
+                                }
                             },
                         );
                     });
 
                 if ctx.input(|i| i.viewport().close_requested()) {
-                    state.blocking_read().close_preview();
+                    state.close_preview();
                 }
             },
         );
@@ -789,12 +772,12 @@ impl eframe::App for App {
             ctx.memory_mut(|m| m.request_focus(f));
         }
 
-        let errors = self.state.blocking_read().drain_errors();
+        let errors = self.state.drain_errors();
         for error in errors {
             self.error(format!("{error}"));
         }
 
-        for new_dialog in self.state.blocking_read().drain_dialogs() {
+        for new_dialog in self.state.drain_dialogs() {
             if let Some(mut old_dialog) = self.modal_dialogs.remove(&new_dialog.id()) {
                 old_dialog.dispose(ctx, self.state.clone());
             }
@@ -825,15 +808,14 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let state = self.state.blocking_read();
         let stored_state = AppStorage {
-            current_vault_name: state.current_vault_name().map(|s| s.to_string()),
-            vault_name_to_file_paths: state.vault_name_to_file_paths(),
+            current_vault_name: self.state.current_vault_name().map(|s| s.to_string()),
+            vault_name_to_file_paths: self.state.vault_name_to_file_paths(),
             thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
-            sorts: state.sorts().clone(),
-            filter: state.filter().clone(),
+            sorts: self.state.sorts().clone(),
+            filter: self.state.filter().clone(),
             search_text: self.search_text.clone(),
-            shortcuts: state.shortcuts(),
+            shortcuts: self.state.shortcuts(),
         };
 
         storage.set_string(

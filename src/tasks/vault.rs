@@ -66,7 +66,7 @@ pub async fn load_vault_from_path(
         .with_standard_defs();
 
     let name = vault.name.clone();
-    state.write().await.load_vault(vault, set_as_current);
+    state.load_vault(vault, set_as_current);
 
     Ok(AsyncTaskResult::VaultLoaded {
         name,
@@ -120,7 +120,7 @@ pub async fn save_new_vault(
     save_vault(vault.clone(), progress).await?;
 
     let name = vault.name.clone();
-    state.write().await.load_vault(
+    state.load_vault(
         Arc::into_inner(vault).expect("No other vault references"),
         true,
     );
@@ -135,8 +135,7 @@ pub async fn save_current_vault(
     state: AppStateRef,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    let r = state.read().await;
-    let vault = r.current_vault()?;
+    let vault = state.current_vault()?;
     save_vault(vault, progress).await
 }
 
@@ -145,7 +144,6 @@ pub async fn save_vault_by_name(
     progress: ProgressSenderRef,
     name: String,
 ) -> AsyncTaskReturn {
-    let r = state.read().await;
-    let vault = r.get_vault(&name)?;
+    let vault = state.get_vault(&name)?;
     save_vault(vault, progress).await
 }

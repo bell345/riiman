@@ -113,8 +113,7 @@ impl EditTag {
         let id = self.definition.as_ref().unwrap().id;
         return match self.verify() {
             Ok(()) => {
-                let r = self.app_state.blocking_read();
-                let vault = r.current_vault().expect("vault exists");
+                let vault = self.app_state.current_vault().expect("vault exists");
                 vault.set_definition(self.definition.as_ref().unwrap().clone());
                 for parent in std::mem::take(&mut self.removed_parents) {
                     let parent_def = vault.get_definition(&parent);
@@ -139,6 +138,7 @@ impl EditTag {
         };
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn edit_parents_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -203,6 +203,7 @@ impl EditTag {
         add_new_parent
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn edit_children_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -268,13 +269,12 @@ impl EditTag {
     }
 
     fn edit_aliases_ui(&mut self, ui: &mut egui::Ui) {
-        let r = self.app_state.blocking_read();
         let Some(def) = self.definition.as_mut() else {
             return;
         };
 
         ui.group(|ui| {
-            let Ok(aliases) = r.catch(
+            let Ok(aliases) = self.app_state.catch(
                 || "edit_tag",
                 || -> anyhow::Result<Vec<_>> {
                     Ok(def
@@ -349,7 +349,7 @@ impl EditTag {
         ui.heading("Edit properties");
 
         egui::ScrollArea::vertical().show_viewport(ui, |ui, _vp| -> Result<(), ()> {
-            let vault = self.app_state.blocking_current_vault(|| "edit tag")?;
+            let vault = self.app_state.current_vault_catch(|| "edit tag")?;
 
             egui_extras::TableBuilder::new(ui)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -389,9 +389,9 @@ impl EditTag {
                         });
                         row.col(|ui| {
                             let visuals = ui.style().visuals.widgets.inactive;
-                            let Ok(mut colour) = self.app_state.blocking_catch(
+                            let Ok(mut colour) = self.app_state.catch(
                                 || "edit tag colour",
-                                |_| {
+                                || {
                                     def.get_or_insert_known_field_value(
                                         fields::meta::COLOUR,
                                         visuals.bg_fill.into(),
@@ -447,7 +447,7 @@ impl EditTag {
                 return Err("Name must not be empty".into());
             }
 
-            let Ok(vault) = self.app_state.blocking_current_vault(|| "verify edit tag") else {
+            let Ok(vault) = self.app_state.current_vault_catch(|| "verify edit tag") else {
                 return Err("No vault found".into());
             };
 
@@ -488,7 +488,7 @@ impl EditTag {
                     if let Some(id) = widget_state.selected_tag_ids.first() {
                         let vault = self
                             .app_state
-                            .blocking_current_vault(|| "edit tag set definition")?;
+                            .current_vault_catch(|| "edit tag set definition")?;
                         let def = vault.get_definition(id).map(|r| r.clone());
                         if let Some(def) = def {
                             self.set_existing_definition(def);
@@ -526,8 +526,7 @@ impl EditTag {
                     if !self.is_new && self.definition.is_some() {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             if ui.button("Delete").clicked() {
-                                let r = self.app_state.blocking_read();
-                                r.add_dialog(super::DeleteDefinition::new(
+                                self.app_state.add_dialog(super::DeleteDefinition::new(
                                     std::mem::take(&mut self.definition).unwrap(),
                                 ));
                             }
@@ -571,7 +570,7 @@ impl AppModal for EditTag {
                 self.bottom_button_ui(ui);
 
                 egui::CentralPanel::default().show_inside(ui, |ui| -> Result<(), ()> {
-                    let vault = self.app_state.blocking_current_vault(|| "edit tag")?;
+                    let vault = self.app_state.current_vault_catch(|| "edit tag")?;
 
                     if let Some(def) = self.definition.as_ref() {
                         if self.is_new || vault.get_definition(&def.id).is_some() {
@@ -604,16 +603,12 @@ impl AppModal for EditTag {
                 if self.is_new {
                     self.new_definition();
                 } else {
-                    let r = self.app_state.blocking_read();
-                    let vault = r.current_vault().expect("vault exists");
-                    let def = vault
-                        .get_definition(&self.definition.as_ref().unwrap().id)
-                        .map(|r| r.clone());
-                    if let Some(def) = def {
-                        drop(vault);
-                        drop(r);
-                        self.set_existing_definition(def);
-                    }
+                    let app_state = Arc::clone(&self.app_state);
+                    let vault = app_state.current_vault().expect("vault exists");
+                    let def_id = self.definition.as_ref().unwrap().id;
+                    if let Some(def) = vault.get_definition(&def_id) {
+                        self.set_existing_definition(def.clone());
+                    };
                 }
             }
         }

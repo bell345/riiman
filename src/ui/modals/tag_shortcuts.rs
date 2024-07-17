@@ -42,7 +42,7 @@ impl TagShortcuts {
         });
 
         row.cell(|ui| {
-            let Ok(vault) = state.blocking_current_vault(|| "tag shortcuts window") else {
+            let Ok(vault) = state.current_vault_catch(|| "tag shortcuts window") else {
                 return;
             };
             match action {
@@ -53,9 +53,7 @@ impl TagShortcuts {
                             .filter_types(&[FieldType::Tag]),
                     );
                     if let Some(new_tag_id) = tag_id_opt {
-                        state
-                            .blocking_read()
-                            .set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                        state.set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
                     }
                 }
                 ShortcutAction::ToggleTag(tag_id) => {
@@ -68,9 +66,7 @@ impl TagShortcuts {
                     );
                     match tag_id_opt {
                         Some(new_tag_id) if new_tag_id != tag_id => {
-                            state
-                                .blocking_read()
-                                .set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                            state.set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
                         }
                         _ => {}
                     }
@@ -80,15 +76,13 @@ impl TagShortcuts {
 
         row.cell(|ui| {
             if matches!(action, ShortcutAction::ToggleTag(_)) && ui.button("Clear").clicked() {
-                state
-                    .blocking_read()
-                    .set_shortcut(shortcut, ShortcutAction::None);
+                state.set_shortcut(shortcut, ShortcutAction::None);
             }
         });
     }
     //noinspection DuplicatedCode
     fn edit_ui(&mut self, ui: &mut egui::Ui, state: AppStateRef) {
-        let shortcuts = state.blocking_read().shortcuts();
+        let shortcuts = state.shortcuts();
 
         egui::ScrollArea::vertical().show_viewport(ui, |ui, _vp| {
             ui.group(|ui| {

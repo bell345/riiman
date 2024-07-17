@@ -43,24 +43,19 @@ impl Item {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn blocking_update_link(&self, state: AppStateRef) -> Result<bool, ()> {
-        let ctx = || self.path_string().to_string();
-        let r = state.blocking_read();
-        let vault = r.catch(ctx, || r.current_vault())?;
-        let link_ref = r.catch(ctx, || self.link_ref())?;
+    pub fn update_link(&self, state: AppStateRef) -> anyhow::Result<bool> {
+        let vault = state.current_vault()?;
+        let link_ref = self.link_ref()?;
 
         let mut item_ref_opt = None;
         if let Some((other_vault_name, _)) = link_ref {
-            let other_vault = r.catch(ctx, || r.get_vault(&other_vault_name))?;
-            item_ref_opt = r.catch(ctx, || {
-                vault.update_link(Path::new(self.path()), &other_vault)
-            })?;
+            let other_vault = state.get_vault(&other_vault_name)?;
+            item_ref_opt = vault.update_link(Path::new(self.path()), &other_vault)?;
         }
-        drop(vault);
 
-        r.save_current_vault();
+        state.save_current_vault();
         if let Some(kind::ItemRef((other_vault_name, _))) = item_ref_opt {
-            r.save_vault_by_name(other_vault_name.to_string());
+            state.save_vault_by_name(other_vault_name.to_string());
             Ok(true)
         } else {
             Ok(false)

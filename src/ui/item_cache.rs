@@ -22,13 +22,11 @@ pub struct ItemCache {
 
 impl ItemCache {
     fn new_params_opt(&self, state: AppStateRef, vault: &Vault) -> Option<ItemCacheParams> {
-        let r = state.blocking_read();
-
         let make_params = || ItemCacheParams {
             vault_name: vault.name.to_string(),
             last_updated: vault.last_updated(),
-            filter: r.filter().clone(),
-            sorts: r.sorts().clone(),
+            filter: state.filter().clone(),
+            sorts: state.sorts().clone(),
         };
 
         if self.params.vault_name != vault.name {
@@ -37,10 +35,10 @@ impl ItemCache {
         if self.params.last_updated != vault.last_updated() {
             return Some(make_params());
         }
-        if self.params.filter != *r.filter() {
+        if self.params.filter != *state.filter() {
             return Some(make_params());
         }
-        if self.params.sorts != *r.sorts() {
+        if self.params.sorts != *state.sorts() {
             return Some(make_params());
         }
 
@@ -48,8 +46,7 @@ impl ItemCache {
     }
 
     pub fn update(&mut self, state: AppStateRef) -> Option<(bool, bool)> {
-        let r = state.blocking_read();
-        let vault = r.current_vault_opt()?;
+        let vault = state.current_vault_opt()?;
 
         let Some(params) = self.new_params_opt(state.clone(), &vault) else {
             return Some((false, false));
@@ -57,7 +54,7 @@ impl ItemCache {
         let vault_is_new = self.params.vault_name == params.vault_name;
 
         // TODO: handle errors sanely and properly
-        let items = get_filtered_and_sorted_items(&vault, &r.filter(), &r.sorts()).ok()?;
+        let items = get_filtered_and_sorted_items(&vault, &state.filter(), &state.sorts()).ok()?;
         self.params = params;
         self.item_paths = items.iter().map(|i| i.path().to_string()).collect();
 

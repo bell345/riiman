@@ -1,40 +1,21 @@
 use crate::data::field_refs::FieldDefValueRef;
-use crate::data::{FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault};
+use crate::data::{
+    FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault,
+};
 use crate::errors::AppError;
 use crate::fields;
 use anyhow::Context;
 use dashmap::iter::Iter;
+use dashmap::mapref::multiple::RefMulti;
+use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use dashmap::mapref::multiple::RefMulti;
-use dashmap::mapref::one::Ref;
 use uuid::Uuid;
 
 pub trait FieldStore {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
-
-    fn set_known_field<T: TagLike>(&self, field: KnownField<T>, value: T) {
-        *self
-            .fields()
-            .entry(field.id)
-            .or_insert_with(|| <T as Default>::default().into()) = value.into();
-    }
-
-    fn has_known_field<T: TagLike>(&self, field: KnownField<T>) -> anyhow::Result<Option<()>>
-    where
-        <T as TryFrom<FieldValue>>::Error: std::error::Error + Send + Sync + 'static,
-    {
-        match self.fields().get(&field.id) {
-            Some(fv) => fv
-                .clone()
-                .try_into()
-                .map(|_: T| Some(()))
-                .with_context(|| format!("while retrieving field {}", field.name)),
-            None => Ok(None),
-        }
-    }
 
     fn get_known_field_value<V, T: FieldLike<V>>(
         &self,
@@ -121,12 +102,24 @@ pub trait FieldStore {
         }
     }
 
-    fn get_field_value_as_str(&self, field_id: &Uuid) -> Option<impl Deref<Target = Utf32CachedString>> {
-        self.get_field_value(field_id)?.try_map(|v| v.as_string_opt()).ok()
+    fn get_field_value_as_str(
+        &self,
+        field_id: &Uuid,
+    ) -> Option<impl Deref<Target = Utf32CachedString>> {
+        self.get_field_value(field_id)?
+            .try_map(|v| v.as_string_opt())
+            .ok()
     }
 
-    fn get_field_with_def<'a, 'b: 'a>(&'a self, field_id: &Uuid, vault: &'b Vault) -> Option<FieldDefValueRef<Ref<'b, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
-        Some(FieldDefValueRef::new(vault.get_definition(field_id)?, self.get_field_value(field_id)?))
+    fn get_field_with_def<'a, 'b: 'a>(
+        &'a self,
+        field_id: &Uuid,
+        vault: &'b Vault,
+    ) -> Option<FieldDefValueRef<Ref<'b, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
+        Some(FieldDefValueRef::new(
+            vault.get_definition(field_id)?,
+            self.get_field_value(field_id)?,
+        ))
     }
 
     fn iter_fields(&self) -> Iter<'_, Uuid, FieldValue> {
@@ -136,7 +129,8 @@ pub trait FieldStore {
     fn iter_fields_with_defs<'a, 'b: 'a>(
         &'a self,
         vault: &'b Vault,
-    ) -> impl Iterator<Item = FieldDefValueRef<Ref<'a, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>> {
+    ) -> impl Iterator<Item = FieldDefValueRef<Ref<'a, Uuid, FieldDefinition>, Ref<'a, Uuid, FieldValue>>>
+    {
         self.iter_fields()
             .map(|f| *f.key())
             .filter_map(|id| self.get_field_with_def(&id, vault))

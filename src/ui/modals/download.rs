@@ -40,8 +40,7 @@ const ROW_HEIGHT: f32 = 18.0;
 impl Download {
     fn select_gallery_dl(&mut self, app_state: AppStateRef) {
         self.loading_find = true;
-        let r = app_state.blocking_read();
-        r.add_task_request(self.find_request_id(), |state, p| {
+        app_state.add_task_request(self.find_request_id(), |state, p| {
             Promise::spawn_async(crate::tasks::download::select_gallery_dl(state, p))
         });
     }
@@ -280,17 +279,13 @@ impl AppModal for Download {
             log_file.push(format!("{}.txt", Uuid::new_v4()));
             self.params.log_file = Some(log_file.to_str().unwrap().to_string());
 
-            let r = app_state.blocking_read();
-            r.add_task_request(self.find_request_id(), |state, p| {
+            app_state.add_task_request(self.find_request_id(), |state, p| {
                 Promise::spawn_async(crate::tasks::download::find_gallery_dl(state, p))
             });
             self.loading_find = true;
         }
 
-        match app_state
-            .blocking_read()
-            .try_take_request_result(&self.find_request_id())
-        {
+        match app_state.try_take_request_result(&self.find_request_id()) {
             None => {}
             Some(res) => {
                 self.loading_find = false;
@@ -343,16 +338,13 @@ impl AppModal for Download {
                         modal.open();
                     } else {
                         let params = self.params.clone();
-                        app_state.blocking_read().add_task(
-                            self.params.task_name(),
-                            |state, progress| {
-                                Promise::spawn_async(
-                                    crate::tasks::download::perform_gallery_dl_download(
-                                        state, progress, params,
-                                    ),
-                                )
-                            },
-                        );
+                        app_state.add_task(self.params.task_name(), |state, progress| {
+                            Promise::spawn_async(
+                                crate::tasks::download::perform_gallery_dl_download(
+                                    state, progress, params,
+                                ),
+                            )
+                        });
                     }
                 }
                 if modal.button(ui, "Cancel").clicked() {}

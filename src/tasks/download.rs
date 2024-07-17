@@ -231,7 +231,7 @@ pub async fn perform_gallery_dl_download(
     let mut cmd = Command::new(prog.as_str());
     cmd.arg(params.source_url());
     cmd.arg("--directory")
-        .arg(state.read().await.current_vault()?.root_dir()?);
+        .arg(state.current_vault()?.root_dir()?);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 

@@ -103,11 +103,13 @@ impl AppState {
         }
     }
 
-    pub fn get_vault(&self, name: &String) -> Result<Arc<Vault>, AppError> {
+    pub fn get_vault(&self, name: &str) -> Result<Arc<Vault>, AppError> {
         self.vaults
             .get(name)
             .map(|r| r.clone())
-            .ok_or(AppError::VaultDoesNotExist { name: name.clone() })
+            .ok_or(AppError::VaultDoesNotExist {
+                name: name.to_owned(),
+            })
     }
 
     pub fn current_vault_name(&self) -> Option<String> {
@@ -307,9 +309,8 @@ impl AppState {
         self.preview.lock().unwrap().clone()
     }
 
-    pub fn preview_mut<R>(&self, f: impl FnOnce(&mut PreviewOptions) -> R) -> R {
-        let mut l = self.preview.lock().unwrap();
-        f(&mut l)
+    pub fn preview_mut(&self) -> MutexGuard<PreviewOptions> {
+        self.preview.lock().unwrap()
     }
 
     pub fn preview_texture(&self) -> Option<egui::TextureHandle> {
@@ -329,37 +330,28 @@ impl AppState {
 pub(crate) enum AppStateRef {
     #[default]
     Empty,
-    Filled(Arc<tokio::sync::RwLock<AppState>>),
+    Filled(Arc<AppState>),
 }
 
 impl AppStateRef {
     pub fn new(state: AppState) -> Self {
-        Self::Filled(Arc::new(tokio::sync::RwLock::new(state)))
+        Self::Filled(Arc::new(state))
     }
 
-    fn from_inner(inner: Arc<tokio::sync::RwLock<AppState>>) -> Self {
+    fn from_inner(inner: Arc<AppState>) -> Self {
         Self::Filled(inner)
     }
 
-    pub fn blocking_catch<T, E: Into<anyhow::Error>, S: Into<String>>(
-        &self,
-        context: impl FnOnce() -> S,
-        f: impl FnOnce(&AppState) -> Result<T, E>,
-    ) -> Result<T, ()> {
-        let r = self.blocking_read();
-        r.catch(context, || f(&r))
-    }
-
-    pub fn blocking_current_vault<S: Into<String>>(
+    pub fn current_vault_catch<S: Into<String>>(
         &self,
         context: impl FnOnce() -> S,
     ) -> Result<Arc<Vault>, ()> {
-        self.blocking_catch(context, |r| r.current_vault())
+        self.catch(context, || self.current_vault())
     }
 }
 
 impl Deref for AppStateRef {
-    type Target = Arc<tokio::sync::RwLock<AppState>>;
+    type Target = Arc<AppState>;
 
     fn deref(&self) -> &Self::Target {
         match self {

@@ -73,7 +73,7 @@ impl ManageVaults {
 
                 if ui.button("Open...").clicked() {
                     *error_message = None;
-                    state.blocking_read().add_task_request(req_name, |s, p| {
+                    state.add_task_request(req_name, |s, p| {
                         Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                     });
                 }
@@ -86,7 +86,7 @@ impl ManageVaults {
 
                 if ui.button("Change...").clicked() {
                     *error_message = None;
-                    state.blocking_read().add_task_request(req_name, |s, p| {
+                    state.add_task_request(req_name, |s, p| {
                         Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                     });
                 }
@@ -103,7 +103,7 @@ impl ManageVaults {
                     }
                     (Some(_), false) => {
                         if ui.button("Select").clicked() {
-                            if let Err(e) = state.blocking_read().set_current_vault_name(name) {
+                            if let Err(e) = state.set_current_vault_name(name) {
                                 self.widget_state.error_message = Some(e.to_string());
                             }
                         }
@@ -115,18 +115,16 @@ impl ManageVaults {
     //noinspection DuplicatedCode
     fn edit_ui(&mut self, ui: &mut egui::Ui, state: AppStateRef) {
         let vault_names = {
-            let r = state.blocking_read();
+            self.widget_state.current_name = state.current_vault_name();
 
-            self.widget_state.current_name = r.current_vault_name();
-
-            let vault_names = r.known_vault_names();
+            let vault_names = state.known_vault_names();
             for name in &vault_names {
                 let error_message = self
                     .widget_state
                     .vault_errors
                     .entry(name.clone())
                     .or_insert(None);
-                match r.try_take_request_result(name) {
+                match state.try_take_request_result(name) {
                     None => {}
                     Some(Ok(AsyncTaskResult::VaultLoaded { name: res_name, .. }))
                         if &res_name == name =>
@@ -146,7 +144,7 @@ impl ManageVaults {
                 }
             }
 
-            self.widget_state.vault_to_path = r.vault_name_to_file_paths();
+            self.widget_state.vault_to_path = state.vault_name_to_file_paths();
             vault_names
         };
 

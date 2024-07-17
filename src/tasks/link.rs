@@ -25,8 +25,6 @@ async fn link_single_sidecar(
 ) -> SingleImportResult {
     let sc_path_string = sidecar_path.to_string_lossy().to_string();
     let item = state
-        .read()
-        .await
         .current_vault()?
         .get_item_opt(&path)?
         .ok_or(anyhow!(AppError::MissingItem {
@@ -110,23 +108,20 @@ async fn link_single_sidecar(
         item.set_known_field_value(fields::tweet::LIKED_DATE, liked_date);
     }
 
-    {
-        let r = state.read().await;
-        let vault = r.current_vault()?;
-        let link_ref = item.link_ref()?;
+    let vault = state.current_vault()?;
+    let link_ref = item.link_ref()?;
 
-        vault.update_item(&path, item)?;
-        if let Some((other_vault_name, _)) = link_ref {
-            let other_vault = r.get_vault(&other_vault_name)?;
-            vault.update_link(&path, &other_vault)?;
-        }
+    vault.update_item(&path, item)?;
+    if let Some((other_vault_name, _)) = link_ref {
+        let other_vault = state.get_vault(&other_vault_name)?;
+        vault.update_link(&path, &other_vault)?;
     }
 
     Ok(path.into_boxed_path())
 }
 
 pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> AsyncTaskReturn {
-    let root_dir = state.read().await.current_vault()?.root_dir()?;
+    let root_dir = state.current_vault()?.root_dir()?;
 
     let entries = scan_recursively(
         root_dir.as_path(),
@@ -182,8 +177,7 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     .await?;
 
     {
-        let r = state.read().await;
-        let curr_vault = r.current_vault()?;
+        let curr_vault = state.current_vault()?;
         save_vault(curr_vault, progress.sub_task("Save", 0.05)).await?;
     }
 
@@ -195,28 +189,26 @@ async fn link_single_item(
     other_vault_name: Arc<String>,
     path: PathBuf,
 ) -> SingleImportResult {
-    let r = state.read().await;
-    let vault = r.current_vault()?;
-    let other_vault = r.get_vault(&other_vault_name)?;
+    let vault = state.current_vault()?;
+    let other_vault = state.get_vault(&other_vault_name)?;
 
-    {
-        let item = vault.get_item(&path)?;
-        let other_item = other_vault.get_item(&path)?;
-        item.set_known_field_value(
-            fields::general::LINK,
-            (
-                other_vault_name.to_string().into(),
-                other_item.path_string().clone(),
-            ),
-        );
-        other_item.set_known_field_value(
-            fields::general::LINK,
-            (
-                vault.name.to_string().into(),
-                path.to_string_lossy().to_string().into(),
-            ),
-        );
-    }
+    let item = vault.get_item(&path)?;
+    let other_item = other_vault.get_item(&path)?;
+    item.set_known_field_value(
+        fields::general::LINK,
+        (
+            other_vault_name.to_string().into(),
+            other_item.path_string().clone(),
+        ),
+    );
+    other_item.set_known_field_value(
+        fields::general::LINK,
+        (
+            vault.name.to_string().into(),
+            path.to_string_lossy().to_string().into(),
+        ),
+    );
+
     vault.update_link(&path, &other_vault)?;
 
     Ok(path.into_boxed_path())
@@ -230,8 +222,6 @@ pub async fn link_vaults_by_path(
     let other_name_arc = Arc::new(other_vault_name.clone());
 
     let paths: Vec<PathBuf> = state
-        .read()
-        .await
         .current_vault()?
         .iter_items()
         .map(|i| i.path().into())

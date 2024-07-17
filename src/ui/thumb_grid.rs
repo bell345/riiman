@@ -432,7 +432,7 @@ impl ThumbnailGrid {
         item_cache_is_new: bool,
         vault_is_new: bool,
     ) -> Option<egui::scroll_area::ScrollAreaOutput<()>> {
-        let vault = state.blocking_current_vault(|| "Thumbnail grid").ok()?;
+        let vault = state.current_vault_catch(|| "Thumbnail grid").ok()?;
 
         self.state = State::load(ui.ctx(), self.id()).unwrap_or_default();
 
@@ -447,7 +447,6 @@ impl ThumbnailGrid {
             let items = item_cache.resolve_all_refs(&vault);
 
             self.info = state
-                .blocking_read()
                 .catch(|| "Thumb grid", || compute(params, &items))
                 .ok()?;
         }
@@ -515,10 +514,9 @@ impl ThumbnailGrid {
                 self.last_vp = Some(vp.rect);
             });
 
-        let r = state.blocking_read();
         for params in self.lq_cache.drain_requests() {
             let vault = Arc::clone(&vault);
-            r.add_task(
+            state.add_task(
                 format!("Load thumbnail for {}", params.path.display()),
                 move |_, p| Promise::spawn_async(load_image_thumbnail_with_fs(vault, params, p)),
             );
@@ -526,7 +524,7 @@ impl ThumbnailGrid {
 
         for params in self.cache.drain_requests() {
             let vault = Arc::clone(&vault);
-            r.add_task(
+            state.add_task(
                 format!("Load thumbnail for {}", params.path.display()),
                 move |_, p| Promise::spawn_async(load_image_thumbnail(vault, params, p)),
             );

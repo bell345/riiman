@@ -48,13 +48,9 @@ impl AppModal for DeleteDefinition {
                     let app_state2 = app_state.clone();
                     let id = self.definition.id;
                     let n_items = *state.n_items.get_or_insert_with(move || {
-                        let r = app_state2.blocking_read();
-                        let Ok(vault) = r.current_vault() else {
-                            return 0;
-                        };
-
-                        let items = vault.find_items_by_tag(&id);
-                        items.len()
+                        app_state2
+                            .current_vault_opt()
+                            .map_or(0, |v| v.find_items_by_tag(&id).len())
                     });
 
                     if n_items > 0 {
@@ -66,7 +62,7 @@ impl AppModal for DeleteDefinition {
                     }
 
                     let vault =
-                        app_state.blocking_current_vault(|| self.definition.name.to_string())?;
+                        app_state.current_vault_catch(|| self.definition.name.to_string())?;
                     let descendants = vault.iter_descendants(&self.definition.id);
                     if !descendants.is_empty() {
                         ui.label("This will also delete all of the children of this tag:");
@@ -81,7 +77,7 @@ impl AppModal for DeleteDefinition {
             modal.buttons(ui, |ui| -> Result<(), ()> {
                 if modal.suggested_button(ui, "Delete").clicked() {
                     app_state
-                        .blocking_current_vault(|| self.definition.name.to_string())?
+                        .current_vault_catch(|| self.definition.name.to_string())?
                         .remove_definition(&self.definition.id);
                 }
                 modal.button(ui, "Cancel");

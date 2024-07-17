@@ -180,8 +180,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
                     ui.horizontal(|ui| {
                         let tag_res = ui.add(widgets::Tag::new(item.definition()));
                         if tag_res.clicked() {
-                            let r = app_state.blocking_read();
-                            r.add_dialog(EditTag::edit(item.definition().clone()));
+                            app_state.add_dialog(EditTag::edit(item.definition().clone()));
                         }
 
                         let tag_space = tag_res.rect.width();
@@ -242,7 +241,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             if ui.button("OK").clicked() || take_shortcut!(ui, Enter) {
                 item.clear();
                 item.update(&self.state.field_store);
-                if item.blocking_update_link(self.app_state.clone()).is_err() {
+                if item.update_link(self.app_state.clone()).is_err() {
                     return;
                 }
                 self.state.is_editing = false;
@@ -264,7 +263,14 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             let mut create_state = self.state.quick_create_state.clone();
             if let Some((k, v)) = self.create_ui(ui, &mut create_state, 200.0, &existing_ids) {
                 item.set_field_value(k, v);
-                if item.blocking_update_link(self.app_state.clone()).is_err() {
+                if self
+                    .app_state
+                    .catch(
+                        || format!("updating link for {}", item.path()),
+                        || item.update_link(self.app_state.clone()),
+                    )
+                    .is_err()
+                {
                     return;
                 }
                 self.state.is_adding = false;
@@ -291,7 +297,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             self.state.quick_create_state = Default::default();
         }
 
-        let shortcuts = self.app_state.blocking_read().shortcuts();
+        let shortcuts = self.app_state.shortcuts();
         for (shortcut, action) in shortcuts {
             if matches!(action, ShortcutAction::None) {
                 continue;
@@ -312,7 +318,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
                             }
                         }
 
-                        if item.blocking_update_link(self.app_state.clone()).is_err() {
+                        if item.update_link(self.app_state.clone()).is_err() {
                             return;
                         }
                     }
@@ -325,15 +331,14 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
         ui.label(egui::RichText::new(item.path()).text_style(egui::TextStyle::Heading));
 
         if ui.button("Open Preview").clicked() {
-            let r = self.app_state.blocking_read();
             let path = Path::new(item.path());
-            let Ok(abs_path) = r.catch(
+            let Ok(abs_path) = self.app_state.catch(
                 || format!("resolving abs path for {}", path.display()),
                 || self.vault.resolve_abs_path(path),
             ) else {
                 return;
             };
-            r.add_task("Load image preview", move |_, p| {
+            self.app_state.add_task("Load image preview", move |_, p| {
                 Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
             });
         }

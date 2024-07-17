@@ -99,8 +99,7 @@ impl TagTreeEntry {
         state: AppStateRef,
         selected_ids: &mut HashSet<Uuid>,
     ) -> Option<Response> {
-        let r = state.blocking_read();
-        let vault = r.current_vault_opt()?;
+        let vault = state.current_vault_opt()?;
         let def = vault.get_definition(&self.item.id)?;
         if self.children.is_empty() {
             Some(self.tag_ui(ui, &def, selected_ids))
@@ -132,6 +131,7 @@ impl TagTreeEntry {
     }
 }
 
+// TODO: ArrowUp and ArrowDown support for TagTree that respects collapsed tree items
 fn resolve_index(
     entries: &IndexMap<Uuid, TagTreeEntry>,
     mut index: usize,
@@ -230,8 +230,7 @@ impl<'a> Widget for TagTree<'a> {
             "TagTree",
         );
 
-        let r = self.app_state.blocking_read();
-        let Ok(vault) = r.catch(|| "tag tree", || r.current_vault()) else {
+        let Ok(vault) = self.app_state.current_vault_catch(|| "tag tree") else {
             return ui.label("");
         };
 
@@ -250,7 +249,7 @@ impl<'a> Widget for TagTree<'a> {
         if state.tree.is_none() || text_res.changed() || self.updated {
             state.search_query = TextSearchQuery::new(state.search_text.clone());
 
-            let Ok(search_results) = r.catch(
+            let Ok(search_results) = self.app_state.catch(
                 || "tag tree",
                 || evaluate_field_search(&vault, &state.search_query, None, None),
             ) else {
