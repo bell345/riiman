@@ -241,7 +241,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             if ui.button("OK").clicked() || take_shortcut!(ui, Enter) {
                 item.clear();
                 item.update(&self.state.field_store);
-                if item.update_link(self.app_state.clone()).is_err() {
+                if self.app_state.commit_item_catch(None, item).is_err() {
                     return;
                 }
                 self.state.is_editing = false;
@@ -263,14 +263,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             let mut create_state = self.state.quick_create_state.clone();
             if let Some((k, v)) = self.create_ui(ui, &mut create_state, 200.0, &existing_ids) {
                 item.set_field_value(k, v);
-                if self
-                    .app_state
-                    .catch(
-                        || format!("updating link for {}", item.path()),
-                        || item.update_link(self.app_state.clone()),
-                    )
-                    .is_err()
-                {
+                if self.app_state.commit_item_catch(None, item).is_err() {
                     return;
                 }
                 self.state.is_adding = false;
@@ -318,7 +311,7 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
                             }
                         }
 
-                        if item.update_link(self.app_state.clone()).is_err() {
+                        if self.app_state.commit_item_catch(None, item).is_err() {
                             return;
                         }
                     }

@@ -61,8 +61,7 @@ impl AppModal for DeleteDefinition {
                         ));
                     }
 
-                    let vault =
-                        app_state.current_vault_catch(|| self.definition.name.to_string())?;
+                    let vault = app_state.current_vault_catch()?;
                     let descendants = vault.iter_descendants(&self.definition.id);
                     if !descendants.is_empty() {
                         ui.label("This will also delete all of the children of this tag:");
@@ -77,7 +76,7 @@ impl AppModal for DeleteDefinition {
             modal.buttons(ui, |ui| -> Result<(), ()> {
                 if modal.suggested_button(ui, "Delete").clicked() {
                     app_state
-                        .current_vault_catch(|| self.definition.name.to_string())?
+                        .current_vault_catch()?
                         .remove_definition(&self.definition.id);
                 }
                 modal.button(ui, "Cancel");

@@ -63,6 +63,7 @@ pub async fn load_vault_from_path(
     let vault = serde_json::from_str::<Vault>(contents.as_str())
         .with_context(|| format!("while deserialising vault file at {path}"))?
         .with_file_path(Path::new(&path))
+        .with_id_lookup()
         .with_standard_defs();
 
     let name = vault.name.clone();
@@ -136,14 +137,5 @@ pub async fn save_current_vault(
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     let vault = state.current_vault()?;
-    save_vault(vault, progress).await
-}
-
-pub async fn save_vault_by_name(
-    state: AppStateRef,
-    progress: ProgressSenderRef,
-    name: String,
-) -> AsyncTaskReturn {
-    let vault = state.get_vault(&name)?;
     save_vault(vault, progress).await
 }

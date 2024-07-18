@@ -1,8 +1,8 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::ops::Deref;
 use std::path::Path;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::data::{
@@ -212,14 +212,14 @@ pub fn evaluate_filter(
     })
 }
 
-pub fn evaluate_items_filter<'a>(
-    vault: &'a Vault,
+pub fn evaluate_items_filter(
+    vault: &Vault,
     filter: &FilterExpression,
-) -> anyhow::Result<Vec<impl Deref<Target = Item> + 'a>> {
+) -> anyhow::Result<Vec<Arc<Item>>> {
     let mut items = vec![];
     for item in vault.iter_items() {
         if evaluate_filter(&item, vault, filter)? {
-            items.push(item);
+            items.push(Arc::clone(&item));
         }
     }
 

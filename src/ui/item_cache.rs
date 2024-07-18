@@ -2,9 +2,9 @@ use crate::data::{FilterExpression, Item, Vault};
 use crate::state::AppStateRef;
 use crate::tasks::sort::{get_filtered_and_sorted_items, SortExpression};
 use chrono::{DateTime, Utc};
-use dashmap::mapref::one::Ref;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ItemCacheParams {
@@ -63,7 +63,7 @@ impl ItemCache {
         Some(true)
     }
 
-    pub fn resolve_all_refs<'a, 'b: 'a>(&'a self, vault: &'b Vault) -> Vec<Ref<String, Item>> {
+    pub fn resolve_all_refs(&self, vault: &Vault) -> Vec<Arc<Item>> {
         self.item_paths
             .iter()
             .filter_map(|p| vault.get_item_opt(Path::new(p)).expect("valid path"))
@@ -74,7 +74,7 @@ impl ItemCache {
         &'a self,
         vault: &'b Vault,
         paths: Vec<&String>,
-    ) -> Vec<Ref<String, Item>> {
+    ) -> Vec<Arc<Item>> {
         let existing_items = self.item_path_set();
         paths
             .into_iter()

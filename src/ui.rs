@@ -205,7 +205,7 @@ impl App {
                     results,
                 }) => {
                     self.state.save_current_vault();
-                    self.state.save_vault_by_name(other_vault_name.clone());
+                    self.state.save_vault_by_name(&other_vault_name);
 
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -316,7 +316,7 @@ impl App {
     fn import_menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Import", |ui| -> Result<(), ()> {
             if ui.button("Import...").clicked() {
-                let vault = self.state.current_vault_catch(|| "Import one")?;
+                let vault = self.state.current_vault_catch()?;
                 self.add_task("Import one", |_, p| {
                     Promise::spawn_async(crate::tasks::import::select_and_import_one(vault, p))
                 });
@@ -327,7 +327,7 @@ impl App {
             if ui.button("Import all files").clicked() {
                 info!("Import all clicked!");
 
-                let vault = self.state.current_vault_catch(|| "Import one")?;
+                let vault = self.state.current_vault_catch()?;
                 self.add_task("Import to vault", |_, p| {
                     Promise::spawn_async(crate::tasks::import::import_images_recursively(vault, p))
                 });
@@ -551,7 +551,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .max_width(350.0)
-                    .show_viewport(ui, |ui, _vp| -> Result<(), ()> {
+                    .show_viewport(ui, |ui, _vp| -> Option<()> {
                         let len = self.item_list_cache.len_items();
                         ui.label(format!("{} item{}", len, if len == 1 { "" } else { "s" }));
                         ui.horizontal(|ui| {
@@ -562,7 +562,7 @@ impl App {
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
-                        let vault = self.state.current_vault_catch(|| "right panel")?;
+                        let vault = self.state.current_vault_opt()?;
 
                         let items = self.thumbnail_grid.view_selected_paths(|paths| {
                             self.item_list_cache.resolve_refs(&vault, paths)
@@ -575,7 +575,7 @@ impl App {
                             self.state.clone(),
                         ));
 
-                        Ok(())
+                        Some(())
                     });
             },
         );
@@ -603,7 +603,7 @@ impl App {
                 .inner;
 
             if let Some(path) = self.thumbnail_grid.double_clicked.as_ref() {
-                if let Ok(vault) = self.state.current_vault_catch(|| "double click") {
+                if let Ok(vault) = self.state.current_vault_catch() {
                     let path = Path::new(path.as_str());
                     if let Ok(abs_path) = vault.resolve_abs_path(path) {
                         self.add_task("Load image preview", move |_, p| {

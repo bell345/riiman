@@ -1,7 +1,7 @@
+use derive_more::Display;
 use std::cmp::Ordering;
 use std::ops::{Deref, Not};
-
-use derive_more::Display;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::data::{kind, FieldDefinition, FieldStore, Item, SerialColour, Vault};
@@ -116,7 +116,7 @@ pub fn get_filtered_and_sorted_items<'a, 'b>(
     vault: &'a Vault,
     filter: &'b FilterExpression,
     sorts: &'b [SortExpression],
-) -> anyhow::Result<Vec<impl Deref<Target = Item> + 'a>> {
+) -> anyhow::Result<Vec<Arc<Item>>> {
     let mut items = evaluate_items_filter(vault, filter)?;
 
     for sort in sorts.iter().rev() {

@@ -42,7 +42,7 @@ impl TagShortcuts {
         });
 
         row.cell(|ui| {
-            let Ok(vault) = state.current_vault_catch(|| "tag shortcuts window") else {
+            let Ok(vault) = state.current_vault_catch() else {
                 return;
             };
             match action {

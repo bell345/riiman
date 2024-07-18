@@ -349,7 +349,7 @@ impl EditTag {
         ui.heading("Edit properties");
 
         egui::ScrollArea::vertical().show_viewport(ui, |ui, _vp| -> Result<(), ()> {
-            let vault = self.app_state.current_vault_catch(|| "edit tag")?;
+            let vault = self.app_state.current_vault_catch()?;
 
             egui_extras::TableBuilder::new(ui)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -447,7 +447,7 @@ impl EditTag {
                 return Err("Name must not be empty".into());
             }
 
-            let Ok(vault) = self.app_state.current_vault_catch(|| "verify edit tag") else {
+            let Ok(vault) = self.app_state.current_vault_catch() else {
                 return Err("No vault found".into());
             };
 
@@ -486,9 +486,7 @@ impl EditTag {
                     || self.updated
                 {
                     if let Some(id) = widget_state.selected_tag_ids.first() {
-                        let vault = self
-                            .app_state
-                            .current_vault_catch(|| "edit tag set definition")?;
+                        let vault = self.app_state.current_vault_catch()?;
                         let def = vault.get_definition(id).map(|r| r.clone());
                         if let Some(def) = def {
                             self.set_existing_definition(def);
@@ -570,7 +568,7 @@ impl AppModal for EditTag {
                 self.bottom_button_ui(ui);
 
                 egui::CentralPanel::default().show_inside(ui, |ui| -> Result<(), ()> {
-                    let vault = self.app_state.current_vault_catch(|| "edit tag")?;
+                    let vault = self.app_state.current_vault_catch()?;
 
                     if let Some(def) = self.definition.as_ref() {
                         if self.is_new || vault.get_definition(&def.id).is_some() {

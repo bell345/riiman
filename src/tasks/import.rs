@@ -26,7 +26,7 @@ async fn import_single_image(
     path: Box<Path>,
     last_modified: DateTime<Utc>,
 ) -> SingleImportResult {
-    let item = vault.get_cloned_item_or_default(&path)?;
+    let item = vault.get_item_or_init(&path)?;
 
     let mime_type = item
         .get_known_field_value(fields::general::MEDIA_TYPE)?
@@ -78,7 +78,7 @@ async fn import_single_image(
         item.set_known_field_value(fields::image::WIDTH, width);
     }
 
-    vault.update_item(&path, item)?;
+    vault.set_last_updated();
 
     Ok(path)
 }

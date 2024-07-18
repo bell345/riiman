@@ -13,9 +13,28 @@ pub struct ThumbnailPosition {
     pub last_modified: Option<DateTime<Utc>>,
     pub inner_bounds: egui::Rect,
     pub outer_bounds: egui::Rect,
+    pub id: egui::Id,
 }
 
 impl ThumbnailPosition {
+    pub fn new(
+        rel_path: String,
+        abs_path: String,
+        last_modified: Option<DateTime<Utc>>,
+        inner_bounds: egui::Rect,
+        outer_bounds: egui::Rect,
+    ) -> Self {
+        let id = abs_path.clone().into();
+        Self {
+            rel_path,
+            abs_path,
+            last_modified,
+            inner_bounds,
+            outer_bounds,
+            id,
+        }
+    }
+
     pub fn params(&self, height: usize) -> ThumbnailParams {
         ThumbnailParams {
             rel_path: self.rel_path.clone(),
@@ -118,13 +137,13 @@ pub fn compute(
         let new_size = egui::Vec2::new(size.x / size.y * inner_height, inner_height);
         let bounds = egui::Rect::from_min_size(curr_pos + params.padding, new_size);
         let outer_bounds = bounds.expand2(params.padding);
-        curr_row.push(ThumbnailPosition {
+        curr_row.push(ThumbnailPosition::new(
             rel_path,
             abs_path,
             last_modified,
-            inner_bounds: bounds,
+            bounds,
             outer_bounds,
-        });
+        ));
         curr_pos.x += outer_bounds.size().x;
         sum_of_ratios += bounds.aspect_ratio();
         inner_width_sum += new_size.x;

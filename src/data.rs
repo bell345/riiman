@@ -18,7 +18,7 @@ pub use item::Item;
 pub use preview::PreviewOptions;
 pub use shortcut::ShortcutAction;
 pub use string::Utf32CachedString;
-pub use thumbnail::{ThumbnailCache, ThumbnailCacheItem, ThumbnailParams, ThumbnailPosition};
+pub use thumbnail::{ThumbnailCache, ThumbnailCacheItem, ThumbnailParams};
 pub use transform::Params as TransformParams;
 pub use vault::Vault;
 

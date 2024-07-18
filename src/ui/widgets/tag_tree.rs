@@ -230,7 +230,7 @@ impl<'a> Widget for TagTree<'a> {
             "TagTree",
         );
 
-        let Ok(vault) = self.app_state.current_vault_catch(|| "tag tree") else {
+        let Ok(vault) = self.app_state.current_vault_catch() else {
             return ui.label("");
         };
 

@@ -6,10 +6,11 @@ use indexmap::IndexMap;
 use poll_promise::Promise;
 use std::collections::HashMap;
 use std::ops::Deref;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::data::{
-    FieldStore, FilterExpression, PreviewOptions, ShortcutAction, ThumbnailCache,
+    kind, FieldStore, FilterExpression, Item, PreviewOptions, ShortcutAction, ThumbnailCache,
     ThumbnailCacheItem, ThumbnailParams, Vault,
 };
 use crate::errors::AppError;
@@ -93,11 +94,11 @@ impl Default for AppState {
             sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
         };
 
-        for shortcut in DEFAULT_SHORTCUTS {
-            res.shortcuts
-                .lock()
-                .unwrap()
-                .insert(shortcut, ShortcutAction::None);
+        {
+            let mut shortcuts = res.shortcuts.lock().unwrap();
+            for shortcut in DEFAULT_SHORTCUTS {
+                shortcuts.insert(shortcut, ShortcutAction::None);
+            }
         }
 
         res
@@ -179,6 +180,57 @@ impl AppState {
             .iter()
             .filter_map(|r| Some((r.name.clone(), r.file_path.clone()?.to_str()?.to_string())))
             .collect()
+    }
+
+    fn update_item_link(
+        &self,
+        vault: &Vault,
+        item: &Item,
+    ) -> anyhow::Result<Option<kind::ItemRef>> {
+        let Some((other_vault_name, other_path)) =
+            item.get_known_field_value(fields::general::LINK)?
+        else {
+            return Ok(None);
+        };
+        let other_vault = self.get_vault(&other_vault_name)?;
+
+        let other_item = other_vault.get_item(Path::new(&other_path.to_string()))?;
+
+        for field in item.iter_fields_with_defs(vault) {
+            if field.definition().has_field(&fields::meta::NO_LINK.id) {
+                continue;
+            }
+
+            other_vault.set_definition(field.definition().clone());
+            other_item.set_field_value(field.definition().id, field.value().clone());
+        }
+
+        let mut fields_to_remove = vec![];
+        for field in other_item.iter_fields_with_defs(&other_vault) {
+            let id = field.definition().id;
+            if field.definition().has_field(&fields::meta::NO_LINK.id) {
+                continue;
+            }
+
+            if !item.has_field(&id) {
+                fields_to_remove.push(id);
+            }
+        }
+
+        for id in fields_to_remove {
+            other_item.remove_field(&id);
+        }
+
+        Ok(Some(kind::ItemRef((other_vault_name, other_path))))
+    }
+
+    pub fn commit_item(&self, vault: Arc<Vault>, item: &Item) -> anyhow::Result<()> {
+        let link_res = self.update_item_link(&vault, &item)?;
+        if let Some(kind::ItemRef((other_vault_name, _))) = link_res.as_ref() {
+            self.save_vault_by_name(&other_vault_name);
+        }
+        self.save_vault(vault);
+        Ok(())
     }
 
     fn add_task_impl(
@@ -287,10 +339,18 @@ impl AppState {
         });
     }
 
-    pub fn save_vault_by_name(&self, name: String) {
-        self.add_task(format!("Save {name} vault"), |state, p| {
-            Promise::spawn_async(crate::tasks::vault::save_vault_by_name(state, p, name))
+    pub fn save_vault(&self, vault: Arc<Vault>) {
+        self.add_task(format!("Save {} vault", vault.name), |_, p| {
+            Promise::spawn_async(crate::tasks::vault::save_vault(vault, p))
         });
+    }
+
+    pub fn save_vault_by_name(&self, name: &str) {
+        let ctx = format!("Save {name} vault");
+        let Ok(vault) = self.catch(|| ctx.clone(), || self.get_vault(name)) else {
+            return;
+        };
+        self.save_vault(vault);
     }
 
     pub fn filter(&self) -> MutexGuard<'_, FilterExpression> {
@@ -353,7 +413,7 @@ impl AppState {
         self.thumbnail_cache.commit(params, item);
     }
 
-    pub fn resolve_thumbnail(&self, params: ThumbnailParams) -> ThumbnailCacheItem {
+    pub fn resolve_thumbnail(&self, params: &ThumbnailParams) -> ThumbnailCacheItem {
         let mut thumb = ThumbnailCacheItem::Loading;
         if params.height != THUMBNAIL_LOW_QUALITY_HEIGHT {
             thumb = self.thumbnail_cache.read(params.clone());
@@ -390,11 +450,18 @@ impl AppStateRef {
         Self::Filled(inner)
     }
 
-    pub fn current_vault_catch<S: Into<String>>(
-        &self,
-        context: impl FnOnce() -> S,
-    ) -> Result<Arc<Vault>, ()> {
-        self.catch(context, || self.current_vault())
+    pub fn current_vault_catch(&self) -> Result<Arc<Vault>, ()> {
+        self.catch(|| "getting current vault", || self.current_vault())
+    }
+
+    pub fn commit_item_catch(&self, vault: Option<Arc<Vault>>, item: &Item) -> Result<(), ()> {
+        let vault = vault
+            .or_else(|| self.current_vault_catch().ok())
+            .ok_or(())?;
+        self.catch(
+            || format!("updating item {}", item.path()),
+            || self.commit_item(vault, item),
+        )
     }
 }
 

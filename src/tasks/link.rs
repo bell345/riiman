@@ -6,8 +6,9 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
+use tokio::task::spawn_blocking;
 
-use crate::data::{FieldStore, FieldValue};
+use crate::data::{FieldStore, FieldValue, Vault};
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
@@ -24,13 +25,8 @@ async fn link_single_sidecar(
     sidecar_date: DateTime<Utc>,
 ) -> SingleImportResult {
     let sc_path_string = sidecar_path.to_string_lossy().to_string();
-    let item = state
-        .current_vault()?
-        .get_item_opt(&path)?
-        .ok_or(anyhow!(AppError::MissingItem {
-            path: path.to_string_lossy().into()
-        }))?
-        .clone();
+    let vault = state.current_vault()?;
+    let item = vault.get_item(&path)?;
 
     if let Some(item_updated) = item.get_known_field_value(fields::general::SIDECAR_LAST_UPDATED)? {
         if sidecar_date <= item_updated {
@@ -108,14 +104,7 @@ async fn link_single_sidecar(
         item.set_known_field_value(fields::tweet::LIKED_DATE, liked_date);
     }
 
-    let vault = state.current_vault()?;
-    let link_ref = item.link_ref()?;
-
-    vault.update_item(&path, item)?;
-    if let Some((other_vault_name, _)) = link_ref {
-        let other_vault = state.get_vault(&other_vault_name)?;
-        vault.update_link(&path, &other_vault)?;
-    }
+    state.commit_item(vault, &item)?;
 
     Ok(path.into_boxed_path())
 }
@@ -184,20 +173,20 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     Ok(AsyncTaskResult::None)
 }
 
-async fn link_single_item(
+#[allow(clippy::needless_pass_by_value)]
+fn link_single_item(
+    vault: Arc<Vault>,
+    other_vault: Arc<Vault>,
     state: AppStateRef,
-    other_vault_name: Arc<String>,
     path: PathBuf,
 ) -> SingleImportResult {
-    let vault = state.current_vault()?;
-    let other_vault = state.get_vault(&other_vault_name)?;
-
     let item = vault.get_item(&path)?;
     let other_item = other_vault.get_item(&path)?;
+
     item.set_known_field_value(
         fields::general::LINK,
         (
-            other_vault_name.to_string().into(),
+            other_vault.name.to_string().into(),
             other_item.path_string().clone(),
         ),
     );
@@ -209,9 +198,20 @@ async fn link_single_item(
         ),
     );
 
-    vault.update_link(&path, &other_vault)?;
+    state.commit_item(vault, &item)?;
 
     Ok(path.into_boxed_path())
+}
+
+async fn link_single_item_task(
+    vault: Arc<Vault>,
+    other_vault: Arc<Vault>,
+    state: AppStateRef,
+    path: PathBuf,
+) -> SingleImportResult {
+    spawn_blocking(|| link_single_item(vault, other_vault, state, path))
+        .await
+        .unwrap()
 }
 
 pub async fn link_vaults_by_path(
@@ -219,18 +219,22 @@ pub async fn link_vaults_by_path(
     state: AppStateRef,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    let other_name_arc = Arc::new(other_vault_name.clone());
+    let vault = state.current_vault()?;
+    let other_vault = state.get_vault(&other_vault_name)?;
 
-    let paths: Vec<PathBuf> = state
-        .current_vault()?
-        .iter_items()
-        .map(|i| i.path().into())
-        .collect();
+    let paths: Vec<PathBuf> = vault.iter_items().map(|i| i.path().into()).collect();
 
     let results = process_many(
         paths,
         progress,
-        |path| link_single_item(state.clone(), other_name_arc.clone(), path),
+        |path| {
+            link_single_item_task(
+                Arc::clone(&vault),
+                Arc::clone(&other_vault),
+                state.clone(),
+                path,
+            )
+        },
         on_import_result_send_progress,
         4,
     )

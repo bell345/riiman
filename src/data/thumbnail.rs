@@ -19,7 +19,7 @@ impl ThumbnailParams {
         Self {
             abs_path: self.abs_path.clone(),
             rel_path: self.rel_path.clone(),
-            last_modified: self.last_modified.clone(),
+            last_modified: self.last_modified,
             height,
         }
     }
@@ -44,14 +44,6 @@ impl ThumbnailParams {
         let buf: PathBuf = [root_folder, folder, file].iter().collect();
         buf.into()
     }
-}
-
-#[derive(Debug)]
-pub struct ThumbnailPosition {
-    pub path: String,
-    pub last_modified: Option<DateTime<Utc>>,
-    pub inner_bounds: egui::Rect,
-    pub outer_bounds: egui::Rect,
 }
 
 #[derive(Clone, PartialEq, Eq)]

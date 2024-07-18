@@ -37,30 +37,6 @@ impl Item {
     pub fn path_string(&self) -> &Utf32CachedString {
         &self.path
     }
-
-    pub fn link_ref(&self) -> anyhow::Result<Option<(Utf32CachedString, Utf32CachedString)>> {
-        self.get_known_field_value(fields::general::LINK)
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn update_link(&self, state: AppStateRef) -> anyhow::Result<bool> {
-        let vault = state.current_vault()?;
-        let link_ref = self.link_ref()?;
-
-        let mut item_ref_opt = None;
-        if let Some((other_vault_name, _)) = link_ref {
-            let other_vault = state.get_vault(&other_vault_name)?;
-            item_ref_opt = vault.update_link(Path::new(self.path()), &other_vault)?;
-        }
-
-        state.save_current_vault();
-        if let Some(kind::ItemRef((other_vault_name, _))) = item_ref_opt {
-            state.save_vault_by_name(other_vault_name.to_string());
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
 }
 
 impl FieldStore for Item {
@@ -81,9 +57,8 @@ mod test {
         let path = Path::new("path");
         //let mut item = vault.ensure_item_mut(Path::new("path")).unwrap();
 
-        let item = vault.get_cloned_item_or_default(path).unwrap();
+        let item = vault.get_item_or_init(path).unwrap();
         item.set_known_field_value(fields::image::WIDTH, 200);
-        vault.update_item(path, item).unwrap();
 
         let item = vault.get_item_opt(path).unwrap().unwrap();
 

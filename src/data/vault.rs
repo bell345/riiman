@@ -3,11 +3,12 @@ use chrono::{DateTime, TimeZone, Utc};
 use std::collections::{HashSet, VecDeque};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::{Ref, RefMut};
 use dashmap::DashMap;
+use eframe::egui;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -24,11 +25,13 @@ pub struct Vault {
     pub name: String,
     definitions: DashMap<Uuid, FieldDefinition>,
     fields: DashMap<Uuid, FieldValue>,
-    items: DashMap<String, Item>,
+    items: DashMap<String, Arc<Item>>,
     last_updated: Mutex<Option<DateTime<Utc>>>,
 
     #[serde(skip)]
     pub file_path: Option<Box<Path>>,
+    #[serde(skip)]
+    items_by_id: DashMap<egui::Id, Weak<Item>>,
 }
 
 enum HierarchyWalkPosition {
@@ -59,6 +62,22 @@ impl Vault {
         self
     }
 
+    pub fn with_id_lookup(self) -> Self {
+        if self.file_path.is_none() {
+            return self;
+        }
+
+        for item in &self.items {
+            let Ok(abs_path) = self.resolve_abs_path(Path::new(item.path())) else {
+                break;
+            };
+            self.items_by_id
+                .insert(egui::Id::new(abs_path), Arc::downgrade(item.value()));
+        }
+
+        self
+    }
+
     pub fn with_standard_defs(self) -> Self {
         for def in fields::defs() {
             self.set_definition((*def).clone());
@@ -83,7 +102,7 @@ impl Vault {
             .unwrap_or(Utc.timestamp_nanos(0))
     }
 
-    fn set_last_updated(&self) {
+    pub fn set_last_updated(&self) {
         *self.last_updated.lock().unwrap() = Some(Utc::now());
     }
 
@@ -172,92 +191,45 @@ impl Vault {
             .to_string())
     }
 
-    pub fn get_item_opt(&self, path: &Path) -> anyhow::Result<Option<Ref<String, Item>>> {
+    pub fn get_item_opt(&self, path: &Path) -> anyhow::Result<Option<Arc<Item>>> {
         let rel_path = self.resolve_rel_path(path)?;
-        Ok(self.items.get(rel_path))
+        Ok(self.items.get(rel_path).map(|r| Arc::clone(&r)))
     }
 
-    pub fn get_item(&self, path: &Path) -> anyhow::Result<Ref<String, Item>> {
+    pub fn get_item(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
         self.get_item_opt(path)?
             .ok_or(anyhow!(AppError::MissingItem {
                 path: path.to_string_lossy().into_owned()
             }))
     }
 
-    pub fn get_cloned_item_or_default(&self, path: &Path) -> anyhow::Result<Item> {
-        let rel_path = self.resolve_rel_path(path)?.to_string();
-        Ok(self
-            .items
-            .get(&rel_path)
-            .map_or_else(|| Item::new(rel_path), |i| i.value().clone()))
+    pub fn get_item_opt_by_id(&self, id: egui::Id) -> Option<Arc<Item>> {
+        self.items_by_id.get(&id).and_then(|r| r.upgrade())
     }
 
-    pub fn update_item(&self, path: &Path, item: Item) -> anyhow::Result<()> {
-        let rel_path = self.resolve_rel_path(path)?.to_string();
-        self.items
-            .entry(rel_path.clone())
-            .and_modify(|it| {
-                for r in item.iter_fields() {
-                    it.set_field_value(*r.key(), r.value().clone());
-                }
-            })
-            .or_insert(item);
-
-        self.set_last_updated();
-
-        Ok(())
+    pub fn get_item_by_id(&self, id: egui::Id) -> anyhow::Result<Arc<Item>> {
+        self.get_item_opt_by_id(id)
+            .ok_or(anyhow!(AppError::MissingItemId { id }))
     }
 
-    pub fn update_link(
-        &self,
-        path: &Path,
-        other_vault: &Vault,
-    ) -> anyhow::Result<Option<kind::ItemRef>> {
-        let item = self.get_item(path)?;
-
-        let Some(link_val) = item.get_field_value(&fields::general::LINK.id) else {
-            return Ok(None);
-        };
-
-        let (other_vault_name, other_path) = link_val.as_itemref()?.clone();
-        drop(link_val);
-
-        let other_item = other_vault.get_item(Path::new(&other_path.to_string()))?;
-
-        for field in item.iter_fields_with_defs(self) {
-            if field.definition().has_field(&fields::meta::NO_LINK.id) {
-                continue;
-            }
-
-            other_vault.set_definition(field.definition().clone());
-            other_item.set_field_value(field.definition().id, field.value().clone());
-        }
-
-        let mut fields_to_remove = vec![];
-        for field in other_item.iter_fields_with_defs(other_vault) {
-            let id = field.definition().id;
-            if field.definition().has_field(&fields::meta::NO_LINK.id) {
-                continue;
-            }
-
-            if !item.has_field(&id) {
-                fields_to_remove.push(id);
-            }
-        }
-
-        for id in fields_to_remove {
-            other_item.remove_field(&id);
-        }
-
-        Ok(Some(kind::ItemRef((
-            other_vault_name.clone(),
-            other_path.clone(),
-        ))))
+    pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
+        let rel_path = self.resolve_rel_path(path)?;
+        let abs_path = self.resolve_abs_path(path)?;
+        Ok(self.items.get(rel_path).map_or_else(
+            || {
+                let item = Arc::new(Item::new(rel_path.to_owned()));
+                self.items_by_id
+                    .insert(egui::Id::new(abs_path), Arc::downgrade(&item));
+                self.set_last_updated();
+                item
+            },
+            |i| Arc::clone(i.value()),
+        ))
     }
 
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
-        let rel_path = self.resolve_rel_path(path)?.to_string();
-        self.items.remove(&rel_path);
+        let rel_path = self.resolve_rel_path(path)?;
+        self.items.remove(rel_path);
 
         Ok(())
     }
@@ -266,7 +238,7 @@ impl Vault {
         self.items.len()
     }
 
-    pub fn iter_items(&self) -> impl Iterator<Item = RefMulti<'_, String, Item>> {
+    pub fn iter_items(&self) -> impl Iterator<Item = RefMulti<'_, String, Arc<Item>>> {
         self.items.iter()
     }
 
@@ -318,13 +290,13 @@ impl Vault {
         res
     }
 
-    pub fn find_items_by_tag(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Item>> {
+    pub fn find_items_by_tag(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Arc<Item>>> {
         self.iter_items()
             .filter(|item| item.has_tag(self, id).is_ok_and(|v| v))
             .collect()
     }
 
-    pub fn find_items_by_field(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Item>> {
+    pub fn find_items_by_field(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Arc<Item>>> {
         self.iter_items()
             .filter(|item| item.has_field(id))
             .collect()
