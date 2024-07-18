@@ -112,13 +112,11 @@ fn cmp_by_field(
     }
 }
 
-pub fn get_filtered_and_sorted_items<'a, 'b>(
-    vault: &'a Vault,
-    filter: &'b FilterExpression,
-    sorts: &'b [SortExpression],
-) -> anyhow::Result<Vec<Arc<Item>>> {
-    let mut items = evaluate_items_filter(vault, filter)?;
-
+pub fn sort_items_unstable(
+    items: &mut [Arc<Item>],
+    vault: &Vault,
+    sorts: &[SortExpression],
+) -> anyhow::Result<()> {
     for sort in sorts.iter().rev() {
         let sort_dir: &SortDirection;
         match sort {
@@ -139,6 +137,18 @@ pub fn get_filtered_and_sorted_items<'a, 'b>(
             items.reverse();
         }
     }
+
+    Ok(())
+}
+
+pub fn get_filtered_and_sorted_items(
+    vault: &Vault,
+    filter: &FilterExpression,
+    sorts: &[SortExpression],
+) -> anyhow::Result<Vec<Arc<Item>>> {
+    let mut items = evaluate_items_filter(vault, filter)?;
+
+    sort_items_unstable(&mut items, vault, sorts)?;
 
     Ok(items)
 }

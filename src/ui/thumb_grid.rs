@@ -5,15 +5,16 @@ use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
 use crate::tasks::thumbnail::{load_image_thumbnail, load_image_thumbnail_with_fs};
 use crate::tasks::{ThumbnailGridInfo, ThumbnailGridParams};
 use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::item_cache::ItemCache;
 use crate::ui::theme::get_accent_color;
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use eframe::egui;
 use eframe::egui::TextureHandle;
 use itertools::Itertools;
+use ordered_float::OrderedFloat;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::ops::Add;
 use std::sync::Arc;
 use tracing::info;
@@ -380,23 +381,22 @@ impl ThumbnailGrid {
     pub fn update(
         &mut self,
         ui: &mut egui::Ui,
+        vp_rect: egui::Rect,
         app_state: AppStateRef,
-        item_cache: &ItemCache,
+        item_ids: &[ItemId],
         item_cache_is_new: bool,
-    ) -> Option<egui::scroll_area::ScrollAreaOutput<()>> {
+    ) -> Option<()> {
         self.app_state = app_state;
         self.state = State::load(ui.ctx(), self.id()).unwrap_or_default();
-
-        self.params.container_width = ui.available_width().floor();
 
         let thumbnail_grid_is_new = self.info.params != self.params;
         if item_cache_is_new || thumbnail_grid_is_new {
             self.set_scroll = true;
             ui.ctx().request_repaint();
 
-            let vault = self.app_state.current_vault_catch().ok()?;
+            let vault = self.app_state.current_vault_opt()?;
             let params = self.params.clone();
-            let items = item_cache.resolve_all_refs(&vault);
+            let items = vault.resolve_item_ids(item_ids);
 
             self.info = self
                 .app_state
@@ -404,8 +404,8 @@ impl ThumbnailGrid {
                 .ok()?;
         }
 
-        if item_cache_is_new && item_cache.len_items() != 0 {
-            let included_ids = item_cache.item_id_set();
+        if item_cache_is_new && !item_ids.is_empty() {
+            let included_ids: HashSet<ItemId> = item_ids.iter().copied().collect();
             let mut to_remove = vec![];
             for item in &self.state.checked_items {
                 if !included_ids.contains(item.key()) {
@@ -417,44 +417,46 @@ impl ThumbnailGrid {
             }
         }
 
-        let res = egui::ScrollArea::vertical()
-            .auto_shrink([false; 2])
-            .animated(false)
-            .show_viewport(ui, |ui, vp_rect| {
-                if self.info.thumbnails.is_empty() {
-                    return;
-                }
+        if self.info.thumbnails.is_empty() {
+            return None;
+        }
 
-                let vp = self.compute_viewport_info(ui, vp_rect);
+        let vp = self.compute_viewport_info(ui, vp_rect);
 
-                let grid = std::mem::take(&mut self.info);
+        let grid = std::mem::take(&mut self.info);
 
-                let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
-                ui.set_height(max_y);
+        let max_y = grid.thumbnails.last().unwrap().outer_bounds.max.y;
+        ui.set_height(max_y);
+        let max_x = grid
+            .thumbnails
+            .iter()
+            .map(|pos| OrderedFloat(pos.outer_bounds.max.x))
+            .max()
+            .unwrap();
+        ui.set_width(*max_x);
 
-                self.handle_tab(ui, &grid.thumbnails);
+        self.handle_tab(ui, &grid.thumbnails);
 
-                self.double_clicked = None;
-                self.has_focus = false;
+        self.double_clicked = None;
+        self.has_focus = false;
 
-                for item in &grid.thumbnails {
-                    self.update_item(ui, item, &vp);
-                }
+        for item in &grid.thumbnails {
+            self.update_item(ui, item, &vp);
+        }
 
-                self.info = grid;
+        self.info = grid;
 
-                let selected_id = self.get_first_selected_id();
-                let next_middle = std::mem::take(&mut self.next_middle);
+        let selected_id = self.get_first_selected_id();
+        let next_middle = std::mem::take(&mut self.next_middle);
 
-                if let Some(middle_item) = selected_id.or(next_middle) {
-                    self.state.middle_item = Some(middle_item);
-                }
+        if let Some(middle_item) = selected_id.or(next_middle) {
+            self.state.middle_item = Some(middle_item);
+        }
 
-                self.state.hovering_item = std::mem::take(&mut self.next_hover);
-                self.state.pressing_item = std::mem::take(&mut self.next_pressing);
+        self.state.hovering_item = std::mem::take(&mut self.next_hover);
+        self.state.pressing_item = std::mem::take(&mut self.next_pressing);
 
-                self.last_vp = Some(vp.rect);
-            });
+        self.last_vp = Some(vp.rect);
 
         for params in self.app_state.drain_thumbnail_requests() {
             self.app_state.add_task(
@@ -471,6 +473,6 @@ impl ThumbnailGrid {
 
         self.state.clone().store(ui.ctx(), self.id());
 
-        Some(res)
+        Some(())
     }
 }

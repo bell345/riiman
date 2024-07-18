@@ -225,6 +225,12 @@ impl Vault {
         ))
     }
 
+    pub fn resolve_item_ids(&self, ids: &[ItemId]) -> Vec<Arc<Item>> {
+        ids.iter()
+            .filter_map(|id| self.get_item_opt_by_id(*id))
+            .collect()
+    }
+
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
         let rel_path = self.resolve_rel_path(path)?;
         self.items.remove(rel_path);

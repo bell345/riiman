@@ -1,10 +1,12 @@
-use crate::data::{FieldStore, Item, ItemId, ThumbnailParams, Vault};
-use crate::fields;
+use std::ops::Deref;
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use eframe::egui;
 use eframe::egui::{pos2, Pos2};
-use std::ops::Deref;
-use std::path::Path;
+
+use crate::data::{FieldStore, Item, ItemId, ThumbnailParams, Vault};
+use crate::fields;
 
 #[derive(Debug)]
 pub struct ThumbnailPosition {
@@ -53,6 +55,7 @@ pub struct ThumbnailGridParams {
     pub max_row_height: f32,
     pub container_width: f32,
     pub padding: egui::Vec2,
+    pub last_row_align: egui::Align,
 }
 
 impl Default for ThumbnailGridParams {
@@ -61,6 +64,7 @@ impl Default for ThumbnailGridParams {
             max_row_height: 128.0,
             container_width: Default::default(),
             padding: egui::vec2(4.0, 4.0),
+            last_row_align: egui::Align::Center,
         }
     }
 }
@@ -160,8 +164,14 @@ pub fn compute(
         }
     }
 
-    // last row is centered
-    curr_pos.x = (row_width - curr_row.iter().map(|p| p.outer_bounds.width()).sum::<f32>()) / 2.0;
+    let content_width = curr_row.iter().map(|p| p.outer_bounds.width()).sum::<f32>();
+    curr_pos.x = match params.last_row_align {
+        egui::Align::Min => 0.0,
+        egui::Align::Center => (row_width - content_width) / 2.0,
+        egui::Align::Max => row_width - content_width,
+    }
+    .floor();
+
     for mut info in curr_row.drain(..) {
         info.inner_bounds =
             egui::Rect::from_min_size(curr_pos + params.padding, info.inner_bounds.size());

@@ -2,26 +2,46 @@ use crate::data::transform::{
     ChromaSubsampling, CompressionFileType, DestinationType, EsrganModel, FitAlgorithm,
     InfillTechnique, ScaleAlgorithm, SourceType,
 };
-use crate::data::TransformParams;
+use crate::data::{ItemId, TransformParams};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
+use crate::tasks::sort::sort_items_unstable;
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::modals::AppModal;
+use crate::ui::thumb_grid::ThumbnailGrid;
 use eframe::egui;
 use eframe::egui::Color32;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::info;
 
-#[derive(Default)]
 pub struct TransformImages {
     modal: Option<Modal>,
+    preview_grid: ThumbnailGrid,
+    selected_item_ids: Vec<ItemId>,
+    selected_items_updated: bool,
     params: TransformParams,
     error_message: Option<String>,
     app_state: AppStateRef,
     opened: bool,
+}
+
+impl Default for TransformImages {
+    fn default() -> Self {
+        Self {
+            modal: None,
+            preview_grid: ThumbnailGrid::new("transform_modal_preview_grid"),
+            selected_item_ids: Default::default(),
+            selected_items_updated: false,
+            params: Default::default(),
+            error_message: None,
+            app_state: Default::default(),
+            opened: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -51,22 +71,78 @@ fn choice<T: PartialEq + std::fmt::Display>(ui: &mut egui::Ui, value_ref: &mut T
 }
 
 impl TransformImages {
+    fn source_len(&self, source_type: SourceType) -> usize {
+        match source_type {
+            SourceType::Selection => self.app_state.len_selected_items(),
+            SourceType::Filtered => self.app_state.len_item_list(),
+            SourceType::All => self
+                .app_state
+                .current_vault_opt()
+                .map_or(0, |vault| vault.len_items()),
+        }
+    }
+
+    fn update_selected_items(&mut self, source_type: SourceType) -> Result<(), ()> {
+        let vault = self.app_state.current_vault_catch()?;
+        let mut items = if source_type == SourceType::All {
+            vault.iter_items().map(|i| Arc::clone(&i)).collect()
+        } else {
+            let ids = match source_type {
+                SourceType::Selection => self.app_state.selected_item_ids(),
+                SourceType::Filtered => self.app_state.item_list_ids(),
+                SourceType::All => unreachable!(),
+            };
+            vault.resolve_item_ids(&ids)
+        };
+
+        self.app_state.catch(
+            || "sorting preview selection",
+            || sort_items_unstable(&mut items, &vault, &self.app_state.sorts()),
+        )?;
+
+        self.selected_item_ids = items
+            .into_iter()
+            .map(|i| ItemId::from_item(&vault, &i))
+            .collect();
+        self.selected_items_updated = true;
+
+        Ok(())
+    }
+
     fn source_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
         ui.heading("Source");
 
         ui.collapsing("Source options", |ui| {
             ui.vertical(|ui| {
+                let source_type = &mut p.source_type;
+                let old_source_type = *source_type;
+
                 ui.radio_value(
-                    &mut p.source_type,
+                    source_type,
                     SourceType::Selection,
-                    "Currently selected images",
+                    format!(
+                        "Currently selected images ({})",
+                        self.source_len(SourceType::Selection)
+                    ),
                 );
                 ui.radio_value(
-                    &mut p.source_type,
+                    source_type,
                     SourceType::Filtered,
-                    "All images which match filters",
+                    format!(
+                        "All images which match filters ({})",
+                        self.source_len(SourceType::Filtered)
+                    ),
                 );
-                ui.radio_value(&mut p.source_type, SourceType::All, "All images in vault");
+                ui.radio_value(
+                    source_type,
+                    SourceType::All,
+                    format!("All images in vault ({})", self.source_len(SourceType::All)),
+                );
+
+                if *source_type != old_source_type {
+                    self.update_selected_items(*source_type)
+                        .expect("vault to exist");
+                }
 
                 ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
@@ -592,9 +668,37 @@ impl AppModal for TransformImages {
         self.params = std::mem::take(&mut state.params);
         self.app_state = app_state;
 
+        let selected_items_new_last_frame = self.selected_items_updated;
+
+        if !self.opened {
+            self.update_selected_items(self.params.source_type)
+                .expect("vault to exist");
+        }
+
         modal.show(|ui| {
             modal.title(ui, "Transform");
             modal.frame(ui, |ui| {
+                let padding_y = self.preview_grid.params.padding.y;
+                egui::TopBottomPanel::top(self.id().with("preview_panel"))
+                    .exact_height(256.0 + 2.0 * padding_y)
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::horizontal()
+                            .auto_shrink([false, false])
+                            .show_viewport(ui, |ui, vp| {
+                                self.preview_grid.params.max_row_height = 256.0;
+                                self.preview_grid.params.container_width = f32::INFINITY;
+                                self.preview_grid.params.last_row_align = egui::Align::Min;
+
+                                self.preview_grid.update(
+                                    ui,
+                                    vp,
+                                    self.app_state.clone(),
+                                    &self.selected_item_ids,
+                                    self.selected_items_updated,
+                                );
+                            });
+                    });
+
                 egui::ScrollArea::both()
                     .max_width(600.0)
                     .max_height(400.0)
@@ -643,6 +747,9 @@ impl AppModal for TransformImages {
         state.params = std::mem::take(&mut self.params);
         state.store(ctx, self.id());
 
+        if selected_items_new_last_frame {
+            self.selected_items_updated = false;
+        }
         self.modal = Some(modal);
         self
     }

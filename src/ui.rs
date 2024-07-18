@@ -17,7 +17,6 @@ use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, Progress
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
 use crate::tasks::transform::load_transformed_image_preview;
-use crate::ui::item_cache::ItemCache;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
@@ -25,7 +24,6 @@ use crate::{take_shortcut, time};
 
 mod cloneable_state;
 mod input;
-mod item_cache;
 mod item_panel;
 mod modals;
 mod stepwise_range;
@@ -45,7 +43,6 @@ pub(crate) struct App {
 
     modal_dialogs: HashMap<egui::Id, Box<dyn AppModal>>,
 
-    item_list_cache: ItemCache,
     thumbnail_grid: ThumbnailGrid,
 
     sort_type: SortType,
@@ -79,7 +76,6 @@ impl App {
             state: AppStateRef::new(AppState::default()),
             tasks: Default::default(),
             modal_dialogs: Default::default(),
-            item_list_cache: Default::default(),
             thumbnail_grid: ThumbnailGrid::new("main_thumbnail_grid"),
             sort_type: Default::default(),
             sort_field_id: None,
@@ -559,7 +555,7 @@ impl App {
                     .auto_shrink([false, true])
                     .max_width(350.0)
                     .show_viewport(ui, |ui, _vp| -> Option<()> {
-                        let len = self.item_list_cache.len_items();
+                        let len = self.state.len_item_list();
                         ui.label(format!("{} item{}", len, if len == 1 { "" } else { "s" }));
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
@@ -604,17 +600,29 @@ impl App {
                     time!("Right panel UI", {
                         self.right_panel_ui(ui);
                     });
-                    let is_new_item_list = time!("Item list update", {
-                        self.item_list_cache.update(self.state.clone())?
-                    });
-                    time!("Thumbnail grid update", {
-                        self.thumbnail_grid.update(
-                            ui,
-                            self.state.clone(),
-                            &self.item_list_cache,
-                            is_new_item_list,
-                        )
-                    })
+
+                    time!("Item list update", { self.state.update_item_list().ok() });
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .animated(false)
+                        .show_viewport(ui, |ui, vp_rect| {
+                            self.thumbnail_grid.params.container_width =
+                                ui.available_width().floor();
+
+                            time!("Thumbnail grid update", {
+                                self.thumbnail_grid.update(
+                                    ui,
+                                    vp_rect,
+                                    self.state.clone(),
+                                    &self.state.item_list_ids(),
+                                    self.state.item_list_is_new(),
+                                );
+                            });
+
+                            self.state
+                                .update_selection(self.thumbnail_grid.get_selected_ids());
+                        })
                 })
                 .inner;
 
@@ -649,9 +657,7 @@ impl App {
 
                 let btn_rect = egui::Align2::RIGHT_TOP.align_size_within_rect(
                     EXPAND_BTN_SIZE,
-                    scroll_area_rect
-                        .map_or(ui.min_rect(), |res| res.inner_rect)
-                        .shrink2(EXPAND_BTN_MARGIN),
+                    scroll_area_rect.inner_rect.shrink2(EXPAND_BTN_MARGIN),
                 );
 
                 if ui.put(btn_rect, expand_btn).clicked() {

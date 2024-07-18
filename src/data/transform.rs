@@ -13,7 +13,7 @@ pub struct Params {
     pub compression_options: CompressionOptions,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceType {
     #[default]
     Selection,
@@ -26,7 +26,7 @@ pub struct SourceOptions {
     pub delete_source: bool,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DestinationType {
     #[default]
     SameVault,
@@ -65,7 +65,9 @@ pub struct ScaleOptions {
     pub fit_algorithm: FitAlgorithm,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum ScaleAlgorithm {
     #[default]
     #[display("Nearest Neighbour")]
@@ -80,7 +82,9 @@ pub enum ScaleAlgorithm {
     Esrgan,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum EsrganModel {
     #[default]
     #[display("RealESRGAN")]
@@ -89,7 +93,9 @@ pub enum EsrganModel {
     RealEsrganAnime,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum FitAlgorithm {
     Fill,
     #[default]
@@ -131,7 +137,9 @@ impl Default for InfillOptions {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum InfillTechnique {
     #[default]
     Automatic,
@@ -158,7 +166,9 @@ impl Default for CompressionOptions {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum CompressionFileType {
     #[default]
     #[display("JPEG")]
@@ -171,7 +181,9 @@ pub enum CompressionFileType {
     Avif,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum ChromaSubsampling {
     #[display("4:4:4 (Best quality)")]
     Chroma444,

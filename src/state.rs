@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use chrono::TimeDelta;
 use dashmap::{DashMap, DashSet};
 use eframe::egui;
 use eframe::egui::KeyboardShortcut;
 use indexmap::IndexMap;
 use poll_promise::Promise;
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::data::{
-    kind, FieldStore, FilterExpression, Item, PreviewOptions, ShortcutAction, ThumbnailCache,
-    ThumbnailCacheItem, ThumbnailParams, Vault,
+    kind, FieldStore, FilterExpression, Item, ItemCache, ItemId, PreviewOptions, ShortcutAction,
+    ThumbnailCache, ThumbnailCacheItem, ThumbnailParams, Vault,
 };
 use crate::errors::AppError;
 use crate::fields;
@@ -32,7 +34,7 @@ pub(crate) struct AppState {
     vaults: DashMap<String, Arc<Vault>>,
     unresolved_vaults: DashSet<String>,
     current_vault_name: Mutex<Option<String>>,
-    vault_loading: Mutex<bool>,
+    vault_loading: AtomicBool,
 
     shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
 
@@ -43,6 +45,11 @@ pub(crate) struct AppState {
 
     filter: Mutex<FilterExpression>,
     sorts: Mutex<Vec<SortExpression>>,
+
+    filtered_item_list: ItemCache,
+    item_list_is_new: AtomicBool,
+
+    selected_item_ids: Mutex<Vec<ItemId>>,
 }
 
 macro_rules! shortcut {
@@ -92,6 +99,9 @@ impl Default for AppState {
             ),
             filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
             sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
+            filtered_item_list: Default::default(),
+            item_list_is_new: Default::default(),
+            selected_item_ids: Default::default(),
         };
 
         {
@@ -321,19 +331,19 @@ impl AppState {
     }
 
     pub fn vault_loading(&self) -> bool {
-        *self.vault_loading.lock().unwrap()
+        self.vault_loading.load(Ordering::Relaxed)
     }
 
     pub fn set_vault_loading(&self) {
-        *self.vault_loading.lock().unwrap() = true;
+        self.vault_loading.store(true, Ordering::Relaxed);
     }
 
     pub fn reset_vault_loading(&self) {
-        *self.vault_loading.lock().unwrap() = false;
+        self.vault_loading.store(false, Ordering::Relaxed);
     }
 
     pub fn save_current_vault(&self) {
-        *self.vault_loading.lock().unwrap() = true;
+        self.set_vault_loading();
         self.add_task("Save vault", |state, p| {
             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
         });
@@ -364,6 +374,45 @@ impl AppState {
     pub fn set_filter_and_sorts(&self, filter: FilterExpression, sorts: Vec<SortExpression>) {
         *self.filter.lock().unwrap() = filter;
         *self.sorts.lock().unwrap() = sorts;
+    }
+
+    pub fn item_list_ids(&self) -> Vec<ItemId> {
+        self.filtered_item_list.item_ids()
+    }
+
+    pub fn len_item_list(&self) -> usize {
+        self.filtered_item_list.len_items()
+    }
+
+    pub fn update_item_list(&self) -> anyhow::Result<bool> {
+        let vault = self.current_vault()?;
+        let is_new_item_list =
+            self.filtered_item_list
+                .update(&vault, &self.filter(), &self.sorts())?;
+        self.item_list_is_new
+            .store(is_new_item_list, Ordering::Relaxed);
+        Ok(is_new_item_list)
+    }
+
+    pub fn item_list_is_new(&self) -> bool {
+        self.item_list_is_new.load(Ordering::Relaxed)
+    }
+
+    pub fn update_selection(&self, item_ids: Vec<ItemId>) {
+        *self.selected_item_ids.lock().unwrap() = item_ids;
+    }
+
+    pub fn len_selected_items(&self) -> usize {
+        self.selected_item_ids.lock().unwrap().len()
+    }
+
+    pub fn selected_item_ids(&self) -> Vec<ItemId> {
+        self.selected_item_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect()
     }
 
     pub fn shortcuts(&self) -> Vec<(KeyboardShortcut, ShortcutAction)> {
