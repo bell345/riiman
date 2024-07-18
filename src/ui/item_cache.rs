@@ -1,9 +1,8 @@
-use crate::data::{FilterExpression, Item, Vault};
+use crate::data::{FilterExpression, Item, ItemId, Vault};
 use crate::state::AppStateRef;
 use crate::tasks::sort::{get_filtered_and_sorted_items, SortExpression};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
-use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -16,7 +15,7 @@ pub struct ItemCacheParams {
 
 #[derive(Default)]
 pub struct ItemCache {
-    item_paths: Vec<String>,
+    item_ids: Vec<ItemId>,
     pub(crate) params: ItemCacheParams,
 }
 
@@ -55,39 +54,26 @@ impl ItemCache {
         // TODO: handle errors sanely and properly
         let items = get_filtered_and_sorted_items(&vault, &state.filter(), &state.sorts()).ok()?;
         self.params = params;
-        self.item_paths = items
+        self.item_ids = items
             .iter()
-            .filter_map(|i| vault.resolve_abs_path(Path::new(i.path())).ok())
+            .map(|item| ItemId::from_item(&vault, item))
             .collect();
 
         Some(true)
     }
 
     pub fn resolve_all_refs(&self, vault: &Vault) -> Vec<Arc<Item>> {
-        self.item_paths
+        self.item_ids
             .iter()
-            .filter_map(|p| vault.get_item_opt(Path::new(p)).expect("valid path"))
+            .filter_map(|id| vault.get_item_opt_by_id(*id))
             .collect()
     }
 
-    pub fn resolve_refs<'a, 'b: 'a>(
-        &'a self,
-        vault: &'b Vault,
-        paths: Vec<&String>,
-    ) -> Vec<Arc<Item>> {
-        let existing_items = self.item_path_set();
-        paths
-            .into_iter()
-            .filter(|p| existing_items.contains(*p))
-            .filter_map(|p| vault.get_item_opt(Path::new(p)).ok().flatten())
-            .collect()
-    }
-
-    pub fn item_path_set(&self) -> HashSet<&String> {
-        self.item_paths.iter().collect()
+    pub fn item_id_set(&self) -> HashSet<ItemId> {
+        self.item_ids.iter().copied().collect()
     }
 
     pub fn len_items(&self) -> usize {
-        self.item_paths.len()
+        self.item_ids.len()
     }
 }

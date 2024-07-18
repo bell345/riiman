@@ -37,10 +37,8 @@ pub use crate::ui::modals::AppModal;
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
-const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 const MAX_RUNNING_TASKS: usize = 16;
 
-#[derive(Default)]
 pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
@@ -79,7 +77,16 @@ impl App {
     pub fn new() -> Self {
         Self {
             state: AppStateRef::new(AppState::default()),
-            ..Default::default()
+            tasks: Default::default(),
+            modal_dialogs: Default::default(),
+            item_list_cache: Default::default(),
+            thumbnail_grid: ThumbnailGrid::new("main_thumbnail_grid"),
+            sort_type: Default::default(),
+            sort_field_id: None,
+            sort_direction: Default::default(),
+            search_text: String::new(),
+            expand_right_panel: false,
+            focused: None,
         }
     }
 
@@ -563,10 +570,7 @@ impl App {
                         });
 
                         let vault = self.state.current_vault_opt()?;
-
-                        let items = self.thumbnail_grid.view_selected_paths(|paths| {
-                            self.item_list_cache.resolve_refs(&vault, paths)
-                        });
+                        let items = self.thumbnail_grid.get_selected_items(&vault);
 
                         ui.add(ItemPanel::new(
                             "item_panel",
@@ -579,6 +583,18 @@ impl App {
                     });
             },
         );
+    }
+
+    fn get_double_clicked_item_path(&self) -> Option<String> {
+        let vault = self.state.current_vault_opt()?;
+        let item = self.thumbnail_grid.get_double_clicked_item(&vault)?;
+        let rel_path = Path::new(item.path());
+        self.state
+            .catch(
+                || format!("resolving absolute path for {}", item.path()),
+                || vault.resolve_abs_path(rel_path),
+            )
+            .ok()
     }
 
     fn central_panel_ui(&mut self, ctx: &egui::Context) {
@@ -602,17 +618,10 @@ impl App {
                 })
                 .inner;
 
-            if let Some(path) = self.thumbnail_grid.double_clicked.as_ref() {
-                if let Ok(vault) = self.state.current_vault_catch() {
-                    let path = Path::new(path.as_str());
-                    if let Ok(abs_path) = vault.resolve_abs_path(path) {
-                        self.add_task("Load image preview", move |_, p| {
-                            Promise::spawn_blocking(move || {
-                                load_transformed_image_preview(abs_path, p)
-                            })
-                        });
-                    }
-                }
+            if let Some(abs_path) = self.get_double_clicked_item_path() {
+                self.add_task("Load image preview", move |_, p| {
+                    Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
+                });
             }
 
             time!("Expand button UI", {
@@ -797,11 +806,12 @@ impl eframe::App for App {
         self.preview_window_ui(ctx);
 
         self.focused = ctx.memory(|m| m.focused());
-        self.thumbnail_grid.view_selected_paths(|paths| {
-            if self.focused.is_none() && paths.len() == 1 {
-                self.focused = Some(egui::Id::new(paths.first().unwrap()));
-            }
-        });
+
+        let selected_ids = self.thumbnail_grid.get_selected_ids();
+        if let &[selected_id] = selected_ids.as_slice() {
+            self.focused
+                .get_or_insert(selected_id.to_egui_id(self.thumbnail_grid.id()));
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

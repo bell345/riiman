@@ -1,4 +1,4 @@
-use crate::data::{FieldStore, Item, ThumbnailParams, Vault};
+use crate::data::{FieldStore, Item, ItemId, ThumbnailParams, Vault};
 use crate::fields;
 use chrono::{DateTime, Utc};
 use eframe::egui;
@@ -8,40 +8,43 @@ use std::path::Path;
 
 #[derive(Debug)]
 pub struct ThumbnailPosition {
+    pub id: ItemId,
     pub rel_path: String,
-    pub abs_path: String,
+    pub abs_path: Option<String>,
     pub last_modified: Option<DateTime<Utc>>,
     pub inner_bounds: egui::Rect,
     pub outer_bounds: egui::Rect,
-    pub id: egui::Id,
 }
 
 impl ThumbnailPosition {
     pub fn new(
-        rel_path: String,
-        abs_path: String,
+        vault: &Vault,
+        item: &Item,
         last_modified: Option<DateTime<Utc>>,
         inner_bounds: egui::Rect,
         outer_bounds: egui::Rect,
     ) -> Self {
-        let id = abs_path.clone().into();
+        let rel_path = item.path().to_string();
+        let abs_path = vault.resolve_abs_path(Path::new(item.path())).ok();
+        let id = ItemId::from_rel_abs_path(rel_path.as_str(), abs_path.as_ref());
+
         Self {
+            id,
             rel_path,
             abs_path,
             last_modified,
             inner_bounds,
             outer_bounds,
-            id,
         }
     }
 
-    pub fn params(&self, height: usize) -> ThumbnailParams {
-        ThumbnailParams {
+    pub fn params(&self, height: usize) -> Option<ThumbnailParams> {
+        Some(ThumbnailParams {
             rel_path: self.rel_path.clone(),
-            abs_path: self.abs_path.clone(),
+            abs_path: self.abs_path.as_ref()?.clone(),
             last_modified: self.last_modified,
             height,
-        }
+        })
     }
 }
 
@@ -129,17 +132,14 @@ pub fn compute(
         let Some(size) = item.get_image_size()? else {
             continue;
         };
-
-        let rel_path = item.path().to_owned();
-        let abs_path = vault.resolve_abs_path(Path::new(&rel_path))?;
         let last_modified = item.get_known_field_value(fields::general::LAST_MODIFIED)?;
 
         let new_size = egui::Vec2::new(size.x / size.y * inner_height, inner_height);
         let bounds = egui::Rect::from_min_size(curr_pos + params.padding, new_size);
         let outer_bounds = bounds.expand2(params.padding);
         curr_row.push(ThumbnailPosition::new(
-            rel_path,
-            abs_path,
+            vault,
+            item,
             last_modified,
             bounds,
             outer_bounds,

@@ -15,7 +15,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::data::field_refs::FieldDefRefOrPlaceholder;
-use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, Item};
+use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, Item, ItemId};
 use crate::errors::{AppError, HierarchyError};
 use crate::fields;
 use crate::state::AppStateRef;
@@ -31,7 +31,7 @@ pub struct Vault {
     #[serde(skip)]
     pub file_path: Option<Box<Path>>,
     #[serde(skip)]
-    items_by_id: DashMap<egui::Id, Weak<Item>>,
+    items_by_id: DashMap<ItemId, Weak<Item>>,
 }
 
 enum HierarchyWalkPosition {
@@ -68,11 +68,10 @@ impl Vault {
         }
 
         for item in &self.items {
-            let Ok(abs_path) = self.resolve_abs_path(Path::new(item.path())) else {
-                break;
-            };
-            self.items_by_id
-                .insert(egui::Id::new(abs_path), Arc::downgrade(item.value()));
+            self.items_by_id.insert(
+                ItemId::from_item(&self, &item),
+                Arc::downgrade(item.value()),
+            );
         }
 
         self
@@ -203,23 +202,22 @@ impl Vault {
             }))
     }
 
-    pub fn get_item_opt_by_id(&self, id: egui::Id) -> Option<Arc<Item>> {
+    pub fn get_item_opt_by_id(&self, id: ItemId) -> Option<Arc<Item>> {
         self.items_by_id.get(&id).and_then(|r| r.upgrade())
     }
 
-    pub fn get_item_by_id(&self, id: egui::Id) -> anyhow::Result<Arc<Item>> {
+    pub fn get_item_by_id(&self, id: ItemId) -> anyhow::Result<Arc<Item>> {
         self.get_item_opt_by_id(id)
             .ok_or(anyhow!(AppError::MissingItemId { id }))
     }
 
     pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
         let rel_path = self.resolve_rel_path(path)?;
-        let abs_path = self.resolve_abs_path(path)?;
         Ok(self.items.get(rel_path).map_or_else(
             || {
                 let item = Arc::new(Item::new(rel_path.to_owned()));
                 self.items_by_id
-                    .insert(egui::Id::new(abs_path), Arc::downgrade(&item));
+                    .insert(ItemId::from_item(self, &item), Arc::downgrade(&item));
                 self.set_last_updated();
                 item
             },

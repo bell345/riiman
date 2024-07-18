@@ -1,6 +1,5 @@
-use crate::data::FieldType;
 use crate::data::FieldValue;
-use eframe::egui;
+use crate::data::{FieldType, ItemId};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -32,7 +31,7 @@ pub enum AppError {
     #[error("missing item with path {path}")]
     MissingItem { path: String },
     #[error("missing item with ID {id:?}")]
-    MissingItemId { id: egui::Id },
+    MissingItemId { id: ItemId },
     #[error("found infinite loop that contains field ID {field_id}")]
     FieldTreeLoop { field_id: Uuid },
     #[error("error when executing command {command}: {error}")]

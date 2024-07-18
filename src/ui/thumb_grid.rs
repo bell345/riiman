@@ -1,4 +1,4 @@
-use crate::data::ThumbnailCacheItem;
+use crate::data::{Item, ItemId, ThumbnailCacheItem, Vault};
 use crate::state::{AppStateRef, THUMBNAIL_LOW_QUALITY_HEIGHT};
 use crate::take_shortcut;
 use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
@@ -15,6 +15,7 @@ use itertools::Itertools;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
+use std::sync::Arc;
 use tracing::info;
 
 const THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS: i64 = 1500;
@@ -26,22 +27,22 @@ const CHECKBOX_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
 const CHECKBOX_INTERACT_SIZE: f32 = 16.0;
 const HIGHLIGHT_PADDING: f32 = 2.0;
 
-#[derive(Default)]
 pub struct ThumbnailGrid {
+    id: egui::Id,
     pub params: ThumbnailGridParams,
     info: ThumbnailGridInfo,
     app_state: AppStateRef,
     state: State,
 
     scroll_cooldown: Option<DateTime<Utc>>,
-    next_hover: Option<egui::Id>,
-    next_middle: Option<egui::Id>,
-    next_pressing: Option<egui::Id>,
+    next_hover: Option<ItemId>,
+    next_middle: Option<ItemId>,
+    next_pressing: Option<ItemId>,
     has_focus: bool,
     set_scroll: bool,
     last_vp: Option<egui::Rect>,
 
-    pub double_clicked: Option<String>,
+    pub double_clicked: Option<ItemId>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -53,10 +54,10 @@ pub enum SelectMode {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct State {
-    middle_item: Option<egui::Id>,
-    hovering_item: Option<egui::Id>,
-    pressing_item: Option<egui::Id>,
-    checked_items: DashMap<String, bool>,
+    middle_item: Option<ItemId>,
+    hovering_item: Option<ItemId>,
+    pressing_item: Option<ItemId>,
+    checked_items: DashMap<ItemId, bool>,
     select_mode: SelectMode,
 }
 
@@ -78,9 +79,26 @@ fn wrap_index(i: usize, len: usize, delta: isize) -> usize {
 }
 
 impl ThumbnailGrid {
-    #[allow(clippy::unused_self)]
-    fn id(&self) -> egui::Id {
-        "thumbnail_grid".into()
+    pub fn new(id: impl std::hash::Hash) -> Self {
+        Self {
+            id: egui::Id::new(id),
+            params: Default::default(),
+            info: Default::default(),
+            app_state: Default::default(),
+            state: Default::default(),
+            scroll_cooldown: None,
+            next_hover: None,
+            next_middle: None,
+            next_pressing: None,
+            has_focus: false,
+            set_scroll: false,
+            last_vp: None,
+            double_clicked: None,
+        }
+    }
+
+    pub fn id(&self) -> egui::Id {
+        self.id
     }
 
     pub fn select_mode(&self, ctx: &egui::Context) -> SelectMode {
@@ -93,59 +111,64 @@ impl ThumbnailGrid {
         state.store(ctx, self.id());
     }
 
-    pub fn view_selected_paths<R>(&mut self, f: impl FnOnce(Vec<&String>) -> R) -> R {
-        let ro = std::mem::take(&mut self.state.checked_items).into_read_only();
-        let res = f(ro.iter().filter(|(_, v)| **v).map(|(k, _)| k).collect());
-        drop(std::mem::replace(
-            &mut self.state.checked_items,
-            ro.into_inner(),
-        ));
-        res
+    pub fn get_selected_ids(&self) -> Vec<ItemId> {
+        self.state
+            .checked_items
+            .iter()
+            .filter_map(|r| r.value().then(|| *r.key()))
+            .collect()
     }
 
-    pub fn get_selected_paths(&self) -> Vec<String> {
+    pub fn get_first_selected_id(&self) -> Option<ItemId> {
+        self.state
+            .checked_items
+            .iter()
+            .find_map(|r| r.value().then(|| *r.key()))
+    }
+
+    pub fn get_selected_items(&self, vault: &Vault) -> Vec<Arc<Item>> {
         self.state
             .checked_items
             .iter()
             .filter_map(|r| {
-                if *r.value() {
-                    Some(r.key().clone())
-                } else {
-                    None
-                }
+                r.value()
+                    .then(|| vault.get_item_opt_by_id(*r.key()))
+                    .flatten()
             })
             .collect()
     }
 
+    pub fn get_double_clicked_item(&self, vault: &Vault) -> Option<Arc<Item>> {
+        self.double_clicked
+            .and_then(|id| vault.get_item_opt_by_id(id))
+    }
+
     fn handle_tab(&mut self, ui: &mut egui::Ui, thumbnails: &[ThumbnailPosition]) {
-        let selected_paths = self.get_selected_paths();
-        let selected_id = selected_paths.first().map(egui::Id::new);
+        let Some(selected_id) = self.get_first_selected_id() else {
+            return;
+        };
+        let selected_egui_id = selected_id.to_egui_id(self.id());
 
         if ui
             .memory(|r| r.focused())
-            .is_some_and(|f| Some(f) == selected_id)
+            .is_some_and(|f| f == selected_egui_id)
             && self.state.select_mode == SelectMode::Single
             && take_shortcut!(ui, Tab)
         {
-            if let Some((i, _)) = thumbnails
-                .iter()
-                .find_position(|pos| selected_paths.contains(&pos.abs_path))
-            {
+            if let Some((i, _)) = thumbnails.iter().find_position(|pos| selected_id == pos.id) {
                 let delta = if ui.input(|i| i.modifiers.shift) {
                     -1
                 } else {
                     1
                 };
-                let next_item = &thumbnails[wrap_index(i, thumbnails.len(), delta)];
+                let next_id = thumbnails[wrap_index(i, thumbnails.len(), delta)].id;
                 self.set_scroll = true;
-                self.state.middle_item = Some(next_item.id);
+                self.state.middle_item = Some(next_id);
                 ui.ctx().memory_mut(|wr| {
-                    wr.request_focus(next_item.id);
+                    wr.request_focus(next_id.to_egui_id(self.id()));
                 });
                 self.state.checked_items.clear();
-                self.state
-                    .checked_items
-                    .insert(next_item.abs_path.clone(), true);
+                self.state.checked_items.insert(next_id, true);
             }
         }
     }
@@ -200,7 +223,12 @@ impl ThumbnailGrid {
             #[allow(clippy::cast_possible_truncation)]
             #[allow(clippy::cast_sign_loss)]
             let height = self.params.max_row_height.floor() as usize;
-            let thumb = self.app_state.resolve_thumbnail(&item.params(height));
+            let Some(params) = item.params(height) else {
+                ui.put(inner_bounds, text);
+                return;
+            };
+
+            let thumb = self.app_state.resolve_thumbnail(&params);
 
             if let ThumbnailCacheItem::Loaded(hndl) = thumb {
                 self.render_thumbnail(ui, vp, item, &hndl);
@@ -218,16 +246,12 @@ impl ThumbnailGrid {
         item: &ThumbnailPosition,
         hndl: &TextureHandle,
     ) {
-        let id = egui::Id::new(item.abs_path.clone());
+        let id = item.id.to_egui_id(self.id());
         let outer_bounds = item.outer_bounds.translate(vp.abs_min);
         let inner_bounds = item.inner_bounds.translate(vp.abs_min);
 
         let checked = {
-            let check_ref = self
-                .state
-                .checked_items
-                .entry(item.abs_path.clone())
-                .or_default();
+            let check_ref = self.state.checked_items.entry(item.id).or_default();
             *check_ref.value()
         };
         if checked {
@@ -256,7 +280,7 @@ impl ThumbnailGrid {
 
         let res = ui
             .push_id(id, |ui| {
-                ui.put(inner_bounds, img_btn).on_hover_text(&item.abs_path)
+                ui.put(inner_bounds, img_btn).on_hover_text(&item.rel_path)
             })
             .inner;
         ui.ctx()
@@ -269,7 +293,7 @@ impl ThumbnailGrid {
             self.next_pressing = Some(item.id);
         }
         if res.double_clicked() {
-            self.double_clicked = Some(item.abs_path.clone());
+            self.double_clicked = Some(item.id);
         }
         if res.has_focus() {
             info!("has focus: {}", item.rel_path);
@@ -305,11 +329,7 @@ impl ThumbnailGrid {
         ui.scope(|ui| {
             ui.spacing_mut().interact_size = egui::Vec2::splat(CHECKBOX_INTERACT_SIZE);
 
-            let mut check_ref = self
-                .state
-                .checked_items
-                .entry(item.abs_path.clone())
-                .or_default();
+            let mut check_ref = self.state.checked_items.entry(item.id).or_default();
 
             let checkbox = egui::Checkbox::new(check_ref.value_mut(), "");
             let checkbox_rect =
@@ -339,10 +359,11 @@ impl ThumbnailGrid {
     }
 
     fn request_exclusive_focus(&mut self, ui: &mut egui::Ui, item: &ThumbnailPosition) {
+        let id = item.id.to_egui_id(self.id());
         ui.memory_mut(|wr| {
-            wr.request_focus(item.id);
+            wr.request_focus(id);
             wr.set_focus_lock_filter(
-                item.id,
+                id,
                 egui::EventFilter {
                     tab: true,
                     horizontal_arrows: true,
@@ -353,7 +374,7 @@ impl ThumbnailGrid {
         });
 
         self.state.checked_items.clear();
-        self.state.checked_items.insert(item.abs_path.clone(), true);
+        self.state.checked_items.insert(item.id, true);
     }
 
     pub fn update(
@@ -384,11 +405,11 @@ impl ThumbnailGrid {
         }
 
         if item_cache_is_new && item_cache.len_items() != 0 {
-            let included_paths = item_cache.item_path_set();
+            let included_ids = item_cache.item_id_set();
             let mut to_remove = vec![];
             for item in &self.state.checked_items {
-                if !included_paths.contains(item.key()) {
-                    to_remove.push(item.key().clone());
+                if !included_ids.contains(item.key()) {
+                    to_remove.push(*item.key());
                 }
             }
             for path in to_remove {
@@ -422,19 +443,11 @@ impl ThumbnailGrid {
 
                 self.info = grid;
 
-                let selected_path = self.view_selected_paths(|paths| {
-                    if paths.len() == 1 {
-                        Some((*paths.first().unwrap()).to_string())
-                    } else {
-                        None
-                    }
-                });
+                let selected_id = self.get_first_selected_id();
                 let next_middle = std::mem::take(&mut self.next_middle);
 
-                if let Some(middle_item) = selected_path {
-                    self.state.middle_item = Some(egui::Id::new(middle_item));
-                } else if let Some(middle_id) = next_middle {
-                    self.state.middle_item = Some(middle_id);
+                if let Some(middle_item) = selected_id.or(next_middle) {
+                    self.state.middle_item = Some(middle_item);
                 }
 
                 self.state.hovering_item = std::mem::take(&mut self.next_hover);
