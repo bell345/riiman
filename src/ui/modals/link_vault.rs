@@ -30,7 +30,7 @@ impl AppModal for LinkVault {
         "link_vault_modal".into()
     }
 
-    fn update(&mut self, ctx: &egui::Context, state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &egui::Context, state: AppStateRef) {
         let request_name = "link_vault_modal_load_request".to_string();
         let modal = Modal::new(ctx, self.id().value());
 
@@ -108,7 +108,6 @@ impl AppModal for LinkVault {
         }
 
         self.modal = Some(modal);
-        self
     }
 
     fn is_open(&self) -> bool {

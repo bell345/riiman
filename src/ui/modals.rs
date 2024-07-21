@@ -7,6 +7,7 @@ mod link_vault;
 mod manage_vaults;
 mod message;
 mod new_vault;
+mod preview;
 mod tag_shortcuts;
 mod transform;
 
@@ -22,12 +23,13 @@ pub use transform::TransformImages;
 
 pub trait AppModal: Send + Sync + 'static {
     fn id(&self) -> eframe::egui::Id;
-    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal;
+    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef);
     fn dispose(&mut self, _ctx: &eframe::egui::Context, _state: AppStateRef) {}
     fn is_open(&self) -> bool;
 
     fn update_or_dispose(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> bool {
-        let is_open = self.update(ctx, state.clone()).is_open();
+        self.update(ctx, state.clone());
+        let is_open = self.is_open();
         if !is_open {
             self.dispose(ctx, state);
         }

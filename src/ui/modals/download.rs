@@ -16,7 +16,7 @@ use crate::tasks::download::{
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::modals::AppModal;
-use crate::ui::theme;
+use crate::ui::{choice, theme};
 
 #[derive(Default)]
 pub struct Download {
@@ -78,18 +78,21 @@ impl Download {
                 egui::ComboBox::new("gallery_dl_source", "")
                     .selected_text(src_discriminant.to_string())
                     .show_ui(ui, |ui| {
-                        macro_rules! discriminant {
-                            ($id:ident) => {
-                                ui.selectable_value(
-                                    &mut src_discriminant,
-                                    GalleryDLSourceDiscriminants::$id,
-                                    GalleryDLSourceDiscriminants::$id.to_string(),
-                                );
-                            };
-                        }
-                        discriminant!(None);
-                        discriminant!(TwitterLikes);
-                        discriminant!(CustomURL);
+                        choice(
+                            ui,
+                            &mut src_discriminant,
+                            GalleryDLSourceDiscriminants::None,
+                        );
+                        choice(
+                            ui,
+                            &mut src_discriminant,
+                            GalleryDLSourceDiscriminants::TwitterLikes,
+                        );
+                        choice(
+                            ui,
+                            &mut src_discriminant,
+                            GalleryDLSourceDiscriminants::CustomURL,
+                        );
                     });
             });
         });
@@ -132,7 +135,7 @@ impl Download {
     }
 
     fn login_form_fragment(&mut self, body: &mut TableBody) {
-        let mut login_discriminant: GalleryDLLoginDiscriminants = (&self.params.login).into();
+        let mut login: GalleryDLLoginDiscriminants = (&self.params.login).into();
 
         body.row(ROW_HEIGHT, |mut row| {
             row.col(|ui| {
@@ -140,27 +143,22 @@ impl Download {
             });
             row.col(|ui| {
                 egui::ComboBox::new("gallery_dl_login_combo", "")
-                    .selected_text(login_discriminant.to_string())
+                    .selected_text(login.to_string())
                     .show_ui(ui, |ui| {
-                        macro_rules! discriminant {
-                            ($id:ident) => {
-                                ui.selectable_value(
-                                    &mut login_discriminant,
-                                    GalleryDLLoginDiscriminants::$id,
-                                    GalleryDLLoginDiscriminants::$id.to_string(),
-                                );
-                            };
-                        }
-                        discriminant!(None);
-                        discriminant!(ChromeCookies);
-                        discriminant!(FirefoxCookies);
-                        discriminant!(UsernamePassword);
+                        choice(ui, &mut login, GalleryDLLoginDiscriminants::None);
+                        choice(ui, &mut login, GalleryDLLoginDiscriminants::ChromeCookies);
+                        choice(ui, &mut login, GalleryDLLoginDiscriminants::FirefoxCookies);
+                        choice(
+                            ui,
+                            &mut login,
+                            GalleryDLLoginDiscriminants::UsernamePassword,
+                        );
                     });
             });
         });
 
-        if login_discriminant != (&self.params.login).into() {
-            self.params.login = match login_discriminant {
+        if login != (&self.params.login).into() {
+            self.params.login = match login {
                 GalleryDLLoginDiscriminants::None => GalleryDLLogin::None,
                 GalleryDLLoginDiscriminants::ChromeCookies => GalleryDLLogin::ChromeCookies,
                 GalleryDLLoginDiscriminants::FirefoxCookies => GalleryDLLogin::FirefoxCookies,
@@ -262,11 +260,11 @@ impl Download {
 }
 
 impl AppModal for Download {
-    fn id(&self) -> eframe::egui::Id {
+    fn id(&self) -> egui::Id {
         "download_modal".into()
     }
 
-    fn update(&mut self, ctx: &eframe::egui::Context, app_state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) {
         let modal = Modal::new(ctx, self.id().value()).with_style(&ModalStyle {
             default_width: Some(800.0),
             ..Default::default()
@@ -360,7 +358,6 @@ impl AppModal for Download {
         state.store(ctx, self.id());
 
         self.modal = Some(modal);
-        self
     }
 
     fn is_open(&self) -> bool {

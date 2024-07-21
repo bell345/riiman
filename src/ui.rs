@@ -37,6 +37,33 @@ static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
 const MAX_RUNNING_TASKS: usize = 16;
 
+pub fn indent<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.add_space(ui.style().spacing.indent);
+        ui.vertical(add_contents).inner
+    })
+    .inner
+}
+
+pub fn choice<T: PartialEq + std::fmt::Display>(
+    ui: &mut egui::Ui,
+    value_ref: &mut T,
+    alternative: T,
+) {
+    let label = alternative.to_string();
+    ui.selectable_value(value_ref, alternative, label);
+}
+
+/// Buttons for modal windows. Must be declared before all other components. Note that the order
+/// of buttons in the UI is reversed.
+pub fn buttons(id: egui::Id, ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::TopBottomPanel::bottom(id.with("bottom_panel")).show_inside(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_contents(ui);
+        });
+    });
+}
+
 pub(crate) struct App {
     state: AppStateRef,
     tasks: TaskState,
@@ -150,7 +177,7 @@ impl App {
 
         self.search_text = stored_state.search_text;
 
-        self.thumbnail_grid.params.max_row_height = stored_state.thumbnail_row_height;
+        self.thumbnail_grid.params.init_row_height = stored_state.thumbnail_row_height;
 
         self.state
             .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
@@ -429,7 +456,7 @@ impl App {
                         )
                     });
                     let mut slider_value =
-                        slider_range.lerp_in(self.thumbnail_grid.params.max_row_height);
+                        slider_range.lerp_in(self.thumbnail_grid.params.init_row_height);
 
                     ui.add(
                         egui::widgets::Slider::new(&mut slider_value, slider_range.input_range())
@@ -437,7 +464,8 @@ impl App {
                             .show_value(false),
                     );
 
-                    self.thumbnail_grid.params.max_row_height = slider_range.lerp_out(slider_value);
+                    self.thumbnail_grid.params.init_row_height =
+                        slider_range.lerp_out(slider_value);
 
                     // square four corners
                     ui.label("\u{26f6}");
@@ -451,7 +479,8 @@ impl App {
                         self.sort_direction = !self.sort_direction;
                     }
 
-                    if self.sort_type == SortType::Field {
+                    let sort_type = &mut self.sort_type;
+                    if *sort_type == SortType::Field {
                         if let Some(vault) = self.state.current_vault_opt() {
                             ui.add(
                                 widgets::FindTag::new("sort_field", &mut self.sort_field_id, vault)
@@ -461,18 +490,10 @@ impl App {
                     }
 
                     egui::ComboBox::from_label("Sort by")
-                        .selected_text(self.sort_type.to_string())
+                        .selected_text(sort_type.to_string())
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.sort_type,
-                                SortType::Path,
-                                SortType::Path.to_string(),
-                            );
-                            ui.selectable_value(
-                                &mut self.sort_type,
-                                SortType::Field,
-                                SortType::Field.to_string(),
-                            );
+                            choice(ui, sort_type, SortType::Path);
+                            choice(ui, sort_type, SortType::Field);
 
                             ui.style_mut().visuals.widgets.inactive.rounding.ne = 0.0;
                             ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
@@ -559,9 +580,12 @@ impl App {
                         ui.label(format!("{} item{}", len, if len == 1 { "" } else { "s" }));
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
+
                             let mut select_mode = self.thumbnail_grid.select_mode(ui.ctx());
-                            ui.selectable_value(&mut select_mode, SelectMode::Single, "Single");
-                            ui.selectable_value(&mut select_mode, SelectMode::Multiple, "Multiple");
+
+                            choice(ui, &mut select_mode, SelectMode::Single);
+                            choice(ui, &mut select_mode, SelectMode::Multiple);
+
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
@@ -824,7 +848,7 @@ impl eframe::App for App {
         let stored_state = AppStorage {
             current_vault_name: self.state.current_vault_name().map(|s| s.to_string()),
             vault_name_to_file_paths: self.state.vault_name_to_file_paths(),
-            thumbnail_row_height: self.thumbnail_grid.params.max_row_height,
+            thumbnail_row_height: self.thumbnail_grid.params.init_row_height,
             sorts: self.state.sorts().clone(),
             filter: self.state.filter().clone(),
             search_text: self.search_text.clone(),

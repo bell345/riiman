@@ -1,4 +1,5 @@
 use crate::data::FieldType;
+use crate::ui::choice;
 use eframe::egui;
 use eframe::egui::{Response, Ui, Widget};
 
@@ -34,11 +35,7 @@ impl<'a> Widget for TagTypeCombo<'a> {
                             .exclude_types
                             .is_some_and(|types| types.contains(&FieldType::$name))
                         {
-                            ui.selectable_value(
-                                self.field_type,
-                                FieldType::$name,
-                                FieldType::$name.to_string(),
-                            );
+                            choice(ui, self.field_type, FieldType::$name);
                         }
                     };
                 }

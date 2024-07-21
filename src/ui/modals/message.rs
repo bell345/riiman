@@ -63,7 +63,7 @@ impl AppModal for Message {
         eframe::egui::Id::new(self.id)
     }
 
-    fn update(&mut self, ctx: &eframe::egui::Context, _state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &eframe::egui::Context, _state: AppStateRef) {
         let modal = Modal::new(ctx, format!("msg_modal_{}", self.id));
 
         modal.show(|ui| {
@@ -95,7 +95,6 @@ impl AppModal for Message {
         }
 
         self.modal = Some(modal);
-        self
     }
 
     fn is_open(&self) -> bool {

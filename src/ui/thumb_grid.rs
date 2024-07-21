@@ -1,9 +1,9 @@
 use crate::data::{Item, ItemId, ThumbnailCacheItem, Vault};
 use crate::state::{AppStateRef, THUMBNAIL_LOW_QUALITY_HEIGHT};
 use crate::take_shortcut;
-use crate::tasks::thumb_grid::{compute, ThumbnailPosition};
+use crate::tasks::thumb_grid::{river_layout, ThumbnailPosition};
 use crate::tasks::thumbnail::{load_image_thumbnail, load_image_thumbnail_with_fs};
-use crate::tasks::{ThumbnailGridInfo, ThumbnailGridParams};
+use crate::tasks::{RiverParams, ThumbnailGridInfo};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::theme::get_accent_color;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -30,7 +30,7 @@ const HIGHLIGHT_PADDING: f32 = 2.0;
 
 pub struct ThumbnailGrid {
     id: egui::Id,
-    pub params: ThumbnailGridParams,
+    pub params: RiverParams,
     info: ThumbnailGridInfo,
     app_state: AppStateRef,
     state: State,
@@ -46,7 +46,9 @@ pub struct ThumbnailGrid {
     pub double_clicked: Option<ItemId>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum SelectMode {
     #[default]
     Single,
@@ -223,7 +225,7 @@ impl ThumbnailGrid {
         if vp.rect.intersects(item.outer_bounds) {
             #[allow(clippy::cast_possible_truncation)]
             #[allow(clippy::cast_sign_loss)]
-            let height = self.params.max_row_height.floor() as usize;
+            let height = self.params.init_row_height.floor() as usize;
             let Some(params) = item.params(height) else {
                 ui.put(inner_bounds, text);
                 return;
@@ -396,11 +398,10 @@ impl ThumbnailGrid {
 
             let vault = self.app_state.current_vault_opt()?;
             let params = self.params.clone();
-            let items = vault.resolve_item_ids(item_ids);
 
             self.info = self
                 .app_state
-                .catch(|| "Thumb grid", || compute(params, &vault, &items))
+                .catch(|| "Thumb grid", || river_layout(params, &vault, item_ids))
                 .ok()?;
         }
 

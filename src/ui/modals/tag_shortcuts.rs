@@ -5,7 +5,7 @@ use crate::data::{FieldType, ShortcutAction};
 use crate::state::AppStateRef;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
-use crate::ui::widgets;
+use crate::ui::{buttons, widgets};
 
 #[derive(Default)]
 pub struct TagShortcuts {
@@ -118,7 +118,7 @@ impl AppModal for TagShortcuts {
         "tag_shortcuts_window".into()
     }
 
-    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) {
         self.widget_state = State::load(ctx, self.id()).unwrap_or_default();
         let prev_updated = self.updated;
         let mut opened = self.widget_state.opened;
@@ -130,16 +130,11 @@ impl AppModal for TagShortcuts {
             .open(&mut opened)
             .min_width(500.0)
             .show(ctx, |ui| {
-                egui::TopBottomPanel::bottom(self.id().with("bottom_panel")).show_inside(
-                    ui,
-                    |ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
-                                do_close = true;
-                            }
-                        });
-                    },
-                );
+                buttons(self.id(), ui, |ui| {
+                    if ui.button("Close").clicked() {
+                        do_close = true;
+                    }
+                });
 
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     self.edit_ui(ui, app_state.clone());
@@ -157,7 +152,6 @@ impl AppModal for TagShortcuts {
         self.widget_state.opened = opened;
         self.opened = self.widget_state.opened;
         std::mem::take(&mut self.widget_state).store(ctx, self.id());
-        self
     }
 
     fn dispose(&mut self, ctx: &egui::Context, _state: AppStateRef) {

@@ -541,7 +541,7 @@ impl AppModal for EditTag {
         "edit_tag_window".into()
     }
 
-    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) {
         self.app_state = app_state;
         self.widget_state = State::load(ctx, self.id()).unwrap_or_default();
         let prev_updated = self.updated;
@@ -618,7 +618,6 @@ impl AppModal for EditTag {
         self.widget_state.opened = opened;
         self.opened = self.widget_state.opened;
         std::mem::take(&mut self.widget_state).store(ctx, self.id());
-        self
     }
 
     fn dispose(&mut self, ctx: &egui::Context, _state: AppStateRef) {

@@ -6,8 +6,8 @@ use poll_promise::Promise;
 
 use crate::data::ThumbnailParams;
 use crate::state::AppStateRef;
+pub use crate::tasks::thumb_grid::RiverParams;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
-pub use crate::tasks::thumb_grid::ThumbnailGridParams;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;

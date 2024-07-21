@@ -20,7 +20,7 @@ impl AppModal for NewVault {
         "new_vault_name_modal".into()
     }
 
-    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef) {
         let modal = Modal::new(ctx, self.id().value());
 
         modal.show(|ui| {
@@ -60,7 +60,6 @@ impl AppModal for NewVault {
         }
 
         self.modal = Some(modal);
-        self
     }
 
     fn is_open(&self) -> bool {

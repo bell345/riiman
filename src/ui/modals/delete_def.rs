@@ -33,7 +33,7 @@ impl AppModal for DeleteDefinition {
         "delete_def_modal".into()
     }
 
-    fn update(&mut self, ctx: &Context, app_state: AppStateRef) -> &mut dyn AppModal {
+    fn update(&mut self, ctx: &Context, app_state: AppStateRef) {
         let modal = Modal::new(ctx, self.id().value());
 
         modal.show(|ui| {
@@ -93,7 +93,6 @@ impl AppModal for DeleteDefinition {
         }
 
         self.modal = Some(modal);
-        self
     }
 
     fn dispose(&mut self, ctx: &Context, _state: AppStateRef) {
