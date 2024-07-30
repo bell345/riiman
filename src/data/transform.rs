@@ -1,20 +1,22 @@
 use eframe::egui::Color32;
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Params {
-    pub source_type: SourceType,
-    pub source_options: SourceOptions,
-    pub destination_type: DestinationType,
-    pub destination_options: DestinationOptions,
+    pub scale: ScaleOptions,
+    pub infill: InfillOptions,
+    pub compression: CompressionOptions,
+}
 
-    pub scale_options: ScaleOptions,
-    pub infill_options: InfillOptions,
-    pub compression_options: CompressionOptions,
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct BulkParams {
+    pub source: SourceOptions,
+    pub destination: DestinationOptions,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SourceType {
+pub enum SourceKind {
     #[default]
     Selection,
     Filtered,
@@ -23,11 +25,12 @@ pub enum SourceType {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SourceOptions {
+    pub kind: SourceKind,
     pub delete_source: bool,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DestinationType {
+pub enum DestinationKind {
     #[default]
     SameVault,
     OtherVault,
@@ -38,6 +41,7 @@ pub enum DestinationType {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DestinationOptions {
+    pub kind: DestinationKind,
     pub vault_subdirectory: String,
     pub other_vault_name: String,
     pub directory_path: String,
@@ -49,7 +53,7 @@ pub struct DestinationOptions {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ScaleOptions {
     pub enabled: bool,
     pub use_target_width: bool,
@@ -61,12 +65,31 @@ pub struct ScaleOptions {
     pub integer_scaling: bool,
     pub scale_down: bool,
     pub use_maximum_scaling: bool,
-    pub maximum_scaling: f32,
+    pub maximum_scaling: OrderedFloat<f32>,
     pub fit_algorithm: FitAlgorithm,
 }
 
+impl Default for ScaleOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            use_target_width: false,
+            target_width: 1920,
+            use_target_height: false,
+            target_height: 1080,
+            scale_algorithm: Default::default(),
+            esrgan_model: Default::default(),
+            integer_scaling: false,
+            scale_down: false,
+            use_maximum_scaling: false,
+            maximum_scaling: Default::default(),
+            fit_algorithm: Default::default(),
+        }
+    }
+}
+
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum ScaleAlgorithm {
     #[default]
@@ -74,16 +97,14 @@ pub enum ScaleAlgorithm {
     NearestNeighbour,
     Bilinear,
     Bicubic,
-    #[display("HQx")]
-    Hqx,
-    #[display("xBR")]
-    Xbr,
+    #[display("xBRZ")]
+    Xbrz,
     #[display("ESRGAN")]
     Esrgan,
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum EsrganModel {
     #[default]
@@ -94,7 +115,7 @@ pub enum EsrganModel {
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum FitAlgorithm {
     Fill,
@@ -104,41 +125,41 @@ pub enum FitAlgorithm {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InfillOptions {
     pub enabled: bool,
-    pub target_aspect_ratio: (f32, f32),
+    pub target_aspect_ratio: (OrderedFloat<f32>, OrderedFloat<f32>),
     pub technique: InfillTechnique,
     pub use_auto_solid: bool,
     pub manual_solid_colour: Color32,
     pub use_gaussian: bool,
     pub gaussian_radius: u32,
     pub use_brightness: bool,
-    pub brightness_change: f32,
+    pub brightness_change: OrderedFloat<f32>,
     pub use_contrast: bool,
-    pub contrast_change: f32,
+    pub contrast_change: OrderedFloat<f32>,
 }
 
 impl Default for InfillOptions {
     fn default() -> Self {
         Self {
             enabled: false,
-            target_aspect_ratio: (16.0, 9.0),
+            target_aspect_ratio: (16.0.into(), 9.0.into()),
             technique: Default::default(),
             use_auto_solid: true,
             manual_solid_colour: Color32::BLACK,
             use_gaussian: true,
             gaussian_radius: 12,
             use_brightness: true,
-            brightness_change: -0.5,
+            brightness_change: (-0.5).into(),
             use_contrast: true,
-            contrast_change: -0.5,
+            contrast_change: (-0.5).into(),
         }
     }
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum InfillTechnique {
     #[default]
@@ -147,7 +168,7 @@ pub enum InfillTechnique {
     Solid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompressionOptions {
     pub enabled: bool,
     pub file_type: CompressionFileType,
@@ -167,7 +188,7 @@ impl Default for CompressionOptions {
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum CompressionFileType {
     #[default]
@@ -182,7 +203,7 @@ pub enum CompressionFileType {
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum ChromaSubsampling {
     #[display("4:4:4 (Best quality)")]

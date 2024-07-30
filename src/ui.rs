@@ -1,6 +1,6 @@
-use crate::data::{FilterExpression, PreviewOptions, ShortcutAction, ThumbnailCacheItem};
+use crate::data::{FilterExpression, ShortcutAction, ThumbnailCacheItem};
 use eframe::egui;
-use eframe::egui::{pos2, vec2, FontData, FontDefinitions, KeyboardShortcut};
+use eframe::egui::{vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use std::cmp::Reverse;
@@ -16,11 +16,11 @@ use crate::state::{AppState, AppStateRef};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
-use crate::tasks::transform::load_transformed_image_preview;
+use crate::tasks::transform::load_image_preview;
+use crate::time;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
 use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
-use crate::{take_shortcut, time};
 
 mod cloneable_state;
 mod input;
@@ -126,13 +126,12 @@ impl App {
 
     fn add_queued_tasks(&mut self) {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
-        for (name, task_factory, is_request) in self.state.drain_tasks(capacity) {
-            if is_request {
-                self.tasks
-                    .add_request(name, |tx| task_factory(self.state.clone(), tx));
-            } else {
-                self.tasks
-                    .add(name, |tx| task_factory(self.state.clone(), tx));
+        for info in self.state.drain_tasks(capacity) {
+            let s = self.state.clone();
+            let factory = info.task_factory;
+            match info.request_id {
+                Some(id) => self.tasks.add_request(id, info.name, |tx| factory(s, tx)),
+                None => self.tasks.add(info.name, |tx| factory(s, tx)),
             }
         }
     }
@@ -251,7 +250,11 @@ impl App {
                     self.state
                         .commit_thumbnail(params, ThumbnailCacheItem::Loaded(hndl));
                 }
-                Ok(AsyncTaskResult::PreviewReady { image }) => {
+                Ok(AsyncTaskResult::PreviewReady {
+                    id,
+                    image,
+                    viewport_class,
+                }) => {
                     let hndl = ctx.load_texture(
                         "preview",
                         image,
@@ -261,7 +264,7 @@ impl App {
                             minification: egui::TextureFilter::Linear,
                         },
                     );
-                    self.state.set_preview(hndl);
+                    self.add_modal_dialog(modals::Preview::new(id, hndl, *viewport_class));
                 }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented".to_string());
@@ -650,9 +653,9 @@ impl App {
                 })
                 .inner;
 
-            if let Some(abs_path) = self.get_double_clicked_item_path() {
-                self.add_task("Load image preview", move |_, p| {
-                    Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
+            if let Some(abs_path) = self.thumbnail_grid.get_double_clicked_item_path() {
+                self.add_task("Load image preview", move |_, _| {
+                    Promise::spawn_blocking(move || load_image_preview(abs_path))
                 });
             }
 
@@ -690,116 +693,6 @@ impl App {
             });
         });
     }
-
-    fn preview_window_ui(&mut self, ctx: &egui::Context) {
-        let state = Arc::clone(&self.state);
-        let Some(hndl) = state.preview_texture() else {
-            return;
-        };
-
-        let viewport_id = egui::ViewportId::from_hash_of("preview");
-
-        ctx.show_viewport_deferred(
-            viewport_id,
-            egui::ViewportBuilder::default()
-                .with_title("Preview")
-                .with_min_inner_size((200.0, 100.0)),
-            move |ctx, cls| {
-                assert!(
-                    cls == egui::ViewportClass::Deferred,
-                    "This egui backend doesn't support multiple viewports"
-                );
-
-                let PreviewOptions {
-                    cursor_position,
-                    lens_magnification,
-                    lens_size,
-                    ..
-                } = state.preview_opts();
-
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::none())
-                    .show(ctx, |ui| {
-                        ui.with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                let img = egui::Image::from_texture(
-                                    egui::load::SizedTexture::from_handle(&hndl),
-                                )
-                                .bg_fill(egui::Color32::from_gray(20))
-                                .shrink_to_fit();
-
-                                let res = ui.add(img);
-
-                                let img_ratio = hndl.aspect_ratio();
-                                let win_size = res.rect.size();
-
-                                let img_size = if res.rect.aspect_ratio() >= img_ratio {
-                                    vec2(win_size.y * img_ratio, win_size.y)
-                                } else {
-                                    vec2(win_size.x, win_size.x / img_ratio)
-                                };
-
-                                let img_pos = if res.rect.aspect_ratio() >= img_ratio {
-                                    pos2((win_size.x - img_size.x) / 2.0, 0.0)
-                                } else {
-                                    pos2(0.0, (win_size.y - img_size.y) / 2.0)
-                                };
-
-                                if let Some(cursor_pos) = cursor_position {
-                                    let cur_uv = ((cursor_pos - img_pos) / img_size).to_pos2();
-                                    let size = egui::Vec2::splat(lens_size);
-                                    let size_uv = size / lens_magnification / img_size;
-
-                                    let lens_img = egui::Image::from_texture(
-                                        egui::load::SizedTexture::from_handle(&hndl),
-                                    )
-                                    .uv(egui::Rect::from_min_size(cur_uv - size_uv / 2.0, size_uv))
-                                    .fit_to_original_size(lens_magnification)
-                                    .max_size(size)
-                                    .maintain_aspect_ratio(false)
-                                    .rounding(egui::Rounding::same(lens_size))
-                                    .bg_fill(egui::Color32::from_gray(20));
-
-                                    ui.put(
-                                        egui::Rect::from_min_size(cursor_pos - size / 2.0, size),
-                                        lens_img,
-                                    );
-                                }
-
-                                let mut opts = state.preview_mut();
-
-                                if ui.ui_contains_pointer()
-                                    && ui.input(|i| i.pointer.primary_down())
-                                {
-                                    opts.cursor_position = ui.input(|i| i.pointer.latest_pos());
-                                } else {
-                                    opts.cursor_position = None;
-                                }
-
-                                let double_clicked = ui.ui_contains_pointer()
-                                    && ui.input(|i| {
-                                        i.pointer
-                                            .button_double_clicked(egui::PointerButton::Primary)
-                                    });
-
-                                if take_shortcut!(ui, F11) || double_clicked {
-                                    opts.fullscreen ^= true;
-                                    ctx.send_viewport_cmd_to(
-                                        viewport_id,
-                                        egui::ViewportCommand::Fullscreen(opts.fullscreen),
-                                    );
-                                }
-                            },
-                        );
-                    });
-
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    state.close_preview();
-                }
-            },
-        );
-    }
 }
 
 impl eframe::App for App {
@@ -832,8 +725,6 @@ impl eframe::App for App {
         self.bottom_panel_ui(ctx);
 
         self.central_panel_ui(ctx);
-
-        self.preview_window_ui(ctx);
 
         self.focused = ctx.memory(|m| m.focused());
 

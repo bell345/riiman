@@ -1,3 +1,4 @@
+use crate::data::TransformParams;
 use chrono::{DateTime, TimeDelta, Utc};
 use eframe::egui;
 use sha2::{Digest, Sha256};
@@ -12,6 +13,7 @@ pub struct ThumbnailParams {
     pub rel_path: String,
     pub last_modified: Option<DateTime<Utc>>,
     pub height: usize,
+    pub transform_params: Option<TransformParams>,
 }
 
 impl ThumbnailParams {
@@ -21,6 +23,7 @@ impl ThumbnailParams {
             rel_path: self.rel_path.clone(),
             last_modified: self.last_modified,
             height,
+            transform_params: self.transform_params.clone(),
         }
     }
 
@@ -29,13 +32,16 @@ impl ThumbnailParams {
     }
 
     pub fn hash_path(&self) -> Box<Path> {
-        let id = format!(
+        let mut id = format!(
             "{}_{}_{}",
             self.abs_path,
             self.height,
             self.last_modified
                 .map_or(String::new(), |dt| dt.to_rfc3339())
         );
+        if let Some(params) = self.transform_params.as_ref() {
+            id = format!("{}_{}", id, egui::Id::new(params).value());
+        }
         let h = base16ct::lower::encode_string(Sha256::digest(id).as_slice());
         // 6f12a101d9[...] -> riiman/6f/12a101d9[...].jpg
         let root_folder = "riiman";

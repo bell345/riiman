@@ -26,9 +26,15 @@ const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
 const THUMBNAIL_LQ_LOAD_INTERVAL_MS: i64 = 10;
 pub const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 
+pub struct TaskInfo {
+    pub request_id: Option<egui::Id>,
+    pub name: String,
+    pub task_factory: TaskFactory,
+}
+
 pub(crate) struct AppState {
-    task_queue: Mutex<Vec<(String, TaskFactory, bool)>>,
-    results: DashMap<String, AsyncTaskReturn>,
+    task_queue: Mutex<Vec<TaskInfo>>,
+    results: DashMap<egui::Id, AsyncTaskReturn>,
     error_queue: Mutex<Vec<anyhow::Error>>,
     dialog_queue: Mutex<Vec<Box<dyn AppModal>>>,
     vaults: DashMap<String, Arc<Vault>>,
@@ -245,15 +251,19 @@ impl AppState {
 
     fn add_task_impl(
         &self,
+        request_id: Option<egui::Id>,
         name: String,
         task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
             + Send
             + Sync
             + 'static,
-        is_request: bool,
     ) {
         let mut l = self.task_queue.lock().unwrap();
-        l.push((name, Box::new(task_factory), is_request));
+        l.push(TaskInfo {
+            request_id,
+            name,
+            task_factory: Box::new(task_factory),
+        });
     }
 
     pub fn add_dialog(&self, dialog: impl AppModal) {
@@ -269,18 +279,19 @@ impl AppState {
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(name.into(), task_factory, false);
+        self.add_task_impl(None, name.into(), task_factory);
     }
 
     pub fn add_task_request(
         &self,
+        request_id: egui::Id,
         name: impl Into<String>,
         task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
             + Send
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(name.into(), task_factory, true);
+        self.add_task_impl(Some(request_id), name.into(), task_factory);
     }
 
     pub fn catch<T, E: Into<anyhow::Error>, S: Into<String>>(
@@ -298,7 +309,7 @@ impl AppState {
         }
     }
 
-    pub fn drain_tasks(&self, n: usize) -> Vec<(String, TaskFactory, bool)> {
+    pub fn drain_tasks(&self, n: usize) -> Vec<TaskInfo> {
         let mut l = self.task_queue.lock().unwrap();
         let mut v: Vec<_> = vec![];
         for _ in 0..n {
@@ -320,13 +331,13 @@ impl AppState {
         self.dialog_queue.lock().unwrap().drain(..).collect()
     }
 
-    pub fn try_take_request_result(&self, name: &str) -> Option<AsyncTaskReturn> {
-        self.results.remove(name).map(|(_, v)| v)
+    pub fn try_take_request_result(&self, id: egui::Id) -> Option<AsyncTaskReturn> {
+        self.results.remove(&id).map(|(_, v)| v)
     }
 
-    pub fn push_request_results(&self, results: Vec<(String, AsyncTaskReturn)>) {
-        for (name, result) in results {
-            self.results.insert(name, result);
+    pub fn push_request_results(&self, results: Vec<(egui::Id, AsyncTaskReturn)>) {
+        for (id, result) in results {
+            self.results.insert(id, result);
         }
     }
 
@@ -433,26 +444,6 @@ impl AppState {
         for (shortcut, action) in shortcuts {
             l.insert(shortcut, action);
         }
-    }
-
-    pub fn preview_opts(&self) -> PreviewOptions {
-        self.preview.lock().unwrap().clone()
-    }
-
-    pub fn preview_mut(&self) -> MutexGuard<PreviewOptions> {
-        self.preview.lock().unwrap()
-    }
-
-    pub fn preview_texture(&self) -> Option<egui::TextureHandle> {
-        self.preview.lock().unwrap().texture_handle()
-    }
-
-    pub fn set_preview(&self, hndl: egui::TextureHandle) {
-        self.preview.lock().unwrap().set_texture(hndl);
-    }
-
-    pub fn close_preview(&self) {
-        self.preview.lock().unwrap().clear();
     }
 
     pub fn commit_thumbnail(&self, params: ThumbnailParams, item: ThumbnailCacheItem) {

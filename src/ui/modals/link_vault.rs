@@ -31,12 +31,12 @@ impl AppModal for LinkVault {
     }
 
     fn update(&mut self, ctx: &egui::Context, state: AppStateRef) {
-        let request_name = "link_vault_modal_load_request".to_string();
+        let request_id = self.id().with("load_modal");
         let modal = Modal::new(ctx, self.id().value());
 
         let curr_name = state.current_vault_name().expect("vault to be loaded");
         let vault_names = state.valid_vault_names();
-        match state.try_take_request_result(&request_name) {
+        match state.try_take_request_result(request_id) {
             None => {}
             Some(Ok(AsyncTaskResult::VaultLoaded {
                 name: loaded_vault_name,
@@ -67,7 +67,7 @@ impl AppModal for LinkVault {
                         });
                     ui.label("-- or --");
                     if ui.button("Load a vault...").clicked() {
-                        state.add_task_request(request_name, |s, p| {
+                        state.add_task_request(request_id, "Load vault", |s, p| {
                             Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(
                                 s, p, false,
                             ))

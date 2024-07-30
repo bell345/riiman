@@ -40,7 +40,7 @@ const ROW_HEIGHT: f32 = 18.0;
 impl Download {
     fn select_gallery_dl(&mut self, app_state: AppStateRef) {
         self.loading_find = true;
-        app_state.add_task_request(self.find_request_id(), |state, p| {
+        app_state.add_task_request(self.find_request_id(), "Find gallery-dl", |state, p| {
             Promise::spawn_async(crate::tasks::download::select_gallery_dl(state, p))
         });
     }
@@ -215,8 +215,8 @@ impl Download {
         );
     }
 
-    fn find_request_id(&self) -> String {
-        format!("Find gallery-dl ({})", self.id().value())
+    fn find_request_id(&self) -> egui::Id {
+        self.id().with("find_gallery_dl")
     }
 
     fn validate(&self) -> Result<(), &'static str> {
@@ -277,25 +277,22 @@ impl AppModal for Download {
             log_file.push(format!("{}.txt", Uuid::new_v4()));
             self.params.log_file = Some(log_file.to_str().unwrap().to_string());
 
-            app_state.add_task_request(self.find_request_id(), |state, p| {
+            app_state.add_task_request(self.find_request_id(), "Find gallery-dl", |state, p| {
                 Promise::spawn_async(crate::tasks::download::find_gallery_dl(state, p))
             });
             self.loading_find = true;
         }
 
-        match app_state.try_take_request_result(&self.find_request_id()) {
-            None => {}
-            Some(res) => {
-                self.loading_find = false;
-                match res {
-                    Ok(AsyncTaskResult::FoundGalleryDl { path, version }) => {
-                        self.params.location = Some(path);
-                        self.params.version = Some(version);
-                    }
-                    Err(e) if AppError::UserCancelled.is_err(&e) => {}
-                    Err(e) => self.find_error = Some(e.to_string()),
-                    _ => {}
+        if let Some(res) = app_state.try_take_request_result(self.find_request_id()) {
+            self.loading_find = false;
+            match res {
+                Ok(AsyncTaskResult::FoundGalleryDl { path, version }) => {
+                    self.params.location = Some(path);
+                    self.params.version = Some(version);
                 }
+                Err(e) if AppError::UserCancelled.is_err(&e) => {}
+                Err(e) => self.find_error = Some(e.to_string()),
+                _ => {}
             }
         }
 

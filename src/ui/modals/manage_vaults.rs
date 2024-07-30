@@ -47,7 +47,8 @@ impl CloneableTempState for State {}
 
 impl ManageVaults {
     fn table_row(&mut self, name: String, row: &mut egui_extras::Strip, state: AppStateRef) {
-        let req_name = format!("manage_vaults_load_{name}");
+        let req_id = self.id().with(format!("load_{name}"));
+        let req_name = format!("Load vault with name '{name}'");
         let error_message = self
             .widget_state
             .vault_errors
@@ -73,7 +74,7 @@ impl ManageVaults {
 
                 if ui.button("Open...").clicked() {
                     *error_message = None;
-                    state.add_task_request(req_name, |s, p| {
+                    state.add_task_request(req_id, req_name, |s, p| {
                         Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                     });
                 }
@@ -86,7 +87,7 @@ impl ManageVaults {
 
                 if ui.button("Change...").clicked() {
                     *error_message = None;
-                    state.add_task_request(req_name, |s, p| {
+                    state.add_task_request(req_id, req_name, |s, p| {
                         Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
                     });
                 }
@@ -119,12 +120,14 @@ impl ManageVaults {
 
             let vault_names = state.known_vault_names();
             for name in &vault_names {
+                let id = self.id().with(format!("load_{name}"));
                 let error_message = self
                     .widget_state
                     .vault_errors
                     .entry(name.clone())
                     .or_insert(None);
-                match state.try_take_request_result(name) {
+
+                match state.try_take_request_result(id) {
                     None => {}
                     Some(Ok(AsyncTaskResult::VaultLoaded { name: res_name, .. }))
                         if &res_name == name =>

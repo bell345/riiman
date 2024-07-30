@@ -1,5 +1,3 @@
-use eframe::egui;
-use eframe::egui::{pos2, vec2, ViewportClass, ViewportId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -7,6 +5,8 @@ use crate::data::PreviewOptions;
 use crate::state::AppStateRef;
 use crate::take_shortcut;
 use crate::ui::AppModal;
+use eframe::egui;
+use eframe::egui::{pos2, vec2, ViewportClass, ViewportId};
 
 pub struct Preview {
     id: egui::Id,
@@ -17,24 +17,18 @@ pub struct Preview {
 }
 
 impl Preview {
-    pub fn widget(id_source: impl std::hash::Hash, texture: egui::TextureHandle) -> Self {
-        Self {
-            id: egui::Id::new(id_source),
+    pub fn new(
+        id: egui::Id,
+        texture: egui::TextureHandle,
+        viewport_class: ViewportClass,
+    ) -> Arc<RwLock<Self>> {
+        Arc::new(RwLock::new(Self {
+            id,
             texture,
             options: Default::default(),
-            viewport_class: ViewportClass::Embedded,
+            viewport_class,
             is_open: Arc::new(AtomicBool::new(true)),
-        }
-    }
-
-    pub fn window(id_source: impl std::hash::Hash, texture: egui::TextureHandle) -> Self {
-        Self {
-            id: egui::Id::new(id_source),
-            texture,
-            options: Default::default(),
-            viewport_class: ViewportClass::Deferred,
-            is_open: Arc::new(AtomicBool::new(true)),
-        }
+        }))
     }
 
     fn contents(&mut self, viewport_id: ViewportId, ui: &mut egui::Ui) {
@@ -51,7 +45,7 @@ impl Preview {
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
             |ui| {
                 let img = egui::Image::from_texture(egui::load::SizedTexture::from_handle(&hndl))
-                    .bg_fill(egui::Color32::from_gray(20))
+                    .bg_fill(egui::Color32::BLACK)
                     .shrink_to_fit();
 
                 let res = ui.add(img);
@@ -83,7 +77,7 @@ impl Preview {
                             .max_size(size)
                             .maintain_aspect_ratio(false)
                             .rounding(egui::Rounding::same(lens_size))
-                            .bg_fill(egui::Color32::from_gray(20));
+                            .bg_fill(egui::Color32::BLACK);
 
                     ui.put(
                         egui::Rect::from_min_size(cursor_pos - size / 2.0, size),
@@ -128,11 +122,30 @@ impl AppModal for Arc<RwLock<Preview>> {
             (r.id, r.viewport_class, Arc::clone(&r.is_open))
         };
 
-        let min_size = vec2(600.0, 400.0);
+        let min_size = vec2(50.0, 50.0);
+        let pix_per_pt = ctx
+            .input(|i| i.viewport().native_pixels_per_point)
+            .unwrap_or(1.0);
+        let img_size = self.read().unwrap().texture.size_vec2() / pix_per_pt;
+        let monitor_size = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or(vec2(1920.0, 1080.0));
+        let max_size = monitor_size * 0.9;
+        let mut inner_size = img_size.clamp(min_size, max_size);
+        let img_ratio = img_size.x / img_size.y;
+        let inner_ratio = inner_size.x / inner_size.y;
+        if img_ratio > inner_ratio {
+            inner_size.y = (inner_size.x / img_ratio).floor();
+        } else {
+            inner_size.x = (inner_size.y * img_ratio).floor();
+        }
+
         let vp_id = ViewportId::from_hash_of(id);
         let builder = egui::ViewportBuilder::default()
             .with_title("Preview")
-            .with_min_inner_size(min_size);
+            .with_inner_size(inner_size)
+            .with_min_inner_size(min_size)
+            .with_max_inner_size(max_size);
 
         match viewport_class {
             ViewportClass::Root => panic!("Preview window is not allowed to be a root window"),
@@ -174,7 +187,9 @@ impl AppModal for Arc<RwLock<Preview>> {
                 egui::Window::new("Preview")
                     .id(self.id())
                     .frame(egui::Frame::none())
+                    .default_size(inner_size)
                     .min_size(min_size)
+                    .max_size(max_size)
                     .open(&mut is_open_var)
                     .show(ctx, |ui| {
                         self.write().unwrap().contents(vp_id, ui);

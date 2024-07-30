@@ -45,6 +45,7 @@ impl ThumbnailPosition {
             abs_path: self.abs_path.as_ref()?.clone(),
             last_modified: self.last_modified,
             height,
+            transform_params: None,
         })
     }
 }
@@ -57,7 +58,7 @@ pub struct ThumbnailGridInfo {
 
 /// Defines the parameters used for the 'river' algorithm.
 /// Note that, by convention, the "main" axis is measured using "width"
-/// and the "cross" axis is measured using "height", even if the main_axis
+/// and the "cross" axis is measured using "height", even if the [`Self::main_axis`]
 /// is not [`Direction::LeftToRight`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RiverParams {
@@ -200,9 +201,10 @@ fn fix_aspect_ratio(ratio: f32, axis: Direction) -> f32 {
 }
 
 pub fn river_layout(
-    params: RiverParams,
+    params: &RiverParams,
     vault: &Vault,
     item_ids: &[ItemId],
+    get_image_size: impl Fn(&Item) -> Option<Vec2>,
 ) -> anyhow::Result<ThumbnailGridInfo> {
     let row_width = params.container_width.floor();
     let inner_height = params.init_row_height.floor();
@@ -248,7 +250,7 @@ pub fn river_layout(
         };
 
         // TODO: should we ignore non-image items?
-        let Some(size) = item.get_image_size()? else {
+        let Some(size) = get_image_size(&item) else {
             continue;
         };
 
@@ -306,7 +308,10 @@ pub fn river_layout(
         thumbnails.push(info);
     }
 
-    Ok(ThumbnailGridInfo { params, thumbnails })
+    Ok(ThumbnailGridInfo {
+        params: params.clone(),
+        thumbnails,
+    })
 }
 
 /*

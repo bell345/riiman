@@ -14,7 +14,7 @@ use crate::data::{
 };
 use crate::state::AppStateRef;
 use crate::take_shortcut;
-use crate::tasks::transform::load_transformed_image_preview;
+use crate::tasks::transform::load_image_preview;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTag;
 use crate::ui::widgets;
@@ -331,8 +331,8 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             ) else {
                 return;
             };
-            self.app_state.add_task("Load image preview", move |_, p| {
-                Promise::spawn_blocking(move || load_transformed_image_preview(abs_path, p))
+            self.app_state.add_task("Load image preview", move |_, _| {
+                Promise::spawn_blocking(move || load_image_preview(abs_path))
             });
         }
 

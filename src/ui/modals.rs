@@ -18,6 +18,7 @@ pub use link_vault::LinkVault;
 pub use manage_vaults::ManageVaults;
 pub use message::Message;
 pub use new_vault::NewVault;
+pub use preview::Preview;
 pub use tag_shortcuts::TagShortcuts;
 pub use transform::TransformImages;
 

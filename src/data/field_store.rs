@@ -58,17 +58,6 @@ pub trait FieldStore {
             .or_insert_with(|| <T as Default>::default().into()) = T::from(value).into();
     }
 
-    fn get_image_size(&self) -> anyhow::Result<Option<egui::Vec2>> {
-        let Some(width) = self.get_known_field_value(fields::image::WIDTH)? else {
-            return Ok(None);
-        };
-        let Some(height) = self.get_known_field_value(fields::image::HEIGHT)? else {
-            return Ok(None);
-        };
-        #[allow(clippy::cast_precision_loss)]
-        Ok(Some(egui::Vec2::new(width as f32, height as f32)))
-    }
-
     fn has_field(&self, field_id: &Uuid) -> bool {
         self.fields().contains_key(field_id)
     }

@@ -62,6 +62,7 @@ async fn import_single_image(
         abs_path,
         last_modified: Some(last_modified),
         height: THUMBNAIL_LOW_QUALITY_HEIGHT,
+        transform_params: None,
     })
     .await
     .map_err(|e| anyhow!(e))?;

@@ -1,8 +1,9 @@
-use crate::data::{Item, ItemId, ThumbnailCacheItem, Vault};
+use crate::data::{Item, ItemId, ThumbnailCacheItem, TransformParams, Vault};
 use crate::state::{AppStateRef, THUMBNAIL_LOW_QUALITY_HEIGHT};
 use crate::take_shortcut;
 use crate::tasks::thumb_grid::{river_layout, ThumbnailPosition};
 use crate::tasks::thumbnail::{load_image_thumbnail, load_image_thumbnail_with_fs};
+use crate::tasks::transform::get_transformed_size;
 use crate::tasks::{RiverParams, ThumbnailGridInfo};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::theme::get_accent_color;
@@ -16,6 +17,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Add;
+use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
 
@@ -31,6 +33,7 @@ const HIGHLIGHT_PADDING: f32 = 2.0;
 pub struct ThumbnailGrid {
     id: egui::Id,
     pub params: RiverParams,
+    pub transform_params: Option<TransformParams>,
     info: ThumbnailGridInfo,
     app_state: AppStateRef,
     state: State,
@@ -86,6 +89,7 @@ impl ThumbnailGrid {
         Self {
             id: egui::Id::new(id),
             params: Default::default(),
+            transform_params: Default::default(),
             info: Default::default(),
             app_state: Default::default(),
             state: Default::default(),
@@ -144,6 +148,18 @@ impl ThumbnailGrid {
     pub fn get_double_clicked_item(&self, vault: &Vault) -> Option<Arc<Item>> {
         self.double_clicked
             .and_then(|id| vault.get_item_opt_by_id(id))
+    }
+
+    pub fn get_double_clicked_item_path(&self) -> Option<String> {
+        let vault = self.app_state.current_vault_opt()?;
+        let item = self.get_double_clicked_item(&vault)?;
+        let rel_path = Path::new(item.path());
+        self.app_state
+            .catch(
+                || format!("resolving absolute path for {}", item.path()),
+                || vault.resolve_abs_path(rel_path),
+            )
+            .ok()
     }
 
     fn handle_tab(&mut self, ui: &mut egui::Ui, thumbnails: &[ThumbnailPosition]) {
@@ -226,10 +242,12 @@ impl ThumbnailGrid {
             #[allow(clippy::cast_possible_truncation)]
             #[allow(clippy::cast_sign_loss)]
             let height = self.params.init_row_height.floor() as usize;
-            let Some(params) = item.params(height) else {
+            let Some(mut params) = item.params(height) else {
                 ui.put(inner_bounds, text);
                 return;
             };
+
+            params.transform_params.clone_from(&self.transform_params);
 
             let thumb = self.app_state.resolve_thumbnail(&params);
 
@@ -397,11 +415,22 @@ impl ThumbnailGrid {
             ui.ctx().request_repaint();
 
             let vault = self.app_state.current_vault_opt()?;
-            let params = self.params.clone();
 
             self.info = self
                 .app_state
-                .catch(|| "Thumb grid", || river_layout(params, &vault, item_ids))
+                .catch(
+                    || "Thumb grid",
+                    || {
+                        river_layout(&self.params, &vault, item_ids, |i| {
+                            let size = i.get_image_size().ok().flatten()?;
+                            if let Some(params) = self.transform_params.as_ref() {
+                                Some(get_transformed_size(size, params))
+                            } else {
+                                Some(size)
+                            }
+                        })
+                    },
+                )
                 .ok()?;
         }
 

@@ -1,21 +1,22 @@
 use crate::data::transform::{
-    ChromaSubsampling, CompressionFileType, DestinationType, EsrganModel, FitAlgorithm,
-    InfillTechnique, ScaleAlgorithm, SourceType,
+    ChromaSubsampling, CompressionFileType, DestinationKind, EsrganModel, FitAlgorithm,
+    InfillTechnique, ScaleAlgorithm, SourceKind,
 };
-use crate::data::{ItemId, TransformParams};
+use crate::data::{ItemId, TransformBulkParams, TransformParams};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
+use crate::tasks::transform::{get_transformed_size, load_transformed_image_preview};
 use crate::tasks::AsyncTaskResult;
-use crate::ui::cloneable_state::CloneableTempState;
+use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::modals::AppModal;
 use crate::ui::thumb_grid::ThumbnailGrid;
 use crate::ui::{buttons, choice, indent};
 use eframe::egui;
-use eframe::egui::Color32;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
 
@@ -34,12 +35,16 @@ enum FormSection {
 pub struct TransformImages {
     modal: Option<Modal>,
     preview_grid: ThumbnailGrid,
-    selected_item_ids: Vec<ItemId>,
-    selected_items_updated: bool,
+    source_item_ids: Vec<ItemId>,
+    source_items_updated: bool,
+    selected_item_id: Option<ItemId>,
+    selected_preview_hndl: Option<egui::TextureHandle>,
+    params_of_selected_preview: Option<TransformParams>,
     error_message: Option<String>,
     state: Option<State>,
     app_state: AppStateRef,
     opened: bool,
+    is_open: bool,
 }
 
 impl Default for TransformImages {
@@ -47,29 +52,34 @@ impl Default for TransformImages {
         Self {
             modal: None,
             preview_grid: ThumbnailGrid::new("transform_modal_preview_grid"),
-            selected_item_ids: Default::default(),
-            selected_items_updated: false,
+            source_item_ids: Default::default(),
+            source_items_updated: false,
+            selected_item_id: None,
+            selected_preview_hndl: None,
+            params_of_selected_preview: None,
             state: None,
             error_message: None,
             app_state: Default::default(),
             opened: false,
+            is_open: true,
         }
     }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct State {
-    is_open: bool,
-    params: TransformParams,
+    transform_params: TransformParams,
+    bulk_params: TransformBulkParams,
     form_section: FormSection,
 }
 
-impl CloneableTempState for State {}
+impl CloneablePersistedState for State {}
 
 mod request {
     pub const LOAD_VAULT: &str = "load_vault";
     pub const CHOOSE_DIRECTORY: &str = "choose_directory";
     pub const CHOOSE_ARCHIVE: &str = "choose_archive";
+    pub const LOAD_PREVIEW: &str = "load_preview";
 }
 
 impl TransformImages {
@@ -81,26 +91,26 @@ impl TransformImages {
         self.state.as_mut().unwrap()
     }
 
-    fn source_len(&self, source_type: SourceType) -> usize {
+    fn source_len(&self, source_type: SourceKind) -> usize {
         match source_type {
-            SourceType::Selection => self.app_state.len_selected_items(),
-            SourceType::Filtered => self.app_state.len_item_list(),
-            SourceType::All => self
+            SourceKind::Selection => self.app_state.len_selected_items(),
+            SourceKind::Filtered => self.app_state.len_item_list(),
+            SourceKind::All => self
                 .app_state
                 .current_vault_opt()
                 .map_or(0, |vault| vault.len_items()),
         }
     }
 
-    fn update_selected_items(&mut self, source_type: SourceType) -> Result<(), ()> {
+    fn update_selected_items(&mut self, source_kind: SourceKind) -> Result<(), ()> {
         let vault = self.app_state.current_vault_catch()?;
-        let mut items = if source_type == SourceType::All {
+        let mut items = if source_kind == SourceKind::All {
             vault.iter_items().map(|i| Arc::clone(&i)).collect()
         } else {
-            let ids = match source_type {
-                SourceType::Selection => self.app_state.selected_item_ids(),
-                SourceType::Filtered => self.app_state.item_list_ids(),
-                SourceType::All => unreachable!(),
+            let ids = match source_kind {
+                SourceKind::Selection => self.app_state.selected_item_ids(),
+                SourceKind::Filtered => self.app_state.item_list_ids(),
+                SourceKind::All => unreachable!(),
             };
             vault.resolve_item_ids(&ids)
         };
@@ -110,11 +120,11 @@ impl TransformImages {
             || sort_items_unstable(&mut items, &vault, &self.app_state.sorts()),
         )?;
 
-        self.selected_item_ids = items
+        self.source_item_ids = items
             .into_iter()
             .map(|i| ItemId::from_item(&vault, &i))
             .collect();
-        self.selected_items_updated = true;
+        self.source_items_updated = true;
 
         Ok(())
     }
@@ -122,7 +132,7 @@ impl TransformImages {
     fn type_choice_grid_inner(&mut self, ui: &mut egui::Ui) {
         let (form_section, params) = {
             let state = self.state_mut();
-            (&mut state.form_section, &mut state.params)
+            (&mut state.form_section, &mut state.transform_params)
         };
 
         egui_extras::TableBuilder::new(ui)
@@ -130,6 +140,7 @@ impl TransformImages {
             .column(egui_extras::Column::remainder())
             .body(|mut body| {
                 let row_height = 18.0;
+
                 body.row(row_height, |mut row| {
                     row.col(|_| {});
                     row.col(|ui| choice(ui, form_section, FormSection::Source));
@@ -140,61 +151,61 @@ impl TransformImages {
                 });
                 body.row(row_height, |mut row| {
                     row.col(|ui| {
-                        ui.checkbox(&mut params.scale_options.enabled, "");
+                        ui.checkbox(&mut params.scale.enabled, "");
                     });
                     row.col(|ui| choice(ui, form_section, FormSection::Scale));
                 });
                 body.row(row_height, |mut row| {
                     row.col(|ui| {
-                        ui.checkbox(&mut params.infill_options.enabled, "");
+                        ui.checkbox(&mut params.infill.enabled, "");
                     });
                     row.col(|ui| choice(ui, form_section, FormSection::Infill));
                 });
                 body.row(row_height, |mut row| {
                     row.col(|ui| {
-                        ui.checkbox(&mut params.compression_options.enabled, "");
+                        ui.checkbox(&mut params.compression.enabled, "");
                     });
                     row.col(|ui| choice(ui, form_section, FormSection::Compression));
                 });
             });
     }
 
-    fn source_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
+    fn source_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         ui.vertical(|ui| {
-            let source_type = &mut p.source_type;
-            let old_source_type = *source_type;
+            let source_kind = &mut p.source.kind;
+            let old_source_kind = *source_kind;
 
             ui.radio_value(
-                source_type,
-                SourceType::Selection,
+                source_kind,
+                SourceKind::Selection,
                 format!(
                     "Currently selected images ({})",
-                    self.source_len(SourceType::Selection)
+                    self.source_len(SourceKind::Selection)
                 ),
             );
             ui.radio_value(
-                source_type,
-                SourceType::Filtered,
+                source_kind,
+                SourceKind::Filtered,
                 format!(
                     "All images which match filters ({})",
-                    self.source_len(SourceType::Filtered)
+                    self.source_len(SourceKind::Filtered)
                 ),
             );
             ui.radio_value(
-                source_type,
-                SourceType::All,
-                format!("All images in vault ({})", self.source_len(SourceType::All)),
+                source_kind,
+                SourceKind::All,
+                format!("All images in vault ({})", self.source_len(SourceKind::All)),
             );
 
-            if *source_type != old_source_type {
-                self.update_selected_items(*source_type)
+            if *source_kind != old_source_kind {
+                self.update_selected_items(*source_kind)
                     .expect("vault to exist");
             }
 
             ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
             ui.checkbox(
-                &mut p.source_options.delete_source,
+                &mut p.source.delete_source,
                 "Delete source images after transformation",
             );
         });
@@ -202,10 +213,10 @@ impl TransformImages {
 
     fn handle_request<R>(
         &mut self,
-        request_name: &str,
+        req_id: egui::Id,
         check_fn: impl FnOnce(AsyncTaskResult) -> Result<R, AsyncTaskResult>,
     ) -> Result<R, ()> {
-        match self.app_state.try_take_request_result(request_name) {
+        match self.app_state.try_take_request_result(req_id) {
             None => {}
             Some(Ok(res)) => match check_fn(res) {
                 Ok(r) => return Ok(r),
@@ -217,29 +228,36 @@ impl TransformImages {
         Err(())
     }
 
-    fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
+    fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         let req_prefix = self.id().with(ui.next_auto_id());
-        let id = |suf: &str| req_prefix.with(suf).value().to_string();
 
-        if let Ok(name) = self.handle_request(&id(request::LOAD_VAULT), |res| match res {
+        if let Ok(name) = self.handle_request(req_prefix.with(request::LOAD_VAULT), |res| match res
+        {
             AsyncTaskResult::VaultLoaded { name, .. } => Ok(name),
             _ => Err(res),
         }) {
-            p.destination_options.other_vault_name = name;
+            p.destination.other_vault_name = name;
         }
 
-        if let Ok(dir) = self.handle_request(&id(request::CHOOSE_DIRECTORY), |res| match res {
-            AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
-            _ => Err(res),
-        }) {
-            p.destination_options.directory_path = dir;
+        if let Ok(dir) =
+            self.handle_request(
+                req_prefix.with(request::CHOOSE_DIRECTORY),
+                |res| match res {
+                    AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
+                    _ => Err(res),
+                },
+            )
+        {
+            p.destination.directory_path = dir;
         }
 
-        if let Ok(file) = self.handle_request(&id(request::CHOOSE_ARCHIVE), |res| match res {
-            AsyncTaskResult::SelectedFile(file) => Ok(file),
-            _ => Err(res),
-        }) {
-            p.destination_options.archive_path = file;
+        if let Ok(file) =
+            self.handle_request(req_prefix.with(request::CHOOSE_ARCHIVE), |res| match res {
+                AsyncTaskResult::SelectedFile(file) => Ok(file),
+                _ => Err(res),
+            })
+        {
+            p.destination.archive_path = file;
         }
 
         self.destination_choice_fragment(ui, req_prefix, p);
@@ -248,8 +266,8 @@ impl TransformImages {
 
         ui.add_enabled_ui(
             matches!(
-                p.destination_type,
-                DestinationType::SameVault | DestinationType::OtherVault
+                p.destination.kind,
+                DestinationKind::SameVault | DestinationKind::OtherVault
             ),
             |ui| {
                 ui.label("Choose vault destination directory:");
@@ -260,21 +278,19 @@ impl TransformImages {
                         .min_col_width(200.0 - ui.style().spacing.indent)
                         .show(ui, |ui| {
                             ui.radio_value(
-                                &mut p.destination_options.use_subdirectory,
+                                &mut p.destination.use_subdirectory,
                                 false,
                                 "Root directory",
                             );
                             ui.end_row();
                             ui.radio_value(
-                                &mut p.destination_options.use_subdirectory,
+                                &mut p.destination.use_subdirectory,
                                 true,
                                 "Sub directory:",
                             );
                             ui.add_enabled(
-                                p.destination_options.use_subdirectory,
-                                egui::TextEdit::singleline(
-                                    &mut p.destination_options.vault_subdirectory,
-                                ),
+                                p.destination.use_subdirectory,
+                                egui::TextEdit::singleline(&mut p.destination.vault_subdirectory),
                             );
                             ui.end_row();
                         });
@@ -285,18 +301,18 @@ impl TransformImages {
         ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
         ui.add_enabled(
-            p.destination_type == DestinationType::Archive,
+            p.destination.kind == DestinationKind::Archive,
             egui::Checkbox::new(
-                &mut p.destination_options.replace_archive_if_existing,
+                &mut p.destination.replace_archive_if_existing,
                 "Replace archive if existing",
             ),
         );
         ui.checkbox(
-            &mut p.destination_options.replace_items_if_existing,
+            &mut p.destination.replace_items_if_existing,
             "Replace items if existing",
         );
         ui.checkbox(
-            &mut p.destination_options.preserve_directory_structure,
+            &mut p.destination.preserve_directory_structure,
             "Preserve directory structure",
         );
     }
@@ -306,10 +322,8 @@ impl TransformImages {
         &mut self,
         ui: &mut egui::Ui,
         id_prefix: egui::Id,
-        p: &mut TransformParams,
+        p: &mut TransformBulkParams,
     ) {
-        let id = |suf: &str| id_prefix.with(suf).value().to_string();
-
         let curr_name = self
             .app_state
             .current_vault_name()
@@ -320,24 +334,17 @@ impl TransformImages {
             .num_columns(2)
             .min_col_width(200.0)
             .show(ui, |ui| {
-                ui.radio_value(
-                    &mut p.destination_type,
-                    DestinationType::SameVault,
-                    "Same vault",
-                );
+                let dest_kind = &mut p.destination.kind;
+                ui.radio_value(dest_kind, DestinationKind::SameVault, "Same vault");
                 ui.end_row();
 
-                ui.radio_value(
-                    &mut p.destination_type,
-                    DestinationType::OtherVault,
-                    "Different vault:",
-                );
+                ui.radio_value(dest_kind, DestinationKind::OtherVault, "Different vault:");
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(p.destination_type == DestinationType::OtherVault, |ui| {
+                    ui.add_enabled_ui(*dest_kind == DestinationKind::OtherVault, |ui| {
                         egui::ComboBox::new(self.id().with("other_vault_choose_box"), "")
-                            .selected_text(&p.destination_options.other_vault_name)
+                            .selected_text(&p.destination.other_vault_name)
                             .show_ui(ui, |ui| {
-                                let v = &mut p.destination_options.other_vault_name;
+                                let v = &mut p.destination.other_vault_name;
                                 ui.selectable_value(v, String::new(), "--");
                                 for vault_name in vault_names {
                                     if vault_name != curr_name {
@@ -347,49 +354,46 @@ impl TransformImages {
                             });
 
                         if ui.button("Load a vault...").clicked() {
-                            self.app_state
-                                .add_task_request(id(request::LOAD_VAULT), |s, p| {
+                            self.app_state.add_task_request(
+                                id_prefix.with(request::LOAD_VAULT),
+                                "Load vault",
+                                |s, p| {
                                     Promise::spawn_async(
                                         crate::tasks::vault::choose_and_load_vault(s, p, false),
                                     )
-                                });
+                                },
+                            );
                         }
                     });
                 });
                 ui.end_row();
 
-                ui.radio_value(
-                    &mut p.destination_type,
-                    DestinationType::Directory,
-                    "Directory:",
-                );
+                ui.radio_value(dest_kind, DestinationKind::Directory, "Directory:");
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(p.destination_type == DestinationType::Directory, |ui| {
-                        ui.text_edit_singleline(&mut p.destination_options.directory_path);
+                    ui.add_enabled_ui(*dest_kind == DestinationKind::Directory, |ui| {
+                        ui.text_edit_singleline(&mut p.destination.directory_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state
-                                .add_task_request(id(request::CHOOSE_DIRECTORY), |_, _| {
-                                    Promise::spawn_async(crate::tasks::choose::choose_folder())
-                                });
+                            self.app_state.add_task_request(
+                                id_prefix.with(request::CHOOSE_DIRECTORY),
+                                "Choose directory",
+                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
+                            );
                         }
                     });
                 });
                 ui.end_row();
 
-                ui.radio_value(
-                    &mut p.destination_type,
-                    DestinationType::Archive,
-                    "Archive:",
-                );
+                ui.radio_value(dest_kind, DestinationKind::Archive, "Archive:");
 
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(p.destination_type == DestinationType::Archive, |ui| {
-                        ui.text_edit_singleline(&mut p.destination_options.archive_path);
+                    ui.add_enabled_ui(*dest_kind == DestinationKind::Archive, |ui| {
+                        ui.text_edit_singleline(&mut p.destination.archive_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state
-                                .add_task_request(id(request::CHOOSE_ARCHIVE), |_, _| {
-                                    Promise::spawn_async(crate::tasks::choose::choose_archive())
-                                });
+                            self.app_state.add_task_request(
+                                id_prefix.with(request::CHOOSE_ARCHIVE),
+                                "Choose archive",
+                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
+                            );
                         }
                     });
                 })
@@ -397,22 +401,22 @@ impl TransformImages {
     }
 
     fn scaling_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
-        ui.add_enabled_ui(p.scale_options.enabled, |ui| {
+        ui.add_enabled_ui(p.scale.enabled, |ui| {
             egui::Grid::new(self.id().with("scaling_options_width_height_grid"))
                 .num_columns(2)
                 .min_col_width(200.0)
                 .show(ui, |ui| {
-                    ui.checkbox(&mut p.scale_options.use_target_width, "Target width: ");
+                    ui.checkbox(&mut p.scale.use_target_width, "Target width: ");
                     ui.add_enabled(
-                        p.scale_options.use_target_width,
-                        egui::DragValue::new(&mut p.scale_options.target_width).suffix(" px"),
+                        p.scale.use_target_width,
+                        egui::DragValue::new(&mut p.scale.target_width).suffix(" px"),
                     );
                     ui.end_row();
 
-                    ui.checkbox(&mut p.scale_options.use_target_height, "Target height: ");
+                    ui.checkbox(&mut p.scale.use_target_height, "Target height: ");
                     ui.add_enabled(
-                        p.scale_options.use_target_height,
-                        egui::DragValue::new(&mut p.scale_options.target_height).suffix(" px"),
+                        p.scale.use_target_height,
+                        egui::DragValue::new(&mut p.scale.target_height).suffix(" px"),
                     );
                     ui.end_row();
                 });
@@ -425,33 +429,30 @@ impl TransformImages {
                 .num_columns(2)
                 .min_col_width(200.0)
                 .show(ui, |ui| {
-                    let fit = &mut p.scale_options.fit_algorithm;
-                    ui.label("Fit algorithm: ");
-                    ui.horizontal(|ui| {
-                        choice(ui, fit, FitAlgorithm::Fill);
-                        choice(ui, fit, FitAlgorithm::Fit);
-                        choice(ui, fit, FitAlgorithm::Stretch);
+                    let fit_enabled = p.scale.use_target_width && p.scale.use_target_height;
+                    let fit = &mut p.scale.fit_algorithm;
+                    ui.add_enabled(fit_enabled, egui::Label::new("Fit algorithm: "));
+                    ui.add_enabled_ui(fit_enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            choice(ui, fit, FitAlgorithm::Fill);
+                            choice(ui, fit, FitAlgorithm::Fit);
+                            choice(ui, fit, FitAlgorithm::Stretch);
+                        });
                     });
                     ui.end_row();
 
                     Self::scaling_algorithm_fragment(ui, prefix_id, p);
 
-                    ui.checkbox(&mut p.scale_options.integer_scaling, "Use integer scaling");
+                    ui.checkbox(&mut p.scale.integer_scaling, "Use integer scaling");
                     ui.end_row();
 
-                    ui.checkbox(
-                        &mut p.scale_options.scale_down,
-                        "Scale down oversized images",
-                    );
+                    ui.checkbox(&mut p.scale.scale_down, "Scale down oversized images");
                     ui.end_row();
 
-                    ui.checkbox(
-                        &mut p.scale_options.use_maximum_scaling,
-                        "Use maximum scaling:",
-                    );
+                    ui.checkbox(&mut p.scale.use_maximum_scaling, "Use maximum scaling:");
                     ui.add_enabled(
-                        p.scale_options.use_maximum_scaling,
-                        egui::Slider::new(&mut p.scale_options.maximum_scaling, 1.0..=16.0)
+                        p.scale.use_maximum_scaling,
+                        egui::Slider::new(&mut p.scale.maximum_scaling.0, 1.0..=16.0)
                             .fixed_decimals(1),
                     );
                     ui.end_row();
@@ -462,8 +463,8 @@ impl TransformImages {
     fn scaling_algorithm_fragment(ui: &mut egui::Ui, prefix_id: egui::Id, p: &mut TransformParams) {
         let combo_id = prefix_id.with("scaling_algorithm_choice");
         let esrgan_combo_id = prefix_id.with("esrgan_model_choice");
-        let scale_algo = &mut p.scale_options.scale_algorithm;
-        let esrgan_model = &mut p.scale_options.esrgan_model;
+        let scale_algo = &mut p.scale.scale_algorithm;
+        let esrgan_model = &mut p.scale.esrgan_model;
 
         ui.label("Scaling algorithm: ");
         egui::ComboBox::new(combo_id, "")
@@ -472,8 +473,7 @@ impl TransformImages {
                 choice(ui, scale_algo, ScaleAlgorithm::NearestNeighbour);
                 choice(ui, scale_algo, ScaleAlgorithm::Bilinear);
                 choice(ui, scale_algo, ScaleAlgorithm::Bicubic);
-                choice(ui, scale_algo, ScaleAlgorithm::Hqx);
-                choice(ui, scale_algo, ScaleAlgorithm::Xbr);
+                choice(ui, scale_algo, ScaleAlgorithm::Xbrz);
                 choice(ui, scale_algo, ScaleAlgorithm::Esrgan);
             });
         ui.end_row();
@@ -495,27 +495,27 @@ impl TransformImages {
 
     #[allow(clippy::too_many_lines)]
     fn infill_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
-        ui.add_enabled_ui(p.infill_options.enabled, |ui| {
+        ui.add_enabled_ui(p.infill.enabled, |ui| {
             egui::Grid::new(self.id().with("infill_options_ratio_grid"))
                 .num_columns(2)
                 .min_col_width(200.0)
                 .show(ui, |ui| {
                     ui.label("Target aspect ratio: ");
                     ui.horizontal(|ui| {
-                        let (mut a, mut b) = p.infill_options.target_aspect_ratio;
+                        let (mut a, mut b) = p.infill.target_aspect_ratio;
                         ui.add(
-                            egui::DragValue::new(&mut a)
+                            egui::DragValue::new(&mut a.0)
                                 .fixed_decimals(0)
                                 .clamp_range(1..=32),
                         );
                         ui.label(" : ");
                         ui.add(
-                            egui::DragValue::new(&mut b)
+                            egui::DragValue::new(&mut b.0)
                                 .fixed_decimals(0)
                                 .clamp_range(1..=32),
                         );
 
-                        p.infill_options.target_aspect_ratio = (a, b);
+                        p.infill.target_aspect_ratio = (a, b);
                     });
                     ui.end_row();
                 });
@@ -526,7 +526,7 @@ impl TransformImages {
                 .num_columns(2)
                 .min_col_width(200.0)
                 .show(ui, |ui| {
-                    let tech = &mut p.infill_options.technique;
+                    let tech = &mut p.infill.technique;
 
                     ui.label("Technique: ");
                     ui.horizontal(|ui| {
@@ -536,29 +536,29 @@ impl TransformImages {
                     });
                     ui.end_row();
 
-                    let is_blur = p.infill_options.technique == InfillTechnique::Blur;
+                    let is_blur = p.infill.technique == InfillTechnique::Blur;
                     ui.add_enabled(is_blur, egui::Label::new("Choose infill colour: "));
                     ui.end_row();
 
                     indent(ui, |ui| {
                         ui.add_enabled_ui(is_blur, |ui| {
-                            ui.radio_value(&mut p.infill_options.use_auto_solid, true, "Automatic");
+                            ui.radio_value(&mut p.infill.use_auto_solid, true, "Automatic");
                         });
                     });
                     ui.end_row();
 
                     indent(ui, |ui| {
                         ui.add_enabled_ui(is_blur, |ui| {
-                            ui.radio_value(&mut p.infill_options.use_auto_solid, false, "Manual: ");
+                            ui.radio_value(&mut p.infill.use_auto_solid, false, "Manual: ");
                         });
                     });
 
                     ui.add_enabled_ui(is_blur, |ui| {
-                        let mut srgba =
-                            p.infill_options.manual_solid_colour.to_srgba_unmultiplied();
+                        let mut srgba = p.infill.manual_solid_colour.to_srgba_unmultiplied();
                         ui.color_edit_button_srgba_unmultiplied(&mut srgba);
-                        p.infill_options.manual_solid_colour =
-                            Color32::from_rgba_unmultiplied(srgba[0], srgba[1], srgba[2], srgba[3]);
+                        p.infill.manual_solid_colour = egui::Color32::from_rgba_unmultiplied(
+                            srgba[0], srgba[1], srgba[2], srgba[3],
+                        );
                     });
                     ui.end_row();
                 });
@@ -573,34 +573,33 @@ impl TransformImages {
                     ui.end_row();
 
                     indent(ui, |ui| {
-                        ui.checkbox(&mut p.infill_options.use_gaussian, "Gaussian blur: ");
+                        ui.checkbox(&mut p.infill.use_gaussian, "Gaussian blur: ");
                     });
                     ui.add_enabled(
-                        p.infill_options.use_gaussian,
-                        egui::Slider::new(&mut p.infill_options.gaussian_radius, 1..=64)
-                            .suffix(" px"),
+                        p.infill.use_gaussian,
+                        egui::Slider::new(&mut p.infill.gaussian_radius, 1..=64).suffix(" px"),
                     );
                     ui.end_row();
 
                     indent(ui, |ui| {
-                        ui.checkbox(&mut p.infill_options.use_brightness, "Brightness change: ");
+                        ui.checkbox(&mut p.infill.use_brightness, "Brightness change: ");
                     });
                     #[allow(clippy::cast_possible_truncation)]
                     ui.add_enabled(
-                        p.infill_options.use_brightness,
-                        egui::Slider::new(&mut p.infill_options.brightness_change, -1.0..=1.0)
+                        p.infill.use_brightness,
+                        egui::Slider::new(&mut p.infill.brightness_change.0, -1.0..=1.0)
                             .custom_formatter(|v, _| format!("{}%", (v * 100.0).round() as isize))
                             .fixed_decimals(2),
                     );
                     ui.end_row();
 
                     indent(ui, |ui| {
-                        ui.checkbox(&mut p.infill_options.use_contrast, "Contrast change: ");
+                        ui.checkbox(&mut p.infill.use_contrast, "Contrast change: ");
                     });
                     #[allow(clippy::cast_possible_truncation)]
                     ui.add_enabled(
-                        p.infill_options.use_contrast,
-                        egui::Slider::new(&mut p.infill_options.contrast_change, -1.0..=1.0)
+                        p.infill.use_contrast,
+                        egui::Slider::new(&mut p.infill.contrast_change.0, -1.0..=1.0)
                             .custom_formatter(|v, _| format!("{}%", (v * 100.0).round() as isize))
                             .fixed_decimals(2),
                     );
@@ -610,12 +609,12 @@ impl TransformImages {
     }
 
     fn compression_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
-        ui.add_enabled_ui(p.compression_options.enabled, |ui| {
+        ui.add_enabled_ui(p.compression.enabled, |ui| {
             egui::Grid::new(self.id().with("compression_options_ratio_grid"))
                 .num_columns(2)
                 .min_col_width(200.0)
                 .show(ui, |ui| {
-                    let file_type = &mut p.compression_options.file_type;
+                    let file_type = &mut p.compression.file_type;
 
                     ui.label("File type: ");
                     ui.horizontal(|ui| {
@@ -627,14 +626,11 @@ impl TransformImages {
                     ui.end_row();
 
                     ui.label("Quality: ");
-                    ui.add(egui::Slider::new(
-                        &mut p.compression_options.quality,
-                        0..=100,
-                    ));
+                    ui.add(egui::Slider::new(&mut p.compression.quality, 0..=100));
                     ui.end_row();
 
                     let chroma_id = self.id().with("chroma_select");
-                    let chroma = &mut p.compression_options.chroma_subsampling;
+                    let chroma = &mut p.compression.chroma_subsampling;
                     ui.label("Chroma subsampling: ");
                     egui::ComboBox::new(chroma_id, "")
                         .selected_text(chroma.to_string())
@@ -649,82 +645,189 @@ impl TransformImages {
         });
     }
 
+    fn update_preview_image(&mut self, req_prefix: egui::Id) -> Option<()> {
+        let id = req_prefix.with(request::LOAD_PREVIEW);
+        let item_id = self.preview_grid.get_first_selected_id()?;
+        let params = self.state().transform_params.clone();
+        if self.selected_item_id.as_ref() == Some(&item_id)
+            && self.params_of_selected_preview.as_ref() == Some(&params)
+        {
+            return None;
+        }
+        self.selected_item_id = Some(item_id);
+        self.params_of_selected_preview = Some(params.clone());
+
+        let vault = self.app_state.current_vault_opt()?;
+        let item = vault.get_item_opt_by_id(item_id)?;
+        let path = vault.resolve_abs_path(Path::new(item.path())).ok()?;
+
+        self.selected_preview_hndl = None;
+        self.app_state
+            .add_task_request(id, "Load transformed preview", move |_, _| {
+                Promise::spawn_blocking(move || load_transformed_image_preview(path, &params))
+            });
+
+        Some(())
+    }
+
+    fn top_preview_panel(&mut self, ui: &mut egui::Ui) {
+        let req_prefix = self.id().with(ui.next_auto_id());
+
+        if let Ok(image) =
+            self.handle_request(req_prefix.with(request::LOAD_PREVIEW), |res| match res {
+                AsyncTaskResult::PreviewReady { image, .. } => Ok(image),
+                _ => Err(res),
+            })
+        {
+            let hndl = ui.ctx().load_texture(
+                "transform_preview",
+                image,
+                egui::TextureOptions {
+                    wrap_mode: egui::TextureWrapMode::ClampToEdge,
+                    magnification: egui::TextureFilter::Nearest,
+                    minification: egui::TextureFilter::Linear,
+                },
+            );
+            self.selected_preview_hndl = Some(hndl);
+        }
+        egui::SidePanel::right("preview_dest_panel")
+            .max_width(200.0)
+            .show_inside(ui, |ui| -> Option<()> {
+                let Some(item_id) = self.selected_item_id else {
+                    ui.label("Select an image to see a preview");
+                    return None;
+                };
+
+                let vault = self.app_state.current_vault_opt()?;
+                let item = vault.get_item_opt_by_id(item_id)?;
+                let src_img_size = item.get_image_size().ok().flatten()?;
+                let params = &self.state().transform_params;
+                let dst_img_size = get_transformed_size(src_img_size, params);
+
+                let width = ui.available_width();
+                let img_rect =
+                    egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(width, 150.0));
+
+                match self.selected_preview_hndl.as_ref() {
+                    Some(hndl) => {
+                        let img =
+                            egui::Image::from_texture(egui::load::SizedTexture::from_handle(hndl))
+                                .bg_fill(egui::Color32::from_gray(20))
+                                .max_height(150.0)
+                                .shrink_to_fit();
+
+                        ui.put(img_rect, img);
+                    }
+                    None => {
+                        ui.put(img_rect, egui::Spinner::new());
+                    }
+                }
+
+                ui.heading(item.path());
+
+                ui.label(format!(
+                    "Original: {}\u{00d7}{}",
+                    src_img_size.x, src_img_size.y
+                ));
+
+                ui.label(format!(
+                    "Transformed: {}\u{00d7}{}",
+                    dst_img_size.x, dst_img_size.y
+                ));
+
+                Some(())
+            });
+
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false, false])
+            .show_viewport(ui, |ui, vp| {
+                self.preview_grid.params.init_row_height = 256.0;
+                self.preview_grid.params.container_width = 256.0;
+                self.preview_grid.params.last_row_align = egui::Align::Min;
+                self.preview_grid.params.main_axis = egui::Direction::TopDown;
+                let params = self.state().transform_params.clone();
+                self.preview_grid.transform_params = Some(params.clone());
+
+                self.preview_grid.update(
+                    ui,
+                    vp,
+                    self.app_state.clone(),
+                    &self.source_item_ids,
+                    self.source_items_updated,
+                );
+
+                if let Some(abs_path) = self.preview_grid.get_double_clicked_item_path() {
+                    self.app_state.add_task("Load image preview", move |_, _| {
+                        Promise::spawn_blocking(move || {
+                            load_transformed_image_preview(abs_path, &params)
+                        })
+                    });
+                }
+
+                self.update_preview_image(req_prefix);
+
+                Some(())
+            });
+    }
+
     fn modal_contents(&mut self, ui: &mut egui::Ui) {
         let padding_y = self.preview_grid.params.item_padding.y;
 
         egui::TopBottomPanel::top(self.id().with("preview_panel"))
             .exact_height(256.0 + 2.0 * padding_y)
             .show_inside(ui, |ui| {
-                egui::ScrollArea::horizontal()
-                    .auto_shrink([false, false])
-                    .show_viewport(ui, |ui, vp| {
-                        self.preview_grid.params.init_row_height = 256.0;
-                        self.preview_grid.params.container_width = 256.0;
-                        self.preview_grid.params.last_row_align = egui::Align::Min;
-                        self.preview_grid.params.main_axis = egui::Direction::TopDown;
+                self.top_preview_panel(ui);
+            });
 
-                        self.preview_grid.update(
-                            ui,
-                            vp,
-                            self.app_state.clone(),
-                            &self.selected_item_ids,
-                            self.selected_items_updated,
+        egui::SidePanel::left(self.id().with("type_panel"))
+            .min_width(100.0)
+            .max_width(350.0)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.with_layout(
+                            egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
+                            |ui| {
+                                self.type_choice_grid_inner(ui);
+                            },
                         );
                     });
             });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::SidePanel::left(self.id().with("type_panel"))
-                .min_width(100.0)
-                .max_width(350.0)
-                .show_inside(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.with_layout(
-                                egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
-                                |ui| {
-                                    self.type_choice_grid_inner(ui);
-                                },
-                            );
-                        });
-                });
-
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                egui::ScrollArea::both()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::central_panel(ui.style()))
+                    .show_inside(ui, |ui| {
                         ui.vertical(|ui| {
                             let form_section = self.state().form_section;
-                            let mut global_params = std::mem::take(&mut self.state_mut().params);
+                            let mut global_params =
+                                std::mem::take(&mut self.state_mut().transform_params);
+                            let mut bulk_params = std::mem::take(&mut self.state_mut().bulk_params);
 
                             match form_section {
-                                FormSection::Source => {
-                                    self.source_fragment(ui, &mut global_params);
-                                }
+                                FormSection::Source => self.source_fragment(ui, &mut bulk_params),
                                 FormSection::Destination => {
-                                    self.destination_fragment(ui, &mut global_params);
+                                    self.destination_fragment(ui, &mut bulk_params);
                                 }
-                                FormSection::Scale => {
-                                    self.scaling_fragment(ui, &mut global_params);
-                                }
-                                FormSection::Infill => {
-                                    self.infill_fragment(ui, &mut global_params);
-                                }
+                                FormSection::Scale => self.scaling_fragment(ui, &mut global_params),
+                                FormSection::Infill => self.infill_fragment(ui, &mut global_params),
                                 FormSection::Compression => {
                                     self.compression_fragment(ui, &mut global_params);
                                 }
                             }
 
-                            self.state_mut().params = global_params;
+                            self.state_mut().transform_params = global_params;
+                            self.state_mut().bulk_params = bulk_params;
 
                             if let Some(msg) = &self.error_message {
-                                ui.colored_label(Color32::RED, msg);
+                                ui.colored_label(egui::Color32::RED, msg);
                             }
                         });
                     });
             });
-        });
     }
 
     fn validate(&self) -> Result<(), &'static str> {
@@ -746,19 +849,20 @@ impl AppModal for TransformImages {
         self.state
             .replace(State::load(ctx, self.id()).unwrap_or_default());
         self.app_state = app_state;
-        let mut opened = self.state().is_open;
+        let mut is_open = self.is_open;
         let mut do_close = false;
 
-        let selected_items_new_last_frame = self.selected_items_updated;
+        let selected_items_new_last_frame = self.source_items_updated;
+        let old_transform_params = self.state().transform_params.clone();
 
         if !self.opened {
-            self.update_selected_items(self.state().params.source_type)
+            self.update_selected_items(self.state().bulk_params.source.kind)
                 .expect("vault to exist");
         }
 
         egui::Window::new("Transform")
             .id(self.id())
-            .open(&mut opened)
+            .open(&mut is_open)
             .min_size([700.0, 250.0])
             .show(ctx, |ui| {
                 buttons(self.id(), ui, |ui| {
@@ -766,7 +870,7 @@ impl AppModal for TransformImages {
                         info!("Clicked transform");
                     }
                     if ui.button("Close").clicked() {
-                        do_close = false;
+                        do_close = true;
                     }
                     if ui.button("Reset").clicked() {
                         *self.state_mut() = Default::default();
@@ -776,24 +880,26 @@ impl AppModal for TransformImages {
                 self.modal_contents(ui);
             });
 
-        if !self.opened {
-            self.state_mut().is_open = true;
-            self.opened = true;
+        if selected_items_new_last_frame {
+            self.source_items_updated = false;
         }
+
+        if self.state().transform_params != old_transform_params {
+            self.source_items_updated = true;
+        }
+
+        if do_close {
+            is_open = false;
+        }
+
+        self.is_open = is_open;
+        self.opened = is_open;
 
         self.state.take().unwrap().store(ctx, self.id());
-
-        if selected_items_new_last_frame {
-            self.selected_items_updated = false;
-        }
         self.modal = Some(modal);
     }
 
-    fn dispose(&mut self, ctx: &egui::Context, _state: AppStateRef) {
-        State::dispose(ctx, self.id());
-    }
-
     fn is_open(&self) -> bool {
-        self.opened
+        self.is_open
     }
 }

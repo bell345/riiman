@@ -37,6 +37,26 @@ impl Item {
     pub fn path_string(&self) -> &Utf32CachedString {
         &self.path
     }
+
+    pub fn get_image_size(&self) -> anyhow::Result<Option<egui::Vec2>> {
+        let Some(width) = self.get_known_field_value(fields::image::WIDTH)? else {
+            return Ok(None);
+        };
+        let Some(height) = self.get_known_field_value(fields::image::HEIGHT)? else {
+            return Ok(None);
+        };
+        #[allow(clippy::cast_precision_loss)]
+        Ok(Some(egui::Vec2::new(width as f32, height as f32)))
+    }
+
+    pub fn expect_image_size(&self) -> anyhow::Result<egui::Vec2> {
+        self.get_image_size()?.ok_or(
+            AppError::MissingImageFields {
+                path: self.path().into(),
+            }
+            .into(),
+        )
+    }
 }
 
 impl FieldStore for Item {

@@ -42,6 +42,8 @@ pub enum AppError {
     UnexpectedExecutable { expected: String, got: String },
     #[error("unexpected format for JSON sidecar with path {path}, error: {error:?}")]
     UnexpectedJsonSidecar { path: String, error: Option<String> },
+    #[error("missing fields width, height expected of images for item with path {path}")]
+    MissingImageFields { path: String },
 }
 
 impl AppError {

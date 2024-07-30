@@ -1,16 +1,18 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use eframe::egui;
 use eframe::egui::ColorImage;
 use poll_promise::Promise;
 
-use crate::data::ThumbnailParams;
-use crate::state::AppStateRef;
-pub use crate::tasks::thumb_grid::RiverParams;
-pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
+
+use crate::data::{DebugViewportClass, ThumbnailParams};
+use crate::state::AppStateRef;
+pub use crate::tasks::thumb_grid::RiverParams;
+pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 
 pub(crate) mod choose;
 pub(crate) mod download;
@@ -50,7 +52,9 @@ pub enum AsyncTaskResult {
         version: String,
     },
     PreviewReady {
+        id: egui::Id,
         image: ColorImage,
+        viewport_class: DebugViewportClass,
     },
     SelectedDirectory(String),
     SelectedFile(String),
@@ -74,6 +78,7 @@ pub type TaskFactory = Box<
 >;
 
 struct Task {
+    id: Option<egui::Id>,
     name: String,
     promise: Promise<AsyncTaskReturn>,
     progress_rx: Option<ProgressReceiver>,
@@ -81,11 +86,13 @@ struct Task {
 
 impl Task {
     pub fn with_progress(
+        id: Option<egui::Id>,
         name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) -> Task {
         let (tx, rx) = tokio::sync::watch::channel(ProgressState::NotStarted);
         Task {
+            id,
             promise: factory(ProgressSenderAsync::new(name.clone(), tx)),
             name,
             progress_rx: Some(rx),
@@ -103,7 +110,7 @@ impl Task {
 #[derive(Default)]
 pub(crate) struct TaskState {
     running_tasks: Vec<Task>,
-    requests: HashSet<String>,
+    requests: HashSet<egui::Id>,
 }
 
 impl TaskState {
@@ -112,16 +119,19 @@ impl TaskState {
         name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
-        self.running_tasks.push(Task::with_progress(name, factory));
+        self.running_tasks
+            .push(Task::with_progress(None, name, factory));
     }
 
     pub fn add_request(
         &mut self,
+        id: egui::Id,
         name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
-        if self.requests.insert(name.clone()) {
-            self.add(name, factory);
+        if self.requests.insert(id) {
+            self.running_tasks
+                .push(Task::with_progress(Some(id), name, factory));
         }
     }
 
@@ -129,21 +139,19 @@ impl TaskState {
         self.running_tasks.len()
     }
 
-    pub fn iter_ready(&mut self) -> (Vec<AsyncTaskReturn>, Vec<(String, AsyncTaskReturn)>) {
+    pub fn iter_ready(&mut self) -> (Vec<AsyncTaskReturn>, Vec<(egui::Id, AsyncTaskReturn)>) {
         let mut results = vec![];
         let mut request_results = vec![];
         let mut still_running_tasks = vec![];
         for task in self.running_tasks.drain(..) {
-            let name = task.name.clone();
-            match task.try_take_result() {
-                Ok(result) => {
-                    if self.requests.remove(&name) {
-                        request_results.push((name, result));
-                    } else {
-                        results.push(result);
+            match (task.id, task.try_take_result()) {
+                (Some(id), Ok(result)) => {
+                    if self.requests.remove(&id) {
+                        request_results.push((id, result));
                     }
                 }
-                Err(task) => still_running_tasks.push(task),
+                (None, Ok(result)) => results.push(result),
+                (_, Err(task)) => still_running_tasks.push(task),
             }
         }
 

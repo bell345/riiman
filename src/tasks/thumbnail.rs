@@ -1,14 +1,14 @@
 use std::fs::Metadata;
 
+use crate::data::ThumbnailParams;
+use crate::errors::AppError;
+use crate::tasks::image::{read_and_resize, read_image, wand_to_image};
+use crate::tasks::transform::transform_wand;
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use magick_rust::MagickWand;
 use tokio::task::block_in_place;
-
-use crate::data::ThumbnailParams;
-use crate::errors::AppError;
-use crate::tasks::image::{read_and_resize, read_image, wand_to_image};
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 
 fn thumbnail_needs_updating(params: &ThumbnailParams, meta: &Metadata) -> bool {
     if !meta.is_file() {
@@ -24,6 +24,14 @@ fn thumbnail_needs_updating(params: &ThumbnailParams, meta: &Metadata) -> bool {
     };
 
     source_modified > thumb_modified
+}
+
+fn load_image_thumbnail_from_file(params: &ThumbnailParams) -> anyhow::Result<MagickWand> {
+    let (mut wand, full_size) = read_and_resize(&params.abs_path, params.height)?;
+    if let Some(tf_params) = params.transform_params.as_ref() {
+        transform_wand(&mut wand, tf_params, Some(full_size))?;
+    }
+    Ok(wand)
 }
 
 pub async fn load_image_thumbnail_with_fs(
@@ -53,7 +61,7 @@ pub async fn load_image_thumbnail_with_fs(
             block_in_place(|| read_image(&hash_file))?
         }
         _ => block_in_place(|| -> anyhow::Result<MagickWand> {
-            let wand = read_and_resize(&params.abs_path, params.height)?;
+            let wand = load_image_thumbnail_from_file(&params)?;
             wand.write_image(hash_file_str).with_context(|| {
                 format!(
                     "while writing thumbnail at {} for {}",
@@ -80,7 +88,7 @@ pub async fn load_image_thumbnail(
     progress.send(ProgressState::Indeterminate);
 
     block_in_place(|| {
-        let wand = read_and_resize(&params.abs_path, params.height)?;
+        let wand = load_image_thumbnail_from_file(&params)?;
         let image = wand_to_image(&wand)?;
         Ok(AsyncTaskResult::ThumbnailLoaded { image, params })
     })
@@ -92,7 +100,7 @@ pub async fn commit_thumbnail_to_fs(params: &ThumbnailParams) -> AsyncTaskReturn
     tokio::fs::create_dir_all(hash_file.parent().unwrap()).await?;
 
     block_in_place(|| {
-        let wand = read_and_resize(&params.abs_path, params.height)?;
+        let wand = load_image_thumbnail_from_file(params)?;
         wand.write_image(hash_file_str)
             .with_context(|| format!("while committing thumbnail for {}", params.abs_path))?;
 
