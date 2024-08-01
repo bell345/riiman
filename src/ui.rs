@@ -1,4 +1,6 @@
+use crate::data::parse::FilterExpressionParseResult;
 use crate::data::{FilterExpression, ShortcutAction, ThumbnailCacheItem};
+use crate::errors::AppError;
 use eframe::egui;
 use eframe::egui::{vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
@@ -9,8 +11,6 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tracing::info;
 use uuid::Uuid;
-
-use crate::errors::AppError;
 
 use crate::state::{AppState, AppStateRef};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
@@ -506,11 +506,10 @@ impl App {
                         return;
                     };
 
-                    let search_res =
-                        widgets::SearchBox::new("main_search_box", &mut self.search_text, vault)
-                            .desired_width(f32::INFINITY)
-                            .interactive()
-                            .show(ui);
+                    widgets::SearchBox::new("main_search_box", &mut self.search_text, vault)
+                        .desired_width(f32::INFINITY)
+                        .interactive()
+                        .show(ui);
 
                     let sorts = match self.sort_type {
                         SortType::Path => vec![SortExpression::Path(self.sort_direction)],
@@ -523,9 +522,10 @@ impl App {
                         }
                     };
 
-                    let filter = search_res
-                        .expression
-                        .map_or(FilterExpression::None, |expr| expr.expr);
+                    let filter = self
+                        .search_text
+                        .parse::<FilterExpressionParseResult>()
+                        .map_or(FilterExpression::None, |r| r.expr);
 
                     self.state.set_filter_and_sorts(filter, sorts);
                 });

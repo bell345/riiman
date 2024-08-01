@@ -78,11 +78,11 @@ impl<'a> Tag<'a> {
             .y
     }
 
-    fn galley(&self, ui: &Ui) -> Arc<Galley> {
+    fn galley(&self, ui: &Ui, container_width: f32) -> Arc<Galley> {
         self.text_to_galley(
             ui,
             WidgetText::from(&*self.definition.name),
-            ui.available_width(),
+            container_width,
         )
     }
 
@@ -159,8 +159,8 @@ impl<'a> Tag<'a> {
         }
     }
 
-    pub fn size(&self, ui: &Ui) -> Vec2 {
-        let galley = self.galley(ui);
+    pub fn size(&self, ui: &Ui, container_width: f32) -> Vec2 {
+        let galley = self.galley(ui, container_width);
         self.sizes(
             self.line_height(ui),
             &galley,
@@ -244,7 +244,7 @@ impl<'a> Tag<'a> {
 
     pub fn paint(&self, ui: &Ui, clip_rect: Rect, loc: Pos2, response: &Option<Response>) {
         let p = ui.painter_at(clip_rect.expand(SELECTED_STROKE_WIDTH));
-        let galley = self.galley(ui);
+        let galley = self.galley(ui, clip_rect.width());
         let value_galley = self.value_galley(ui, galley.size().x);
         let has_value = value_galley.is_some();
         let (hanger_size, label_size, value_size, total_size) =
@@ -352,7 +352,7 @@ impl<'a> Tag<'a> {
 
 impl<'a> Widget for Tag<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let galley = self.galley(ui);
+        let galley = self.galley(ui, ui.available_width());
         let value_galley = self.value_galley(ui, galley.size().x);
 
         let (_, _, _, total_size) = self.sizes(self.line_height(ui), &galley, &value_galley);

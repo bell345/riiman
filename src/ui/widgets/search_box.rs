@@ -1,4 +1,4 @@
-use std::ops::Add;
+use std::ops::{Add, Range};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::os::OperatingSystem;
@@ -16,13 +16,14 @@ use eframe::egui::{
 use eframe::epaint::FontFamily;
 use eframe::{egui, epaint};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::data::parse::{
-    FilterExpressionParseResult, FilterExpressionTextSection, ReplacementStringConversion,
-    NON_WORD_CHARACTERS,
+    FieldReplacementNode, FieldReplacementParseResult, ReplacementNode, ReplacementResult,
+    ReplacementSection, ReplacementStringConversion, NON_WORD_CHARACTERS,
 };
-use crate::data::{FieldDefinition, FilterExpression, TextSearchQuery, Vault};
+use crate::data::{FieldDefinition, TextSearchQuery, Vault};
 use crate::take_shortcut;
 use crate::tasks::filter::evaluate_field_search;
 use crate::ui::cloneable_state::CloneablePersistedState;
@@ -32,7 +33,10 @@ use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 pub struct SearchBox<'a> {
     id: egui::Id,
     text: &'a mut String,
+    expr: Option<FieldReplacementParseResult>,
     desired_width: f32,
+    reserved_left: f32,
+    wrap_width: f32,
     tags: Option<&'a Vec<FieldDefinition>>,
     margin: Margin,
     state: State,
@@ -77,11 +81,6 @@ struct State {
 
 impl CloneablePersistedState for State {}
 
-pub struct SearchResponse {
-    pub response: Response,
-    pub expression: Option<FilterExpressionParseResult>,
-}
-
 fn char_index_from_byte_index(s: &str, byte_index: usize) -> usize {
     let mut n_chars = 0;
     for (ci, (bi, _)) in s.char_indices().enumerate() {
@@ -91,6 +90,11 @@ fn char_index_from_byte_index(s: &str, byte_index: usize) -> usize {
         }
     }
     n_chars
+}
+
+enum TextMutation {
+    TextRange(CCursorRange),
+    ReplacementRange(CCursorRange),
 }
 
 fn popup_below_widget_at_offset<R>(
@@ -134,6 +138,7 @@ impl<'a> SearchBox<'a> {
     pub fn new(widget_id: impl std::hash::Hash, text: &'a mut String, vault: Arc<Vault>) -> Self {
         Self {
             id: egui::Id::new(widget_id),
+            expr: text.parse().ok(),
             text,
             desired_width: 200.0,
             tags: None,
@@ -141,6 +146,8 @@ impl<'a> SearchBox<'a> {
             state: Default::default(),
             vault,
             interactive: false,
+            reserved_left: 0.0,
+            wrap_width: 0.0,
         }
     }
 
@@ -159,16 +166,49 @@ impl<'a> SearchBox<'a> {
         self
     }
 
+    fn layouter(&self, ui: &Ui) -> Arc<Galley> {
+        let mut job = egui::text::LayoutJob::default();
+        let style = ui.style();
+        let font_id = FontSelection::default().resolve(style);
+
+        let normal_fmt = egui::TextFormat::simple(font_id, style.visuals.text_color());
+        let dummy_font = egui::FontId {
+            size: 1.0,
+            family: FontFamily::Name(DUMMY_TAG_REPLACEMENT_FAMILY.into()),
+        };
+        let repl_fmt = egui::TextFormat::simple(dummy_font.clone(), Color32::TRANSPARENT);
+
+        job.append("", self.reserved_left, normal_fmt.clone());
+
+        match &self.expr {
+            Some(expr) if self.interactive => {
+                for section in expr.sections() {
+                    match section {
+                        ReplacementSection::Normal(range) => {
+                            job.append(&self.text[range], 0.0, normal_fmt.clone());
+                        }
+                        ReplacementSection::Replacement { node, .. } => job.append(
+                            &String::from(
+                                node.replacement_char(ui, &self.vault, f32::INFINITY)
+                                    .unwrap_or(char::REPLACEMENT_CHARACTER),
+                            ),
+                            0.0,
+                            repl_fmt.clone(),
+                        ),
+                    }
+                }
+            }
+            _ => {
+                job.append(self.text, 0.0, normal_fmt);
+            }
+        }
+
+        ui.fonts(|f| f.layout_job(job))
+    }
+
     //noinspection DuplicatedCode
     #[allow(clippy::too_many_lines)]
-    fn events(
-        &mut self,
-        ui: &mut Ui,
-        galley: &mut Arc<Galley>,
-        layouter: impl Fn(&Ui, &str, f32) -> Arc<Galley>,
-        expr: &Option<FilterExpressionParseResult>,
-        wrap_width: f32,
-    ) -> (bool, CursorRange) {
+    fn events(&mut self, ui: &mut Ui, galley: &mut Arc<Galley>) -> (bool, CursorRange) {
         let default_cursor_range = CursorRange::one(galley.end());
         let os = ui.ctx().os();
 
@@ -177,7 +217,7 @@ impl<'a> SearchBox<'a> {
             .cursor
             .range(galley)
             .unwrap_or(default_cursor_range);
-        let mut text_range = expr.replacement_range_to_text_range(galley_range);
+        let mut text_range = self.expr.replacement_range_to_text_range(galley_range);
 
         // We feed state to the undoer both before and after handling input
         // so that the undoer creates automatic saves even when there are no events for a while.
@@ -203,7 +243,7 @@ impl<'a> SearchBox<'a> {
             let did_mutate_text = match event {
                 // First handle events that only changes the selection cursor, not the text:
                 event if galley_range.on_event(os, event, galley, self.id) => {
-                    text_range = expr.replacement_range_to_text_range(galley_range);
+                    text_range = self.expr.replacement_range_to_text_range(galley_range);
                     None
                 }
 
@@ -219,11 +259,11 @@ impl<'a> SearchBox<'a> {
                 Event::Cut => {
                     if galley_range.is_empty() {
                         ui.ctx().copy_text(self.text.take());
-                        Some(CCursorRange::default())
+                        Some(TextMutation::TextRange(CCursorRange::default()))
                     } else {
                         ui.ctx()
                             .copy_text(text_range.slice_str(self.text.as_str()).to_owned());
-                        Some(CCursorRange::one(expr.text_ccursor_to_replacement_ccursor(
+                        Some(TextMutation::TextRange(CCursorRange::one(
                             self.text.delete_selected(&text_range),
                         )))
                     }
@@ -237,9 +277,7 @@ impl<'a> SearchBox<'a> {
                         self.text
                             .insert_text_at(&mut ccursor, text_to_insert, usize::MAX);
 
-                        Some(CCursorRange::one(
-                            expr.text_ccursor_to_replacement_ccursor(ccursor),
-                        ))
+                        Some(TextMutation::TextRange(CCursorRange::one(ccursor)))
                     }
                 }
                 Event::Text(text_to_insert) => {
@@ -253,9 +291,7 @@ impl<'a> SearchBox<'a> {
                         self.text
                             .insert_text_at(&mut ccursor, text_to_insert, usize::MAX);
 
-                        Some(CCursorRange::one(
-                            expr.text_ccursor_to_replacement_ccursor(ccursor),
-                        ))
+                        Some(TextMutation::TextRange(CCursorRange::one(ccursor)))
                     } else {
                         None
                     }
@@ -283,7 +319,7 @@ impl<'a> SearchBox<'a> {
                         ))
                     {
                         self.text.replace_with(undo_txt);
-                        Some(*undo_ccursor_range)
+                        Some(TextMutation::ReplacementRange(*undo_ccursor_range))
                     } else {
                         None
                     }
@@ -304,7 +340,7 @@ impl<'a> SearchBox<'a> {
                         ))
                     {
                         self.text.replace_with(redo_txt);
-                        Some(*redo_ccursor_range)
+                        Some(TextMutation::ReplacementRange(*redo_ccursor_range))
                     } else {
                         None
                     }
@@ -316,16 +352,8 @@ impl<'a> SearchBox<'a> {
                     pressed: true,
                     ..
                 } => self
-                    .check_for_mutating_key_press(
-                        os,
-                        &galley_range,
-                        &text_range,
-                        galley,
-                        expr,
-                        *modifiers,
-                        *key,
-                    )
-                    .map(|cur| expr.text_ccursor_range_to_replacement_ccursor_range(cur)),
+                    .check_for_mutating_key_press(os, &galley_range, galley, *modifiers, *key)
+                    .map(TextMutation::TextRange),
 
                 Event::CompositionStart => {
                     self.state.has_ime = true;
@@ -343,9 +371,10 @@ impl<'a> SearchBox<'a> {
                                 .insert_text_at(&mut ccursor, text_mark, usize::MAX);
                         }
                         self.state.ime_cursor_range = galley_range;
-                        Some(expr.text_ccursor_range_to_replacement_ccursor_range(
-                            CCursorRange::two(start_cursor, ccursor),
-                        ))
+                        Some(TextMutation::TextRange(CCursorRange::two(
+                            start_cursor,
+                            ccursor,
+                        )))
                     } else {
                         None
                     }
@@ -365,12 +394,12 @@ impl<'a> SearchBox<'a> {
                             ccursor = self.text.delete_selected(&text_range);
                             self.text
                                 .insert_text_at(&mut ccursor, prediction, usize::MAX);
+                            Some(TextMutation::TextRange(CCursorRange::one(ccursor)))
                         } else {
-                            ccursor = galley_range.primary.ccursor;
+                            Some(TextMutation::ReplacementRange(CCursorRange::one(
+                                galley_range.primary.ccursor,
+                            )))
                         }
-                        Some(CCursorRange::one(
-                            expr.text_ccursor_to_replacement_ccursor(ccursor),
-                        ))
                     } else {
                         None
                     }
@@ -383,14 +412,29 @@ impl<'a> SearchBox<'a> {
                 any_change = true;
 
                 // Layout again to avoid frame delay, and to keep `text` and `galley` in sync.
-                *galley = layouter(ui, self.text.as_str(), wrap_width);
+                self.expr = self.text.parse().ok();
+                info!("available width = {}", ui.available_width());
+                *galley = self.layouter(ui);
+                info!("after relayout");
 
                 // Set cursor_range using new galley:
-                galley_range = CursorRange {
-                    primary: galley.from_ccursor(new_ccursor_range.primary),
-                    secondary: galley.from_ccursor(new_ccursor_range.secondary),
+                let (primary, secondary) = match new_ccursor_range {
+                    TextMutation::TextRange(range) => {
+                        let CCursorRange { primary, secondary } = self
+                            .expr
+                            .text_ccursor_range_to_replacement_ccursor_range(range);
+
+                        (primary, secondary)
+                    }
+                    TextMutation::ReplacementRange(CCursorRange { primary, secondary }) => {
+                        (primary, secondary)
+                    }
                 };
-                text_range = expr.replacement_range_to_text_range(galley_range);
+                galley_range = CursorRange {
+                    primary: galley.from_ccursor(primary),
+                    secondary: galley.from_ccursor(secondary),
+                };
+                text_range = self.expr.replacement_range_to_text_range(galley_range);
             }
         }
 
@@ -412,30 +456,33 @@ impl<'a> SearchBox<'a> {
         &mut self,
         os: OperatingSystem,
         galley_range: &CursorRange,
-        text_range: &CursorRange,
         galley: &Galley,
-        expr: &Option<FilterExpressionParseResult>,
         modifiers: Modifiers,
         key: Key,
     ) -> Option<CCursorRange> {
+        let text_range = self.expr.replacement_range_to_text_range(*galley_range);
         match key {
             Key::Backspace => {
                 let ccursor = if let Some(cursor) = galley_range.single() {
                     if modifiers.alt || modifiers.ctrl {
                         // alt on mac, ctrl on windows
                         self.text.delete_previous_word(
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor),
                         )
                     } else if cursor.ccursor.index > 0 {
                         self.text.delete_selected_ccursor_range([
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor - 1),
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor - 1),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor),
                         ])
                     } else {
-                        cursor.ccursor
+                        self.expr
+                            .replacement_ccursor_to_text_ccursor(cursor.ccursor)
                     }
                 } else {
-                    self.text.delete_selected(text_range)
+                    self.text.delete_selected(&text_range)
                 };
                 Some(CCursorRange::one(ccursor))
             }
@@ -445,16 +492,19 @@ impl<'a> SearchBox<'a> {
                     if modifiers.alt || modifiers.ctrl {
                         // alt on mac, ctrl on windows
                         self.text.delete_next_word(
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor),
                         )
                     } else {
                         self.text.delete_selected_ccursor_range([
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor),
-                            expr.replacement_ccursor_to_text_ccursor(cursor.ccursor + 1),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor),
+                            self.expr
+                                .replacement_ccursor_to_text_ccursor(cursor.ccursor + 1),
                         ])
                     }
                 } else {
-                    self.text.delete_selected(text_range)
+                    self.text.delete_selected(&text_range)
                 };
                 let ccursor = CCursor {
                     prefer_next_row: true,
@@ -467,22 +517,24 @@ impl<'a> SearchBox<'a> {
                 let ccursor = galley_range.primary.ccursor;
                 let ccursor = if ccursor.index > 0 {
                     self.text.delete_selected_ccursor_range([
-                        expr.replacement_ccursor_to_text_ccursor(ccursor - 1),
-                        expr.replacement_ccursor_to_text_ccursor(ccursor),
+                        self.expr.replacement_ccursor_to_text_ccursor(ccursor - 1),
+                        self.expr.replacement_ccursor_to_text_ccursor(ccursor),
                     ])
                 } else {
-                    expr.replacement_ccursor_to_text_ccursor(ccursor)
+                    self.expr.replacement_ccursor_to_text_ccursor(ccursor)
                 };
                 Some(CCursorRange::one(ccursor))
             }
 
             Key::K if modifiers.ctrl => {
-                let ccursor = self.text.delete_paragraph_after_cursor(galley, text_range);
+                let ccursor = self.text.delete_paragraph_after_cursor(galley, &text_range);
                 Some(CCursorRange::one(ccursor))
             }
 
             Key::U if modifiers.ctrl => {
-                let ccursor = self.text.delete_paragraph_before_cursor(galley, text_range);
+                let ccursor = self
+                    .text
+                    .delete_paragraph_before_cursor(galley, &text_range);
                 Some(CCursorRange::one(ccursor))
             }
 
@@ -490,7 +542,7 @@ impl<'a> SearchBox<'a> {
                 let ccursor = if let Some(cursor) = text_range.single() {
                     self.text.delete_previous_word(cursor.ccursor)
                 } else {
-                    self.text.delete_selected(text_range)
+                    self.text.delete_selected(&text_range)
                 };
                 Some(CCursorRange::one(ccursor))
             }
@@ -500,7 +552,7 @@ impl<'a> SearchBox<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn show_content(&mut self, ui: &mut Ui, reserved_left: f32) -> (Response, Arc<Galley>) {
+    fn show_content(&mut self, ui: &mut Ui) -> (Response, Arc<Galley>) {
         const MIN_WIDTH: f32 = 24.0; // Never make a [`TextEdit`] more narrow than this.
 
         let event_filter = EventFilter {
@@ -520,55 +572,15 @@ impl<'a> SearchBox<'a> {
         let font_id = FontSelection::default().resolve(ui.style());
         let row_height = ui.fonts(|f| f.row_height(&font_id));
         let available_width = ui.available_width().at_least(MIN_WIDTH);
-        let wrap_width = if ui.layout().horizontal_justify() {
+        self.wrap_width = if ui.layout().horizontal_justify() {
             available_width
         } else {
             self.desired_width.min(available_width)
         };
 
-        let vault = Arc::clone(&self.vault);
-        let is_interactive = self.interactive;
-        let layouter = move |ui: &Ui, text: &str, _wrap_width: f32| -> Arc<Galley> {
-            let mut job = egui::text::LayoutJob::default();
-            let style = ui.style();
+        let mut galley = self.layouter(ui);
 
-            let normal_fmt = egui::TextFormat::simple(font_id.clone(), style.visuals.text_color());
-            let dummy_font = egui::FontId {
-                size: 1.0,
-                family: FontFamily::Name(DUMMY_TAG_REPLACEMENT_FAMILY.into()),
-            };
-            let repl_fmt = egui::TextFormat::simple(dummy_font, Color32::TRANSPARENT);
-
-            job.append("", reserved_left, normal_fmt.clone());
-
-            let expr_opt = text.parse::<FilterExpressionParseResult>();
-            if is_interactive && expr_opt.is_ok() {
-                let expr = expr_opt.unwrap();
-                for section in expr.sections() {
-                    match section {
-                        FilterExpressionTextSection::Normal(start, end) => {
-                            job.append(&text[start..end], 0.0, normal_fmt.clone());
-                        }
-                        FilterExpressionTextSection::Replacement(_, node) => job.append(
-                            &String::from(
-                                node.replacement_char(ui, &vault)
-                                    .unwrap_or(char::REPLACEMENT_CHARACTER),
-                            ),
-                            0.0,
-                            repl_fmt.clone(),
-                        ),
-                    }
-                }
-            } else {
-                job.append(text, 0.0, normal_fmt);
-            }
-
-            ui.fonts(|f| f.layout_job(job))
-        };
-
-        let mut galley = layouter(ui, self.text.as_str(), wrap_width);
-
-        let desired_width = wrap_width;
+        let desired_width = self.wrap_width;
         let desired_height = row_height;
         let desired_size = vec2(desired_width, galley.size().y.max(desired_height));
 
@@ -633,9 +645,7 @@ impl<'a> SearchBox<'a> {
         if ui.memory(|mem| mem.has_focus(self.id)) {
             ui.memory_mut(|mem| mem.set_focus_lock_filter(self.id, event_filter));
 
-            let expr = self.text.parse::<FilterExpressionParseResult>().ok();
-            let (changed, new_cursor_range) =
-                self.events(ui, &mut galley, layouter, &expr, wrap_width);
+            let (changed, new_cursor_range) = self.events(ui, &mut galley);
 
             if changed {
                 response.mark_changed();
@@ -738,7 +748,7 @@ impl<'a> SearchBox<'a> {
         (response, galley)
     }
 
-    fn show_edit_field(&mut self, ui: &mut Ui, reserved_left: f32) -> (Response, Arc<Galley>) {
+    fn show_edit_field(&mut self, ui: &mut Ui) -> (Response, Arc<Galley>) {
         let is_mutable = self.text.is_mutable();
         let where_to_put_background = ui.painter().add(Shape::Noop);
 
@@ -747,7 +757,7 @@ impl<'a> SearchBox<'a> {
         let max_rect = margin.shrink_rect(available);
         let mut content_ui = ui.child_ui(max_rect, *ui.layout());
 
-        let (mut res, galley) = self.show_content(&mut content_ui, reserved_left);
+        let (mut res, galley) = self.show_content(&mut content_ui);
 
         let id = res.id;
         let frame_rect = margin.expand_rect(res.rect);
@@ -786,20 +796,18 @@ impl<'a> SearchBox<'a> {
         (res, galley)
     }
 
-    fn paint_tags(
-        &self,
-        ui: &Ui,
-        expr: &FilterExpressionParseResult,
-        min: Vec2,
-        galley: &Galley,
-        clip_rect: Rect,
-    ) {
-        const TAG_PADDING: Vec2 = vec2(2.0, 0.0);
+    fn paint_tags(&self, ui: &Ui, min: Vec2, galley: &Galley, clip_rect: Rect) {
+        const TAG_PADDING: Vec2 = vec2(4.0, 0.0);
+
+        let Some(expr) = self.expr.as_ref() else {
+            return;
+        };
 
         let mut index_offset = 0;
         let cur_offset = vec2(-self.state.singleline_offset, 0.0);
+        let container_width = f32::INFINITY;
         for section in expr.sections() {
-            if let FilterExpressionTextSection::Replacement(index, node) = section {
+            if let ReplacementSection::Replacement { start: index, node } = section {
                 let char_idx = char_index_from_byte_index(self.text, index);
                 let cur = galley
                     .pos_from_ccursor(CCursor {
@@ -810,29 +818,29 @@ impl<'a> SearchBox<'a> {
                     .translate(TAG_PADDING)
                     .translate(cur_offset);
 
-                let (start, end) = node
+                let Range { start, end } = node
                     .replacement_range()
                     .expect("replacement range to exist for replacement node");
                 index_offset += end - start - 1;
                 let size = node
-                    .replacement_size(ui, &self.vault)
+                    .replacement_size(ui, &self.vault, container_width)
                     .expect("replacement size to exist for replacement node");
                 let rect = Align2::LEFT_TOP.align_size_within_rect(size, cur);
-                match node.expr {
-                    FilterExpression::TagMatch(id) | FilterExpression::FieldMatch(id, _) => {
+                match node.node {
+                    FieldReplacementNode::Field(id) => {
                         let def = self.vault.get_definition_or_placeholder(&id);
                         let tag = widgets::Tag::new(&def).small(true);
-                        let tag_size = tag.size(ui);
+                        let tag_size = tag.size(ui, container_width);
                         let tag_rect = Align2::LEFT_CENTER.align_size_within_rect(tag_size, rect);
                         tag.paint(ui, tag_rect.intersect(clip_rect), tag_rect.min, &None);
                     }
-                    _ => continue,
+                    FieldReplacementNode::Text(_) => continue,
                 }
             }
         }
     }
 
-    fn new_search_results(&mut self, expr: &FilterExpressionParseResult, range: (usize, usize)) {
+    fn new_search_results(&mut self, range: (usize, usize)) {
         let (w_start, w_end) = range;
         let word = &self.text[w_start..w_end];
         self.state.search_query = TextSearchQuery::new(word.to_string());
@@ -840,10 +848,12 @@ impl<'a> SearchBox<'a> {
         self.state.search_results = vec![];
         self.state.selected_index = None;
 
+        let tag_ids = self.expr.as_ref().map(|expr| expr.tag_ids());
+
         let Ok(search_results) = evaluate_field_search(
             &self.vault,
             &self.state.search_query,
-            Some(&expr.tag_ids()),
+            tag_ids.as_deref(),
             None,
         ) else {
             return;
@@ -860,7 +870,6 @@ impl<'a> SearchBox<'a> {
     fn popup_ui(
         &mut self,
         ui: &Ui,
-        expr: &FilterExpressionParseResult,
         galley: &Galley,
         output: &Response,
     ) -> Option<AutocompleteReplacement> {
@@ -893,14 +902,14 @@ impl<'a> SearchBox<'a> {
         match &self.state.cursor.char_range() {
             Some(CCursorRange { primary, secondary }) if primary == secondary => {
                 let pos = galley.pos_from_ccursor(*primary);
-                let char_idx = expr.replacement_idx_to_text_idx(primary.index);
+                let char_idx = self.expr.replacement_idx_to_text_idx(primary.index);
                 let (w_start, w_end) = find_word_at_position(self.text, char_idx)?;
 
                 if w_start < w_end
                     && (self.state.search_query.string.as_str() != &self.text[w_start..w_end]
                         || self.state.search_range != Some((w_start, w_end)))
                 {
-                    self.new_search_results(expr, (w_start, w_end));
+                    self.new_search_results((w_start, w_end));
                 }
 
                 if self.state.search_results.is_empty() {
@@ -940,14 +949,15 @@ impl<'a> SearchBox<'a> {
         }
     }
 
-    pub fn show(mut self, ui: &mut Ui) -> SearchResponse {
+    pub fn show(mut self, ui: &mut Ui) -> Response {
         self.state = State::load(ui.ctx(), self.id).unwrap_or_default();
 
         let empty_vec = vec![];
         let tags = self.tags.unwrap_or(&empty_vec);
+        let container_width = ui.available_width();
         let tag_sizes: Vec<_> = tags
             .iter()
-            .map(|t| widgets::Tag::new(t).small(true).size(ui))
+            .map(|t| widgets::Tag::new(t).small(true).size(ui, container_width))
             .collect();
 
         let style = ui.style();
@@ -962,11 +972,13 @@ impl<'a> SearchBox<'a> {
         let icon_reserved_width = icon_galley.rect.width() + style.spacing.icon_spacing;
 
         #[allow(clippy::cast_precision_loss)]
-        let reserved_width = icon_reserved_width
-            + tag_sizes.iter().map(|s| s.x).sum::<f32>()
-            + style.spacing.item_spacing.x * tag_sizes.len().saturating_sub(1) as f32;
+        {
+            self.reserved_left = icon_reserved_width
+                + tag_sizes.iter().map(|s| s.x).sum::<f32>()
+                + style.spacing.item_spacing.x * tag_sizes.len().saturating_sub(1) as f32;
+        }
 
-        let (output, galley) = self.show_edit_field(ui, reserved_width);
+        let (output, galley) = self.show_edit_field(ui);
         let clip_rect = Rect::from_min_max(
             output.interact_rect.min + vec2(icon_reserved_width, 0.0),
             output.interact_rect.max - vec2(output.rect.size().y, 0.0),
@@ -1000,7 +1012,7 @@ impl<'a> SearchBox<'a> {
         if self.text.is_empty() {
             painter.text(
                 output.rect.min.add(vec2(
-                    reserved_width + style.spacing.icon_spacing,
+                    self.reserved_left + style.spacing.icon_spacing,
                     output.rect.size().y / 2.0,
                 )),
                 Align2::LEFT_CENTER,
@@ -1022,46 +1034,39 @@ impl<'a> SearchBox<'a> {
             }
         }
 
-        let expr = self.text.parse::<FilterExpressionParseResult>().ok();
+        if self.interactive {
+            let ui = ui.child_ui(clip_rect, Layout::default());
+            self.paint_tags(&ui, output.rect.min.to_vec2(), &galley, clip_rect);
+            let repl_opt = self.popup_ui(&ui, &galley, &output);
 
-        if let Some(expr) = expr.as_ref() {
-            if self.interactive {
-                let ui = ui.child_ui(clip_rect, Layout::default());
-                self.paint_tags(&ui, expr, output.rect.min.to_vec2(), &galley, clip_rect);
-                let repl_opt = self.popup_ui(&ui, expr, &galley, &output);
+            if self.state.focused && !self.state.search_results.is_empty() {
+                ui.memory_mut(|mem| mem.open_popup(self.id));
+            }
 
-                if self.state.focused && !self.state.search_results.is_empty() {
-                    ui.memory_mut(|mem| mem.open_popup(self.id));
-                }
+            if let Some(repl) = repl_opt {
+                ui.memory_mut(|mem| {
+                    if mem.is_popup_open(self.id) {
+                        mem.close_popup();
+                    }
+                });
+                self.state.focused = false;
+                self.state.search_query = Default::default();
+                self.state.search_range = None;
+                self.state.search_results = vec![];
 
-                if let Some(repl) = repl_opt {
-                    ui.memory_mut(|mem| {
-                        if mem.is_popup_open(self.id) {
-                            mem.close_popup();
-                        }
-                    });
-                    self.state.focused = false;
-                    self.state.search_query = Default::default();
-                    self.state.search_range = None;
-                    self.state.search_results = vec![];
-
-                    repl.apply(self.text);
-                }
+                repl.apply(self.text);
             }
         }
 
         std::mem::take(&mut self.state).store(ui.ctx(), self.id);
 
-        SearchResponse {
-            response: output,
-            expression: expr,
-        }
+        output
     }
 }
 
 impl<'a> Widget for SearchBox<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
-        self.show(ui).response
+        self.show(ui)
     }
 }
 

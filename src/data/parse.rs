@@ -4,13 +4,15 @@ use crate::data::{
 };
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_while_m_n};
-use nom::character::complete::{alpha1, digit0, digit1, none_of, one_of};
+use nom::character::complete::{alpha1, anychar, digit0, digit1, none_of, one_of};
 use nom::combinator::{map, map_opt, map_res, opt};
 use nom::error::ParseError;
-use nom::multi::{count, fold_many0, fold_many1, fold_many_m_n, many0, many1};
+use nom::multi::{count, fold_many0, fold_many1, fold_many_m_n, many0, many1, many_till};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, tuple};
-use nom::{FindSubstring, IResult, InputIter, Parser, Slice};
+use nom::{combinator, FindSubstring, IResult, InputIter, Parser, Slice};
 use std::cell::RefCell;
+use std::fmt::Debug;
+use std::ops::Range;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -26,12 +28,13 @@ use eframe::egui::text_selection::text_cursor_state::byte_index_from_char_index;
 use eframe::egui::TextBuffer;
 use eframe::epaint::text::cursor::{Cursor, PCursor, RCursor};
 use itertools::Itertools;
+use nom::character::complete;
 use nom::number::complete::double;
 use nom_locate::{position, LocatedSpan};
 use regex::Regex;
 use std::str::FromStr;
-use std::sync::Mutex;
-use tracing::warn;
+use std::sync::{Mutex, OnceLock};
+use tracing::{info, warn};
 
 #[cfg(not(test))]
 static LOCAL: Mutex<Option<chrono::Local>> = Mutex::new(Some(chrono::Local));
@@ -476,16 +479,16 @@ fn regex_literal(s: Span) -> IResult<Span, Regex> {
     })(s)
 }
 
-fn record_range<'a>(
-    mut f: impl Parser<Span<'a>, FilterExpression, nom::error::Error<Span<'a>>>,
-) -> impl FnMut(Span<'a>) -> IResult<Span<'a>, FilterExpressionParseNode> {
+fn record_range<'a, Node: ParseNode>(
+    mut f: impl Parser<Span<'a>, Node::Contents, nom::error::Error<Span<'a>>>,
+) -> impl FnMut(Span<'a>) -> IResult<Span<'a>, Node> {
     move |s| {
         let (s, start) = position(s)?;
         let (s, expr) = f.parse(s)?;
         let (s, end) = position(s)?;
         Ok((
             s,
-            FilterExpressionParseNode::leaf(expr, start.location_offset(), end.location_offset()),
+            Node::new(expr, start.location_offset()..end.location_offset()),
         ))
     }
 }
@@ -554,8 +557,7 @@ fn not_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
                 FilterExpressionParseNode::parent(
                     expr,
                     vec![inner_node],
-                    start.location_offset(),
-                    end.location_offset(),
+                    start.location_offset()..end.location_offset(),
                 ),
             ))
         }
@@ -681,8 +683,7 @@ fn filter_expression_implicit_and(s: Span) -> IResult<Span, FilterExpressionPars
     let node = FilterExpressionParseNode::parent(
         and_exp,
         vec![node1, node2],
-        start.location_offset(),
-        end.location_offset(),
+        start.location_offset()..end.location_offset(),
     );
     fold_many0(
         not_expression,
@@ -690,8 +691,8 @@ fn filter_expression_implicit_and(s: Span) -> IResult<Span, FilterExpressionPars
         |node1, node2| {
             let expr =
                 FilterExpression::And(Box::new(node1.expr.clone()), Box::new(node2.expr.clone()));
-            let (start, end) = (node1.start, node2.end);
-            FilterExpressionParseNode::parent(expr, vec![node1, node2], start, end)
+            let range = node1.range.start..node2.range.end;
+            FilterExpressionParseNode::parent(expr, vec![node1, node2], range)
         },
     )(s)
 }
@@ -707,7 +708,7 @@ fn or_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
         separated_pair(
             filter_expression_implicit_and,
             alt((tag_ws("||"), tag_ws("or"))),
-            filter_expression_implicit_and,
+            filter_expression,
         ),
     ))(s)
     {
@@ -720,8 +721,7 @@ fn or_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
                 FilterExpressionParseNode::parent(
                     expr,
                     vec![node1, node2],
-                    start.location_offset(),
-                    end.location_offset(),
+                    start.location_offset()..end.location_offset(),
                 ),
             ))
         }
@@ -740,7 +740,7 @@ fn and_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
         separated_pair(
             or_expression,
             alt((tag_ws("&&"), tag_ws("and"))),
-            or_expression,
+            filter_expression,
         ),
     ))(s)
     {
@@ -753,8 +753,7 @@ fn and_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
                 FilterExpressionParseNode::parent(
                     expr,
                     vec![node1, node2],
-                    start.location_offset(),
-                    end.location_offset(),
+                    start.location_offset()..end.location_offset(),
                 ),
             ))
         }
@@ -766,75 +765,19 @@ pub fn filter_expression(s: Span) -> IResult<Span, FilterExpressionParseNode> {
     with_ws(and_expression)(s)
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
-pub struct FilterExpressionParseNode {
-    pub expr: FilterExpression,
-    children: Vec<FilterExpressionParseNode>,
-    pub start: usize,
-    pub end: usize,
-}
-
-impl FilterExpressionParseNode {
-    pub fn leaf(expr: FilterExpression, start: usize, end: usize) -> Self {
-        Self {
-            expr,
-            children: vec![],
-            start,
-            end,
-        }
-    }
-
-    pub fn parent(
-        expr: FilterExpression,
-        children: Vec<FilterExpressionParseNode>,
-        start: usize,
-        end: usize,
-    ) -> Self {
-        Self {
-            expr,
-            children,
-            start,
-            end,
-        }
-    }
-
-    pub fn flat_nodes(&self) -> Vec<FilterExpressionParseNode> {
-        let mut list = vec![self.clone()];
-        for child in &self.children {
-            list.extend(child.flat_nodes());
-        }
-
-        list
-    }
-
-    pub fn replacement_range(&self) -> Option<(usize, usize)> {
-        // field:01234567-89ab-cdef-0123-456789abcdef
-        const FIELD_MATCH_REPLACEMENT_LENGTH: usize = 42;
-
-        match &self.expr {
-            FilterExpression::TagMatch(_) => Some((self.start, self.end)),
-            FilterExpression::FieldMatch(_, _) => {
-                Some((self.start, self.start + FIELD_MATCH_REPLACEMENT_LENGTH))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn replacement_size(&self, ui: &egui::Ui, vault: &Vault) -> Option<egui::Vec2> {
-        match &self.expr {
-            FilterExpression::TagMatch(id) | FilterExpression::FieldMatch(id, _) => {
-                let def = vault.get_definition_or_placeholder(id);
-                Some(crate::ui::widgets::Tag::new(&def).small(true).size(ui))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn replacement_char(&self, ui: &egui::Ui, vault: &Vault) -> Option<char> {
+pub trait ReplacementNode: Debug + Clone {
+    fn replacement_range(&self) -> Option<Range<usize>>;
+    fn replacement_size(
+        &self,
+        ui: &egui::Ui,
+        vault: &Vault,
+        container_width: f32,
+    ) -> Option<egui::Vec2>;
+    fn replacement_char(&self, ui: &egui::Ui, vault: &Vault, container_width: f32) -> Option<char> {
         const PRIVATE_USE_AREA_START: u32 = 0xE000;
         const PRIVATE_USE_AREA_SIZE: u32 = 0x1000;
 
-        let size = self.replacement_size(ui, vault)?;
+        let size = self.replacement_size(ui, vault, container_width)?;
         if size.x < 0.0 {
             return None;
         }
@@ -847,6 +790,103 @@ impl FilterExpressionParseNode {
     }
 }
 
+trait ParseNode: Debug {
+    type Contents: Debug + Eq;
+
+    fn new(c: Self::Contents, r: Range<usize>) -> Self;
+    fn contents(&self) -> &Self::Contents;
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FilterExpressionParseNode {
+    pub expr: FilterExpression,
+    children: Vec<FilterExpressionParseNode>,
+    pub range: Range<usize>,
+}
+
+impl ParseNode for FilterExpressionParseNode {
+    type Contents = FilterExpression;
+
+    fn new(expr: Self::Contents, range: Range<usize>) -> Self {
+        Self::leaf(expr, range)
+    }
+
+    fn contents(&self) -> &Self::Contents {
+        &self.expr
+    }
+}
+
+impl FilterExpressionParseNode {
+    pub fn leaf(expr: FilterExpression, range: Range<usize>) -> Self {
+        Self {
+            expr,
+            children: vec![],
+            range,
+        }
+    }
+
+    pub fn parent(
+        expr: FilterExpression,
+        children: Vec<FilterExpressionParseNode>,
+        range: Range<usize>,
+    ) -> Self {
+        Self {
+            expr,
+            children,
+            range,
+        }
+    }
+
+    pub fn flat_nodes(&self) -> Vec<FilterExpressionParseNode> {
+        let mut list = vec![self.clone()];
+        for child in &self.children {
+            list.extend(child.flat_nodes());
+        }
+
+        list
+    }
+}
+
+impl ReplacementNode for FilterExpressionParseNode {
+    fn replacement_range(&self) -> Option<Range<usize>> {
+        // field:01234567-89ab-cdef-0123-456789abcdef
+        const FIELD_MATCH_REPLACEMENT_LENGTH: usize = 42;
+
+        match &self.expr {
+            FilterExpression::TagMatch(_) => Some(self.range.clone()),
+            FilterExpression::FieldMatch(_, _) => {
+                Some(self.range.start..(self.range.start + FIELD_MATCH_REPLACEMENT_LENGTH))
+            }
+            _ => None,
+        }
+    }
+
+    fn replacement_size(
+        &self,
+        ui: &egui::Ui,
+        vault: &Vault,
+        container_width: f32,
+    ) -> Option<egui::Vec2> {
+        match &self.expr {
+            FilterExpression::TagMatch(id) | FilterExpression::FieldMatch(id, _) => {
+                let def = vault.get_definition_or_placeholder(id);
+                Some(
+                    crate::ui::widgets::Tag::new(&def)
+                        .small(true)
+                        .size(ui, container_width),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ReplacementSection<Node: ReplacementNode> {
+    Normal(Range<usize>),
+    Replacement { start: usize, node: Node },
+}
+
 #[derive(Debug, Default, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FilterExpressionParseResult {
     pub expr: FilterExpression,
@@ -855,21 +895,27 @@ pub struct FilterExpressionParseResult {
     rest: usize,
 }
 
-#[derive(Debug)]
-pub enum FilterExpressionTextSection {
-    Normal(usize, usize),
-    Replacement(usize, FilterExpressionParseNode),
-}
+pub trait ReplacementResult {
+    type Node: ReplacementNode;
 
-impl FilterExpressionParseResult {
-    pub fn sections(&self) -> Vec<FilterExpressionTextSection> {
-        let mut sections = vec![FilterExpressionTextSection::Normal(0, self.text.len())];
-        for node in &self.nodes {
-            if let Some((repl_start, repl_end)) = node.replacement_range() {
+    fn nodes(&self) -> &[Self::Node];
+    fn original_text(&self) -> &str;
+
+    fn sections(&self) -> Vec<ReplacementSection<Self::Node>> {
+        let mut sections = vec![ReplacementSection::Normal(0..self.original_text().len())];
+        for node in self.nodes() {
+            if let Some(Range {
+                start: repl_start,
+                end: repl_end,
+            }) = node.replacement_range()
+            {
                 // assume that replacement ranges do not overlap, such that there is exactly
                 // one normal range which encompasses the entire replacement range
-                let match_pred = |sec: &FilterExpressionTextSection| matches!(sec, FilterExpressionTextSection::Normal(start, end) if *start <= repl_start && *end >= repl_end);
-                let sec_idx = match sections.iter().positions(match_pred).collect::<Vec<_>>()[..] {
+                let sec_idx = match sections.iter().positions(
+                    |sec| {
+                        matches!(sec, ReplacementSection::Normal(Range { start, end }) if start <= &repl_start && end >= &repl_end)
+                    }
+                ).collect::<Vec<_>>()[..] {
                     [] => {
                         warn!("Could not find match for range ({repl_start}, {repl_end}) in list: {sections:?}");
                         continue;
@@ -882,36 +928,55 @@ impl FilterExpressionParseResult {
                 };
 
                 let sec = sections.swap_remove(sec_idx);
-                let FilterExpressionTextSection::Normal(start, end) = sec else {
+                let ReplacementSection::Normal(Range { start, end }) = sec else {
                     continue;
                 };
 
                 let node = node.clone();
                 sections.extend(match (start == repl_start, end == repl_end) {
-                    (true, true) => vec![FilterExpressionTextSection::Replacement(start, node)],
+                    (true, true) => vec![ReplacementSection::Replacement { start, node }],
                     (true, false) => vec![
-                        FilterExpressionTextSection::Replacement(start, node),
-                        FilterExpressionTextSection::Normal(repl_end, end),
+                        ReplacementSection::Replacement { start, node },
+                        ReplacementSection::Normal(repl_end..end),
                     ],
                     (false, true) => vec![
-                        FilterExpressionTextSection::Normal(start, repl_start),
-                        FilterExpressionTextSection::Replacement(repl_start, node),
+                        ReplacementSection::Normal(start..repl_start),
+                        ReplacementSection::Replacement {
+                            start: repl_start,
+                            node,
+                        },
                     ],
                     (false, false) => vec![
-                        FilterExpressionTextSection::Normal(start, repl_start),
-                        FilterExpressionTextSection::Replacement(repl_start, node),
-                        FilterExpressionTextSection::Normal(repl_end, end),
+                        ReplacementSection::Normal(start..repl_start),
+                        ReplacementSection::Replacement {
+                            start: repl_start,
+                            node,
+                        },
+                        ReplacementSection::Normal(repl_end..end),
                     ],
                 });
             }
         }
         sections.sort_by_key(|sec| match sec {
-            FilterExpressionTextSection::Normal(start, _)
-            | FilterExpressionTextSection::Replacement(start, _) => *start,
+            ReplacementSection::Normal(Range { start, .. })
+            | ReplacementSection::Replacement { start, .. } => *start,
         });
         sections
     }
+}
 
+impl ReplacementResult for FilterExpressionParseResult {
+    type Node = FilterExpressionParseNode;
+
+    fn nodes(&self) -> &[Self::Node] {
+        &self.nodes
+    }
+    fn original_text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl FilterExpressionParseResult {
     pub fn tag_ids(&self) -> Vec<Uuid> {
         let mut results = vec![];
         for node in &self.nodes {
@@ -1013,7 +1078,7 @@ pub trait ReplacementStringConversion {
     }
 }
 
-impl ReplacementStringConversion for FilterExpressionParseResult {
+impl<Res: ReplacementResult> ReplacementStringConversion for Res {
     fn replacement_idx_to_text_idx(&self, idx: usize) -> usize {
         //       0123456789012345678
         // text: abc[defgh]ijkl[mn]
@@ -1030,10 +1095,10 @@ impl ReplacementStringConversion for FilterExpressionParseResult {
         // diff: 4
         // node.start (14) - acc_diff (6) = 8
         let mut acc_diff = 0;
-        for node in &self.nodes {
-            if let Some((repl_start, repl_end)) = node.replacement_range() {
-                let diff = (repl_end - repl_start) - 1;
-                if repl_start - acc_diff < idx {
+        for node in self.nodes() {
+            if let Some(Range { start, end }) = node.replacement_range() {
+                let diff = (end - start) - 1;
+                if start - acc_diff < idx {
                     acc_diff += diff;
                 }
             }
@@ -1051,12 +1116,12 @@ impl ReplacementStringConversion for FilterExpressionParseResult {
         // repl_idx: 8 = 16 - (7 - 1) - (3 - 1)
         //             = 16 - ((10-3) - 1) - ((16-14) - 1)
         let mut idx_diff = 0;
-        for node in &self.nodes {
-            if let Some((repl_start, repl_end)) = node.replacement_range() {
-                if idx >= repl_end {
-                    idx_diff += (repl_end - repl_start) - 1;
-                } else if idx > repl_start {
-                    idx_diff += (idx - repl_start) - 1;
+        for node in self.nodes() {
+            if let Some(Range { start, end }) = node.replacement_range() {
+                if idx >= end {
+                    idx_diff += (end - start) - 1;
+                } else if idx > start {
+                    idx_diff += (idx - start) - 1;
                 }
             }
         }
@@ -1064,7 +1129,7 @@ impl ReplacementStringConversion for FilterExpressionParseResult {
     }
 }
 
-impl ReplacementStringConversion for Option<FilterExpressionParseResult> {
+impl<T: ReplacementStringConversion> ReplacementStringConversion for Option<T> {
     fn replacement_idx_to_text_idx(&self, idx: usize) -> usize {
         if let Some(expr) = self.as_ref() {
             expr.replacement_idx_to_text_idx(idx)
@@ -1087,15 +1152,123 @@ impl FromStr for FilterExpressionParseResult {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match filter_expression(LocatedSpan::new(s)) {
-            Ok((rest, node)) => {
-                let nodes = node.flat_nodes();
-                Ok(FilterExpressionParseResult {
-                    expr: node.expr.clone(),
-                    text: s.to_string(),
-                    nodes,
-                    rest: rest.location_offset(),
-                })
+            Ok((rest, node)) => Ok(Self {
+                expr: node.expr.clone(),
+                text: s.to_string(),
+                nodes: node.flat_nodes(),
+                rest: rest.location_offset(),
+            }),
+            Err(_) => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldReplacementNode {
+    Text(String),
+    Field(Uuid),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldReplacementParseNode {
+    pub node: FieldReplacementNode,
+    range: Range<usize>,
+}
+
+impl ParseNode for FieldReplacementParseNode {
+    type Contents = FieldReplacementNode;
+
+    fn new(node: Self::Contents, range: Range<usize>) -> Self {
+        Self { node, range }
+    }
+
+    fn contents(&self) -> &Self::Contents {
+        &self.node
+    }
+}
+
+impl ReplacementNode for FieldReplacementParseNode {
+    fn replacement_range(&self) -> Option<Range<usize>> {
+        match self.node {
+            FieldReplacementNode::Text(_) => None,
+            FieldReplacementNode::Field(_) => Some(self.range.clone()),
+        }
+    }
+
+    fn replacement_size(
+        &self,
+        ui: &egui::Ui,
+        vault: &Vault,
+        container_width: f32,
+    ) -> Option<egui::Vec2> {
+        match self.node {
+            FieldReplacementNode::Text(_) => None,
+            FieldReplacementNode::Field(id) => {
+                let def = vault.get_definition_or_placeholder(&id);
+                Some(
+                    crate::ui::widgets::Tag::new(&def)
+                        .small(true)
+                        .size(ui, container_width),
+                )
             }
+        }
+    }
+}
+
+pub struct FieldReplacementParseResult {
+    nodes: Vec<FieldReplacementParseNode>,
+    text: String,
+}
+
+impl ReplacementResult for FieldReplacementParseResult {
+    type Node = FieldReplacementParseNode;
+
+    fn nodes(&self) -> &[Self::Node] {
+        &self.nodes
+    }
+
+    fn original_text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl FieldReplacementParseResult {
+    pub fn tag_ids(&self) -> Vec<Uuid> {
+        self.nodes
+            .iter()
+            .filter_map(|n| match n {
+                FieldReplacementParseNode {
+                    node: FieldReplacementNode::Field(id),
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn field_replacement(s: Span) -> IResult<Span, Vec<FieldReplacementParseNode>> {
+    many0(map(
+        many_till(
+            combinator::value((), anychar),
+            record_range(map(
+                preceded(tag("field:"), uuid),
+                FieldReplacementNode::Field,
+            )),
+        ),
+        |(_, node)| node,
+    ))(s)
+}
+
+impl FromStr for FieldReplacementParseResult {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match field_replacement(LocatedSpan::new(s)) {
+            Ok((_, nodes)) => Ok(Self {
+                nodes,
+                text: s.to_string(),
+            }),
             Err(_) => Err(()),
         }
     }
@@ -1186,12 +1359,20 @@ mod test {
         )
     }
 
-    fn assert_ok<T: PartialEq>(v: T, res: IResult<Span, T>) {
-        assert!(matches!(res, Ok((_, val)) if val == v));
+    #[allow(clippy::needless_pass_by_value)]
+    fn assert_ok<T: PartialEq + Debug>(v: T, res: IResult<Span, T>) {
+        assert!(
+            matches!(&res, Ok((_, val)) if val == &v),
+            "{v:#?} = {res:#?}"
+        );
     }
 
-    fn assert_ok_fe(v: FilterExpression, res: IResult<Span, FilterExpressionParseNode>) {
-        assert!(matches!(res, Ok((_, val)) if val.expr == v));
+    #[allow(clippy::needless_pass_by_value)]
+    fn assert_ok_node<Node: ParseNode>(v: Node::Contents, res: IResult<Span, Node>) {
+        assert!(
+            matches!(&res, Ok((_, val)) if val.contents() == &v),
+            "{v:#?} = {res:#?}",
+        );
     }
 
     fn s(s: &str) -> Span {
@@ -1200,95 +1381,102 @@ mod test {
 
     #[test]
     fn test_filter_expression_and() {
-        assert_ok_fe(
+        assert_ok_node(
             and(exact("abc"), exact("def")),
             filter_expression(s("and(\"abc\", \"def\")")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             and(text("abc"), text("def")),
             filter_expression(s("and(abc, def)")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             and(exact("abc"), exact("def")),
             filter_expression(s("\"abc\" && \"def\"")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             and(exact("abc"), exact("def")),
             filter_expression(s("\"abc\" and \"def\"")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             and(text("abc"), text("def")),
             filter_expression(s("abc and def")),
+        );
+
+        // test repetition (left-to-right associativity)
+        assert_ok_node(
+            and(text("abc"), and(text("def"), and(text("ghi"), text("mno")))),
+            filter_expression(s("abc and def and ghi and mno")),
         );
     }
 
     #[test]
     fn test_filter_expression_or() {
-        assert_ok_fe(
+        assert_ok_node(
             or(exact("abc"), exact("def")),
             filter_expression(s("or(\"abc\", \"def\")")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             or(text("abc"), text("def")),
             filter_expression(s("or(abc, def)")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             or(exact("abc"), exact("def")),
             filter_expression(s("\"abc\" || \"def\"")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             or(exact("abc"), exact("def")),
             filter_expression(s("\"abc\" or \"def\"")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             or(text("abc"), text("def")),
             filter_expression(s("abc or def")),
         );
 
-        assert_ok_fe(text("abcordef"), filter_expression(s("abcordef")));
+        assert_ok_node(text("abcordef"), filter_expression(s("abcordef")));
     }
 
     #[test]
     fn test_filter_expression_not() {
-        assert_ok_fe(not(text("abc")), filter_expression(s("!abc")));
+        assert_ok_node(not(text("abc")), filter_expression(s("!abc")));
 
-        assert_ok_fe(not(text("abc")), filter_expression(s("not abc")));
+        assert_ok_node(not(text("abc")), filter_expression(s("not abc")));
 
-        assert_ok_fe(not(text("abc")), filter_expression(s("not ( abc )")));
+        assert_ok_node(not(text("abc")), filter_expression(s("not ( abc )")));
 
-        assert_ok_fe(text("notabc"), filter_expression(s("notabc")));
+        assert_ok_node(text("notabc"), filter_expression(s("notabc")));
     }
 
     #[test]
     fn test_filter_expression_implicit_and() {
-        assert_ok_fe(
+        assert_ok_node(
             and(exact("abc"), exact("def")),
             filter_expression(s("\"abc\" \"def\"")),
         );
-        assert_ok_fe(
+        assert_ok_node(
             and(exact("abc"), text("def")),
             filter_expression(s("\"abc\" def")),
         );
 
-        assert_ok_fe(
+        assert_ok_node(
             and(text("abc"), text("def")),
             filter_expression(s("abc def")),
         );
 
-        assert_ok_fe(
-            and(or(text("abc"), text("def")), and(text("ghi"), text("jkl"))),
+        assert_ok_node(
+            or(text("abc"), and(text("def"), and(text("ghi"), text("jkl")))),
             filter_expression(s("abc or def and ghi jkl")),
         );
 
-        assert_ok_fe(
+        // test for LTR associativity
+        assert_ok_node(
             and(
                 and(and(text("abc"), not(text("def"))), text("ghi")),
                 exact("jkl"),
@@ -1296,10 +1484,11 @@ mod test {
             filter_expression(s("abc !def ghi \"jkl\"")),
         );
 
-        assert_ok_fe(
-            and(
-                or(and(text("abc"), text("def")), text("ghi")),
-                and(text("jkl"), text("mno")),
+        // test for greater precedence with and
+        assert_ok_node(
+            or(
+                and(text("abc"), text("def")),
+                and(text("ghi"), and(text("jkl"), text("mno"))),
             ),
             filter_expression(s("abc def or ghi and jkl mno")),
         );
@@ -1462,65 +1651,107 @@ mod test {
             let id1 = crate::fields::image::WIDTH.id;
             let id2 = crate::fields::meta::ALIASES.id;
             let id3 = crate::fields::general::MEDIA_TYPE.id;
-            assert_ok_fe(
+            assert_ok_node(
                 eq(id1, V::int(600)),
-                filter_expression(s(format!("field:{id1}=600").as_str())),
+                filter_expression(s(&format!("field:{id1}=600"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 ne(id1, V::float(549.2.into())),
-                filter_expression(s(format!("field:{id1} ne 549.2").as_str())),
+                filter_expression(s(&format!("field:{id1} ne 549.2"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 is_one_of(id1, &[V::int(600), V::int(800)]),
-                filter_expression(s(format!("field:{id1} in 600,800").as_str())),
+                filter_expression(s(&format!("field:{id1} in 600,800"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 contains(id2, V::string("abc".into())),
-                filter_expression(s(format!("field:{id2} contains abc").as_str())),
+                filter_expression(s(&format!("field:{id2} contains abc"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 lt(id1, V::int(-500)),
-                filter_expression(s(format!("field:{id1}<-500").as_str())),
+                filter_expression(s(&format!("field:{id1}<-500"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 le(id1, V::int(600)),
-                filter_expression(s(format!("field:{id1}<= 600").as_str())),
+                filter_expression(s(&format!("field:{id1}<= 600"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 ge(
                     id1,
                     V::datetime(Utc.timestamp_nanos(1_718_553_600_000_000_000)),
                 ),
-                filter_expression(s(format!("field:{id1}>=2024-06-17").as_str())),
+                filter_expression(s(&format!("field:{id1}>=2024-06-17"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 gt(id1, V::string("ne".into())),
-                filter_expression(s(format!("field:{id1}>ne").as_str())),
+                filter_expression(s(&format!("field:{id1}>ne"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 starts(id3, V::string("image/".into())),
-                filter_expression(s(format!("field:{id3}^=\"image/\"").as_str())),
+                filter_expression(s(&format!("field:{id3}^=\"image/\""))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 starts(id3, V::string("image/".into())),
-                filter_expression(s(format!("field:{id3} starts with image/").as_str())),
+                filter_expression(s(&format!("field:{id3} starts with image/"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 ends(id3, V::string("/jpeg".into())),
-                filter_expression(s(format!("field:{id3}$=/jpeg").as_str())),
+                filter_expression(s(&format!("field:{id3}$=/jpeg"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 ends(id3, V::string("/jpeg".into())),
-                filter_expression(s(format!("field:{id3} ends with \"/jpeg\"").as_str())),
+                filter_expression(s(&format!("field:{id3} ends with \"/jpeg\""))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 regex(id3, r"[^/]+/[^/]+"),
-                filter_expression(s(format!(r"field:{id3}=~/[^\/]+\/[^\/]+/").as_str())),
+                filter_expression(s(&format!(r"field:{id3}=~/[^\/]+\/[^\/]+/"))),
             );
-            assert_ok_fe(
+            assert_ok_node(
                 regex(id1, r"6..\.."),
-                filter_expression(s(format!(r"field:{id1} like /6..\../").as_str())),
+                filter_expression(s(&format!(r"field:{id1} like /6..\../"))),
             );
         });
+    }
+
+    fn field_replacement_parse_node(id: Uuid, range: Range<usize>) -> FieldReplacementParseNode {
+        FieldReplacementParseNode {
+            node: FieldReplacementNode::Field(id),
+            range,
+        }
+    }
+
+    #[test]
+    fn test_field_replacement() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+
+        assert_ok(vec![], field_replacement(s("")));
+        assert_ok(vec![], field_replacement(s("abcdefghijkl")));
+        assert_ok(
+            vec![field_replacement_parse_node(id1, 0..42)],
+            field_replacement(s(&format!("field:{id1}"))),
+        );
+        assert_ok(
+            vec![field_replacement_parse_node(id1, 10..52)],
+            field_replacement(s(&format!("ab field: field:{id1}"))),
+        );
+        assert_ok(
+            vec![field_replacement_parse_node(id1, 0..42)],
+            field_replacement(s(&format!("field:{id1} ab field:"))),
+        );
+        assert_ok(
+            vec![
+                field_replacement_parse_node(id1, 0..42),
+                field_replacement_parse_node(id2, 43..85),
+            ],
+            field_replacement(s(&format!("field:{id1} field:{id2}"))),
+        );
+        assert_ok(
+            vec![
+                field_replacement_parse_node(id1, 10..52),
+                field_replacement_parse_node(id2, 53..95),
+            ],
+            field_replacement(s(&format!("abcdefghi field:{id1} field:{id2} abcdefghi"))),
+        );
     }
 }

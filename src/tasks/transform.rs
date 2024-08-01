@@ -205,19 +205,18 @@ fn do_blur_infill(
     if params.use_gaussian {
         let mut radius = params.gaussian_radius as f64;
         if let Some(blur_scale) = blur_scale {
-            info!("blur scale = {blur_scale}");
             radius *= blur_scale as f64;
         }
         wand.blur_image(0.0, radius)?;
     }
 
     let brightness = if params.use_brightness {
-        params.brightness_change.0
+        params.brightness_change.0 * 100.0
     } else {
         0.0
     };
     let contrast = if params.use_contrast {
-        params.contrast_change.0
+        params.contrast_change.0 * 100.0
     } else {
         0.0
     };
