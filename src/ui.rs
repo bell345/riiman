@@ -417,9 +417,10 @@ impl App {
                 ui.close_menu();
             }
             if ui.button("Paths...").clicked() {
+                self.add_modal_dialog(modals::TransformPaths::default());
                 ui.close_menu();
             }
-            if ui.button("Tasks...").clicked() {
+            if ui.button("Tags...").clicked() {
                 ui.close_menu();
             }
         });

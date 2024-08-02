@@ -32,6 +32,8 @@ use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 
 pub struct SearchBox<'a> {
     id: egui::Id,
+    icon: String,
+    placeholder: String,
     text: &'a mut String,
     expr: Option<FieldReplacementParseResult>,
     desired_width: f32,
@@ -138,6 +140,8 @@ impl<'a> SearchBox<'a> {
     pub fn new(widget_id: impl std::hash::Hash, text: &'a mut String, vault: Arc<Vault>) -> Self {
         Self {
             id: egui::Id::new(widget_id),
+            icon: "\u{1f50d}".into(),
+            placeholder: "Search...".into(),
             expr: text.parse().ok(),
             text,
             desired_width: 200.0,
@@ -163,6 +167,16 @@ impl<'a> SearchBox<'a> {
 
     pub fn interactive(mut self) -> Self {
         self.interactive = true;
+        self
+    }
+
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = icon.into();
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
         self
     }
 
@@ -413,9 +427,7 @@ impl<'a> SearchBox<'a> {
 
                 // Layout again to avoid frame delay, and to keep `text` and `galley` in sync.
                 self.expr = self.text.parse().ok();
-                info!("available width = {}", ui.available_width());
                 *galley = self.layouter(ui);
-                info!("after relayout");
 
                 // Set cursor_range using new galley:
                 let (primary, secondary) = match new_ccursor_range {
@@ -963,13 +975,16 @@ impl<'a> SearchBox<'a> {
         let style = ui.style();
         let icon_galley = ui.fonts(|f| {
             f.layout_job(egui::text::LayoutJob::simple_singleline(
-                "\u{1f50d}".into(),
+                self.icon.clone(),
                 egui::TextStyle::Button.resolve(style),
                 style.visuals.strong_text_color(),
             ))
         });
 
-        let icon_reserved_width = icon_galley.rect.width() + style.spacing.icon_spacing;
+        let mut icon_reserved_width = icon_galley.rect.width();
+        if icon_reserved_width > 0.0 {
+            icon_reserved_width += style.spacing.icon_spacing;
+        }
 
         #[allow(clippy::cast_precision_loss)]
         {
@@ -1016,7 +1031,7 @@ impl<'a> SearchBox<'a> {
                     output.rect.size().y / 2.0,
                 )),
                 Align2::LEFT_CENTER,
-                "Search...",
+                self.placeholder.clone(),
                 egui::TextStyle::Body.resolve(style),
                 style.visuals.weak_text_color(),
             );

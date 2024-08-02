@@ -5,17 +5,18 @@
 
 use std::path::Path;
 
-use crate::data::transform::{
-    FitAlgorithm, InfillOptions, InfillTechnique, ScaleAlgorithm, ScaleOptions,
-};
-use crate::data::TransformParams;
-use crate::tasks::image::{export_all_rgba, read_image, wand_to_image};
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 use eframe::egui;
 use eframe::egui::{pos2, vec2, Color32, Pos2, Rect, Vec2, ViewportClass};
 use magick_rust::{CompositeOperator, FilterType, GravityType, MagickWand, PixelWand};
 use tokio::task::block_in_place;
-use tracing::info;
+
+use crate::data::transform::{
+    FitAlgorithm, InfillOptions, InfillTechnique, ScaleAlgorithm, ScaleOptions,
+};
+use crate::data::{FieldStore, Item, TransformImageParams, TransformPathParams};
+use crate::fields;
+use crate::tasks::image::{export_all_rgba, read_image, wand_to_image};
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn};
 
 fn get_integer_scale_factor(original: f32, new: f32) -> f32 {
     if new > original {
@@ -233,7 +234,7 @@ fn do_blur_infill(
     Ok(())
 }
 
-pub fn get_transformed_size(size: impl Into<Vec2>, params: &TransformParams) -> Vec2 {
+pub fn get_transformed_size(size: impl Into<Vec2>, params: &TransformImageParams) -> Vec2 {
     let mut size = size.into();
 
     if params.scale.enabled {
@@ -249,7 +250,7 @@ pub fn get_transformed_size(size: impl Into<Vec2>, params: &TransformParams) -> 
 
 fn load_image_preview_task(
     abs_path: impl AsRef<Path>,
-    params: Option<&TransformParams>,
+    params: Option<&TransformImageParams>,
 ) -> AsyncTaskReturn {
     let mut wand = read_image(abs_path)?;
     if let Some(params) = params {
@@ -269,7 +270,7 @@ pub fn load_image_preview(abs_path: impl AsRef<Path>) -> AsyncTaskReturn {
 
 pub fn load_transformed_image_preview(
     abs_path: impl AsRef<Path>,
-    params: &TransformParams,
+    params: &TransformImageParams,
 ) -> AsyncTaskReturn {
     block_in_place(|| load_image_preview_task(abs_path, Some(params)))
 }
@@ -304,7 +305,7 @@ fn scale_with_xbrz(
 
 pub fn transform_wand(
     wand: &mut MagickWand,
-    params: &TransformParams,
+    params: &TransformImageParams,
     full_size: Option<Vec2>,
 ) -> anyhow::Result<()> {
     let orig_size = get_image_size(wand);
@@ -358,13 +359,26 @@ pub fn transform_wand(
     Ok(())
 }
 
+pub fn transform_path(item: &Item, params: &TransformPathParams) -> Option<String> {
+    // TODO: Replace hardcoded implementation
+    let author_id = item
+        .get_known_field_value(fields::tweet::AUTHOR_ID)
+        .ok()??;
+    let post_id = item.get_known_field_value(fields::tweet::ID).ok()??;
+    let img_num = item
+        .get_known_field_value(fields::tweet::IMAGE_NUMBER)
+        .ok()??;
+    let extension = Path::new(item.path()).extension()?.to_str()?;
+    Some(format!(
+        "twitter_{author_id}_{post_id}_{img_num}.{extension}"
+    ))
+}
+
 #[cfg(test)]
 mod test {
-    use crate::data::transform::{InfillOptions, ScaleOptions};
-
     use super::*;
 
-    fn scale_params(f: impl FnOnce(&mut ScaleOptions)) -> TransformParams {
+    fn scale_params(f: impl FnOnce(&mut ScaleOptions)) -> TransformImageParams {
         let mut scale_options = ScaleOptions {
             enabled: true,
             use_target_width: true,
@@ -374,25 +388,25 @@ mod test {
             ..Default::default()
         };
         f(&mut scale_options);
-        TransformParams {
+        TransformImageParams {
             scale: scale_options,
             ..Default::default()
         }
     }
 
-    fn infill_params(f: impl FnOnce(&mut InfillOptions)) -> TransformParams {
+    fn infill_params(f: impl FnOnce(&mut InfillOptions)) -> TransformImageParams {
         let mut infill_options = InfillOptions {
             enabled: true,
             ..Default::default()
         };
         f(&mut infill_options);
-        TransformParams {
+        TransformImageParams {
             infill: infill_options,
             ..Default::default()
         }
     }
 
-    fn test(p: &TransformParams, input: impl Into<Vec2>, output: impl Into<Vec2>) {
+    fn test(p: &TransformImageParams, input: impl Into<Vec2>, output: impl Into<Vec2>) {
         assert_eq!(get_transformed_size(input.into(), p), output.into());
     }
 

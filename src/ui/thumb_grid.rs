@@ -1,4 +1,4 @@
-use crate::data::{Item, ItemId, ThumbnailCacheItem, TransformParams, Vault};
+use crate::data::{Item, ItemId, ThumbnailCacheItem, TransformImageParams, Vault};
 use crate::state::{AppStateRef, THUMBNAIL_LOW_QUALITY_HEIGHT};
 use crate::take_shortcut;
 use crate::tasks::thumb_grid::{river_layout, ThumbnailPosition};
@@ -33,7 +33,7 @@ const HIGHLIGHT_PADDING: f32 = 2.0;
 pub struct ThumbnailGrid {
     id: egui::Id,
     pub params: RiverParams,
-    pub transform_params: Option<TransformParams>,
+    pub transform_params: Option<TransformImageParams>,
     info: ThumbnailGridInfo,
     app_state: AppStateRef,
     state: State,

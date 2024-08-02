@@ -9,7 +9,8 @@ mod message;
 mod new_vault;
 mod preview;
 mod tag_shortcuts;
-mod transform;
+mod transform_images;
+mod transform_paths;
 
 pub use delete_def::DeleteDefinition;
 pub use download::Download;
@@ -20,7 +21,8 @@ pub use message::Message;
 pub use new_vault::NewVault;
 pub use preview::Preview;
 pub use tag_shortcuts::TagShortcuts;
-pub use transform::TransformImages;
+pub use transform_images::TransformImages;
+pub use transform_paths::TransformPaths;
 
 pub trait AppModal: Send + Sync + 'static {
     fn id(&self) -> eframe::egui::Id;

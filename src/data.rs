@@ -23,7 +23,8 @@ pub use shortcut::ShortcutAction;
 pub use string::Utf32CachedString;
 pub use thumbnail::{ThumbnailCache, ThumbnailCacheItem, ThumbnailParams};
 pub use transform::BulkParams as TransformBulkParams;
-pub use transform::Params as TransformParams;
+pub use transform::ImageParams as TransformImageParams;
+pub use transform::PathParams as TransformPathParams;
 pub use vault::Vault;
 
 mod field;

@@ -240,10 +240,19 @@ impl AppState {
         Ok(Some(kind::ItemRef((other_vault_name, other_path))))
     }
 
-    pub fn commit_item(&self, vault: Arc<Vault>, item: &Item) -> anyhow::Result<()> {
+    pub fn commit_item(
+        &self,
+        vault: Arc<Vault>,
+        item: &Item,
+        skip_save: bool,
+    ) -> anyhow::Result<()> {
         let link_res = self.update_item_link(&vault, &item)?;
+        if skip_save {
+            return Ok(());
+        }
+
         if let Some(kind::ItemRef((other_vault_name, _))) = link_res.as_ref() {
-            self.save_vault_by_name(&other_vault_name);
+            self.save_vault_by_name(other_vault_name);
         }
         self.save_vault(vault);
         Ok(())
@@ -494,13 +503,18 @@ impl AppStateRef {
         self.catch(|| "getting current vault", || self.current_vault())
     }
 
-    pub fn commit_item_catch(&self, vault: Option<Arc<Vault>>, item: &Item) -> Result<(), ()> {
+    pub fn commit_item_catch(
+        &self,
+        vault: Option<Arc<Vault>>,
+        item: &Item,
+        skip_save: bool,
+    ) -> Result<(), ()> {
         let vault = vault
             .or_else(|| self.current_vault_catch().ok())
             .ok_or(())?;
         self.catch(
             || format!("updating item {}", item.path()),
-            || self.commit_item(vault, item),
+            || self.commit_item(vault, item, skip_save),
         )
     }
 }

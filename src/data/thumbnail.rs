@@ -1,4 +1,4 @@
-use crate::data::TransformParams;
+use crate::data::TransformImageParams;
 use chrono::{DateTime, TimeDelta, Utc};
 use eframe::egui;
 use sha2::{Digest, Sha256};
@@ -13,7 +13,7 @@ pub struct ThumbnailParams {
     pub rel_path: String,
     pub last_modified: Option<DateTime<Utc>>,
     pub height: usize,
-    pub transform_params: Option<TransformParams>,
+    pub transform_params: Option<TransformImageParams>,
 }
 
 impl ThumbnailParams {

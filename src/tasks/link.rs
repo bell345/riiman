@@ -23,6 +23,7 @@ async fn link_single_sidecar(
     path: PathBuf,
     sidecar_path: PathBuf,
     sidecar_date: DateTime<Utc>,
+    skip_save: bool,
 ) -> SingleImportResult {
     let sc_path_string = sidecar_path.to_string_lossy().to_string();
     let vault = state.current_vault()?;
@@ -56,6 +57,10 @@ async fn link_single_sidecar(
 
     if let Some(content) = dom.get("content").and_then(|c| c.as_str()) {
         item.set_known_field_value(fields::tweet::CONTENT, content.to_string().into());
+    }
+
+    if let Some(num) = dom.get("num").and_then(|c| c.as_i64()) {
+        item.set_known_field_value(fields::tweet::IMAGE_NUMBER, num);
     }
 
     if let Some(hashtags) = dom.get("hashtags").and_then(|c| c.as_array()).map(|a| {
@@ -104,7 +109,8 @@ async fn link_single_sidecar(
         item.set_known_field_value(fields::tweet::LIKED_DATE, liked_date);
     }
 
-    state.commit_item(vault, &item)?;
+    // make sure to skip saving as it should only happen once afterwards
+    state.commit_item(vault, &item, skip_save)?;
 
     Ok(path.into_boxed_path())
 }
@@ -159,7 +165,7 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     process_many(
         entries_with_sidecars,
         progress.sub_task("Import", 0.90),
-        |(path, sc, sc_date)| link_single_sidecar(state.clone(), path, sc, sc_date),
+        |(path, sc, sc_date)| link_single_sidecar(state.clone(), path, sc, sc_date, true),
         on_import_result_send_progress,
         CONCURRENT_TASKS_LIMIT,
     )
@@ -167,7 +173,22 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
 
     {
         let curr_vault = state.current_vault()?;
-        save_vault(curr_vault, progress.sub_task("Save", 0.05)).await?;
+        let linked_vault_names = curr_vault
+            .iter_linked_vault_names()
+            .into_iter()
+            .collect_vec();
+        let n_names = linked_vault_names.len();
+
+        save_vault(curr_vault, progress.sub_task("Save current vault", 0.025)).await?;
+
+        let sub_task = progress.sub_task("Save linked vaults", 0.025);
+        for (i, vault_name) in linked_vault_names.into_iter().enumerate() {
+            let weight = (i as f32) / (n_names as f32);
+            if let Ok(linked_vault) = state.get_vault(&vault_name) {
+                let task_name = format!("Save linked vault {}", linked_vault.name);
+                save_vault(linked_vault, sub_task.sub_task(&task_name, weight)).await?;
+            }
+        }
     }
 
     Ok(AsyncTaskResult::None)
@@ -179,6 +200,7 @@ fn link_single_item(
     other_vault: Arc<Vault>,
     state: AppStateRef,
     path: PathBuf,
+    skip_save: bool,
 ) -> SingleImportResult {
     let item = vault.get_item(&path)?;
     let other_item = other_vault.get_item(&path)?;
@@ -198,7 +220,7 @@ fn link_single_item(
         ),
     );
 
-    state.commit_item(vault, &item)?;
+    state.commit_item(vault, &item, skip_save)?;
 
     Ok(path.into_boxed_path())
 }
@@ -208,8 +230,9 @@ async fn link_single_item_task(
     other_vault: Arc<Vault>,
     state: AppStateRef,
     path: PathBuf,
+    skip_save: bool,
 ) -> SingleImportResult {
-    spawn_blocking(|| link_single_item(vault, other_vault, state, path))
+    spawn_blocking(move || link_single_item(vault, other_vault, state, path, skip_save))
         .await
         .unwrap()
 }
@@ -233,12 +256,16 @@ pub async fn link_vaults_by_path(
                 Arc::clone(&other_vault),
                 state.clone(),
                 path,
+                true,
             )
         },
         on_import_result_send_progress,
         4,
     )
     .await?;
+
+    state.save_vault(vault);
+    state.save_vault(other_vault);
 
     Ok(AsyncTaskResult::LinkComplete {
         other_vault_name,

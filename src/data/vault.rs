@@ -294,6 +294,19 @@ impl Vault {
         res
     }
 
+    pub fn iter_linked_vault_names(&self) -> HashSet<String> {
+        self.items
+            .iter()
+            .filter_map(|item| {
+                let (vault_name, _) = item
+                    .get_known_field_value(fields::general::LINK)
+                    .ok()
+                    .flatten()?;
+                Some(vault_name.to_string())
+            })
+            .collect()
+    }
+
     pub fn find_items_by_tag(&self, id: &Uuid) -> Vec<RefMulti<'_, String, Arc<Item>>> {
         self.iter_items()
             .filter(|item| item.has_tag(self, id).is_ok_and(|v| v))

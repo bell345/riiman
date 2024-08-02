@@ -142,6 +142,8 @@ field_defs! {
         #[id("4e2153e5-df69-45f4-8e6a-acb1040eecec")]
         post_date: DateTime,
         #[id("f1e6c489-e023-4945-bba2-85467b373100")]
-        liked_date: DateTime
+        liked_date: DateTime,
+        #[id("6beb172f-4876-49e3-9f0b-4222ec4fe7c8")]
+        image_number: Int
     }
 }

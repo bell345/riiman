@@ -3,7 +3,7 @@ use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Params {
+pub struct ImageParams {
     pub scale: ScaleOptions,
     pub infill: InfillOptions,
     pub compression: CompressionOptions,
@@ -38,6 +38,18 @@ pub enum DestinationKind {
     Archive,
 }
 
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+)]
+pub enum DestinationExistingBehaviour {
+    #[default]
+    Skip,
+    Remove,
+    Overwrite,
+    #[display("Append discriminator")]
+    AppendDiscriminator,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DestinationOptions {
@@ -47,8 +59,8 @@ pub struct DestinationOptions {
     pub directory_path: String,
     pub archive_path: String,
     pub use_subdirectory: bool,
-    pub replace_archive_if_existing: bool,
-    pub replace_items_if_existing: bool,
+    pub archive_existing_behaviour: DestinationExistingBehaviour,
+    pub item_existing_behaviour: DestinationExistingBehaviour,
     pub preserve_directory_structure: bool,
 }
 
@@ -215,4 +227,9 @@ pub enum ChromaSubsampling {
     Chroma422,
     #[display("4:2:0 (Best compression)")]
     Chroma420,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PathParams {
+    pub format: String,
 }

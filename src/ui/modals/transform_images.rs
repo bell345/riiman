@@ -1,8 +1,8 @@
 use crate::data::transform::{
-    ChromaSubsampling, CompressionFileType, DestinationKind, EsrganModel, FitAlgorithm,
-    InfillTechnique, ScaleAlgorithm, SourceKind,
+    ChromaSubsampling, CompressionFileType, DestinationExistingBehaviour, DestinationKind,
+    EsrganModel, FitAlgorithm, InfillTechnique, ScaleAlgorithm, SourceKind,
 };
-use crate::data::{ItemId, TransformBulkParams, TransformParams};
+use crate::data::{ItemId, TransformBulkParams, TransformImageParams};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
@@ -39,7 +39,7 @@ pub struct TransformImages {
     source_items_updated: bool,
     selected_item_id: Option<ItemId>,
     selected_preview_hndl: Option<egui::TextureHandle>,
-    params_of_selected_preview: Option<TransformParams>,
+    params_of_selected_preview: Option<TransformImageParams>,
     error_message: Option<String>,
     state: Option<State>,
     app_state: AppStateRef,
@@ -68,7 +68,7 @@ impl Default for TransformImages {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct State {
-    transform_params: TransformParams,
+    transform_params: TransformImageParams,
     bulk_params: TransformBulkParams,
     form_section: FormSection,
 }
@@ -300,17 +300,47 @@ impl TransformImages {
 
         ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
-        ui.add_enabled(
-            p.destination.kind == DestinationKind::Archive,
-            egui::Checkbox::new(
-                &mut p.destination.replace_archive_if_existing,
-                "Replace archive if existing",
-            ),
-        );
-        ui.checkbox(
-            &mut p.destination.replace_items_if_existing,
-            "Replace items if existing",
-        );
+        egui::Grid::new(self.id().with("behaviour_select"))
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.add_enabled(
+                    p.destination.kind == DestinationKind::Archive,
+                    egui::Label::new("Behaviour when archive exists: "),
+                );
+                ui.add_enabled_ui(p.destination.kind == DestinationKind::Archive, |ui| {
+                    let behaviour = &mut p.destination.archive_existing_behaviour;
+                    egui::ComboBox::new(self.id().with("archive_behaviour_select"), "")
+                        .selected_text(format!("{behaviour}"))
+                        .show_ui(ui, |ui| {
+                            choice(ui, behaviour, DestinationExistingBehaviour::Skip);
+                            choice(ui, behaviour, DestinationExistingBehaviour::Remove);
+                            choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
+                            choice(
+                                ui,
+                                behaviour,
+                                DestinationExistingBehaviour::AppendDiscriminator,
+                            );
+                        });
+                });
+                ui.end_row();
+
+                let behaviour = &mut p.destination.item_existing_behaviour;
+                ui.label("Behaviour when item exists: ");
+                egui::ComboBox::new(self.id().with("item_behaviour_select"), "")
+                    .selected_text(format!("{behaviour}"))
+                    .show_ui(ui, |ui| {
+                        choice(ui, behaviour, DestinationExistingBehaviour::Skip);
+                        choice(ui, behaviour, DestinationExistingBehaviour::Remove);
+                        choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
+                        choice(
+                            ui,
+                            behaviour,
+                            DestinationExistingBehaviour::AppendDiscriminator,
+                        );
+                    });
+                ui.end_row();
+            });
+
         ui.checkbox(
             &mut p.destination.preserve_directory_structure,
             "Preserve directory structure",
@@ -400,7 +430,7 @@ impl TransformImages {
             });
     }
 
-    fn scaling_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
+    fn scaling_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformImageParams) {
         ui.add_enabled_ui(p.scale.enabled, |ui| {
             egui::Grid::new(self.id().with("scaling_options_width_height_grid"))
                 .num_columns(2)
@@ -460,7 +490,11 @@ impl TransformImages {
         });
     }
 
-    fn scaling_algorithm_fragment(ui: &mut egui::Ui, prefix_id: egui::Id, p: &mut TransformParams) {
+    fn scaling_algorithm_fragment(
+        ui: &mut egui::Ui,
+        prefix_id: egui::Id,
+        p: &mut TransformImageParams,
+    ) {
         let combo_id = prefix_id.with("scaling_algorithm_choice");
         let esrgan_combo_id = prefix_id.with("esrgan_model_choice");
         let scale_algo = &mut p.scale.scale_algorithm;
@@ -494,7 +528,7 @@ impl TransformImages {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn infill_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
+    fn infill_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformImageParams) {
         ui.add_enabled_ui(p.infill.enabled, |ui| {
             egui::Grid::new(self.id().with("infill_options_ratio_grid"))
                 .num_columns(2)
@@ -608,7 +642,7 @@ impl TransformImages {
         });
     }
 
-    fn compression_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformParams) {
+    fn compression_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformImageParams) {
         ui.add_enabled_ui(p.compression.enabled, |ui| {
             egui::Grid::new(self.id().with("compression_options_ratio_grid"))
                 .num_columns(2)
