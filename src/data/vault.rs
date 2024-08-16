@@ -174,20 +174,14 @@ impl Vault {
             .with_context(|| format!("while decoding path: {}", path.display()))
     }
 
-    pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<String> {
-        let abs_path = match (path.is_absolute(), self.file_path.as_ref()) {
+    pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<PathBuf> {
+        Ok(match (path.is_absolute(), self.file_path.as_ref()) {
             (false, Some(vault_path)) => {
                 let root_dir = vault_path.parent().ok_or(AppError::VaultNoParent)?;
                 root_dir.join(path)
             }
             _ => path.to_owned(),
-        };
-
-        Ok(abs_path
-            .to_str()
-            .ok_or(AppError::InvalidUnicode)
-            .with_context(|| format!("while decoding path: {}", abs_path.display()))?
-            .to_string())
+        })
     }
 
     pub fn get_item_opt(&self, path: &Path) -> anyhow::Result<Option<Arc<Item>>> {
@@ -213,16 +207,17 @@ impl Vault {
 
     pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
         let rel_path = self.resolve_rel_path(path)?;
-        Ok(self.items.get(rel_path).map_or_else(
-            || {
+        Ok(self
+            .items
+            .entry(rel_path.to_owned())
+            .or_insert_with(|| {
                 let item = Arc::new(Item::new(rel_path.to_owned()));
                 self.items_by_id
                     .insert(ItemId::from_item(self, &item), Arc::downgrade(&item));
                 self.set_last_updated();
                 item
-            },
-            |i| Arc::clone(i.value()),
-        ))
+            })
+            .clone())
     }
 
     pub fn resolve_item_ids(&self, ids: &[ItemId]) -> Vec<Arc<Item>> {

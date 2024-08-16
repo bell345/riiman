@@ -159,7 +159,7 @@ pub trait FieldStore {
         }
     }
 
-    fn update<T: FieldStore>(&self, src: &T) {
+    fn update(&self, src: &impl FieldStore) {
         for field in src.iter_fields() {
             self.set_field_value(*field.key(), field.value().clone());
         }

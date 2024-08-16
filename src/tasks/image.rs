@@ -20,7 +20,11 @@ pub fn read_image(path: impl AsRef<Path>) -> anyhow::Result<MagickWand> {
 #[allow(clippy::cast_precision_loss)]
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_possible_truncation)]
-pub fn read_and_resize(abs_path: &str, new_height: usize) -> anyhow::Result<(MagickWand, Vec2)> {
+pub fn read_and_resize(abs_path: &Path, new_height: usize) -> anyhow::Result<(MagickWand, Vec2)> {
+    let abs_path = abs_path
+        .to_str()
+        .ok_or(AppError::InvalidUnicode)
+        .with_context(|| format!("while decoding path: {}", abs_path.display()))?;
     let wand = MagickWand::new();
     wand.read_image(abs_path)
         .with_context(|| format!("while reading from image at {abs_path}"))?;

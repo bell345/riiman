@@ -3,6 +3,7 @@ use std::path::Path;
 
 use eframe::egui;
 use eframe::egui::ColorImage;
+use itertools::Itertools;
 use poll_promise::Promise;
 
 use progress::ProgressReceiver;
@@ -13,6 +14,8 @@ use crate::data::{DebugViewportClass, ThumbnailParams};
 use crate::state::AppStateRef;
 pub use crate::tasks::thumb_grid::RiverParams;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
+use crate::tasks::transform::PathTransformResult;
+use crate::ui::QueryResult;
 
 pub(crate) mod choose;
 pub(crate) mod download;
@@ -58,6 +61,8 @@ pub enum AsyncTaskResult {
     },
     SelectedDirectory(String),
     SelectedFile(String),
+    QueryResult(QueryResult),
+    PathTransformationComplete(Vec<anyhow::Result<PathTransformResult>>),
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
@@ -99,6 +104,15 @@ impl Task {
         }
     }
 
+    pub fn from_ready(id: egui::Id, value: AsyncTaskReturn) -> Self {
+        Self {
+            id: Some(id),
+            promise: Promise::from_ready(value),
+            name: String::new(),
+            progress_rx: None,
+        }
+    }
+
     pub fn try_take_result(self) -> Result<AsyncTaskReturn, Task> {
         match self.promise.try_take() {
             Ok(result) => Ok(result),
@@ -123,16 +137,37 @@ impl TaskState {
             .push(Task::with_progress(None, name, factory));
     }
 
+    fn clear_tasks_by_id(&mut self, id: egui::Id) {
+        let idxs = self
+            .running_tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.id.as_ref() == Some(&id))
+            .map(|(i, _)| i)
+            .rev()
+            .collect_vec();
+
+        for idx in idxs {
+            self.running_tasks.swap_remove(idx);
+        }
+    }
+
     pub fn add_request(
         &mut self,
         id: egui::Id,
         name: String,
         factory: impl FnOnce(ProgressSenderRef) -> Promise<AsyncTaskReturn>,
     ) {
-        if self.requests.insert(id) {
-            self.running_tasks
-                .push(Task::with_progress(Some(id), name, factory));
-        }
+        self.clear_tasks_by_id(id);
+        self.requests.insert(id);
+        self.running_tasks
+            .push(Task::with_progress(Some(id), name, factory));
+    }
+
+    pub fn push_completed_task(&mut self, id: egui::Id, value: AsyncTaskReturn) {
+        self.clear_tasks_by_id(id);
+        self.requests.insert(id);
+        self.running_tasks.push(Task::from_ready(id, value));
     }
 
     pub fn running_tasks_count(&self) -> usize {

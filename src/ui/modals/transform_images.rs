@@ -11,7 +11,7 @@ use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::modals::AppModal;
 use crate::ui::thumb_grid::ThumbnailGrid;
-use crate::ui::{buttons, choice, indent};
+use crate::ui::{behaviour_select, buttons, choice, indent};
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
@@ -170,32 +170,22 @@ impl TransformImages {
             });
     }
 
+    fn source_choice(&self, ui: &mut egui::Ui, value_ref: &mut SourceKind, value: SourceKind) {
+        ui.radio_value(
+            value_ref,
+            value,
+            format!("{} ({})", value, self.source_len(value)),
+        );
+    }
+
     fn source_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         ui.vertical(|ui| {
             let source_kind = &mut p.source.kind;
             let old_source_kind = *source_kind;
 
-            ui.radio_value(
-                source_kind,
-                SourceKind::Selection,
-                format!(
-                    "Currently selected images ({})",
-                    self.source_len(SourceKind::Selection)
-                ),
-            );
-            ui.radio_value(
-                source_kind,
-                SourceKind::Filtered,
-                format!(
-                    "All images which match filters ({})",
-                    self.source_len(SourceKind::Filtered)
-                ),
-            );
-            ui.radio_value(
-                source_kind,
-                SourceKind::All,
-                format!("All images in vault ({})", self.source_len(SourceKind::All)),
-            );
+            self.source_choice(ui, source_kind, SourceKind::Selection);
+            self.source_choice(ui, source_kind, SourceKind::Filtered);
+            self.source_choice(ui, source_kind, SourceKind::All);
 
             if *source_kind != old_source_kind {
                 self.update_selected_items(*source_kind)
@@ -213,10 +203,13 @@ impl TransformImages {
 
     fn handle_request<R>(
         &mut self,
-        req_id: egui::Id,
+        req_id: impl std::hash::Hash,
         check_fn: impl FnOnce(AsyncTaskResult) -> Result<R, AsyncTaskResult>,
     ) -> Result<R, ()> {
-        match self.app_state.try_take_request_result(req_id) {
+        match self
+            .app_state
+            .try_take_request_result(self.id().with(req_id))
+        {
             None => {}
             Some(Ok(res)) => match check_fn(res) {
                 Ok(r) => return Ok(r),
@@ -229,38 +222,28 @@ impl TransformImages {
     }
 
     fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
-        let req_prefix = self.id().with(ui.next_auto_id());
-
-        if let Ok(name) = self.handle_request(req_prefix.with(request::LOAD_VAULT), |res| match res
-        {
+        if let Ok(name) = self.handle_request(request::LOAD_VAULT, |res| match res {
             AsyncTaskResult::VaultLoaded { name, .. } => Ok(name),
             _ => Err(res),
         }) {
             p.destination.other_vault_name = name;
         }
 
-        if let Ok(dir) =
-            self.handle_request(
-                req_prefix.with(request::CHOOSE_DIRECTORY),
-                |res| match res {
-                    AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
-                    _ => Err(res),
-                },
-            )
-        {
+        if let Ok(dir) = self.handle_request(request::CHOOSE_DIRECTORY, |res| match res {
+            AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
+            _ => Err(res),
+        }) {
             p.destination.directory_path = dir;
         }
 
-        if let Ok(file) =
-            self.handle_request(req_prefix.with(request::CHOOSE_ARCHIVE), |res| match res {
-                AsyncTaskResult::SelectedFile(file) => Ok(file),
-                _ => Err(res),
-            })
-        {
+        if let Ok(file) = self.handle_request(request::CHOOSE_ARCHIVE, |res| match res {
+            AsyncTaskResult::SelectedFile(file) => Ok(file),
+            _ => Err(res),
+        }) {
             p.destination.archive_path = file;
         }
 
-        self.destination_choice_fragment(ui, req_prefix, p);
+        self.destination_choice_fragment(ui, p);
 
         ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
@@ -308,36 +291,12 @@ impl TransformImages {
                     egui::Label::new("Behaviour when archive exists: "),
                 );
                 ui.add_enabled_ui(p.destination.kind == DestinationKind::Archive, |ui| {
-                    let behaviour = &mut p.destination.archive_existing_behaviour;
-                    egui::ComboBox::new(self.id().with("archive_behaviour_select"), "")
-                        .selected_text(format!("{behaviour}"))
-                        .show_ui(ui, |ui| {
-                            choice(ui, behaviour, DestinationExistingBehaviour::Skip);
-                            choice(ui, behaviour, DestinationExistingBehaviour::Remove);
-                            choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
-                            choice(
-                                ui,
-                                behaviour,
-                                DestinationExistingBehaviour::AppendDiscriminator,
-                            );
-                        });
+                    behaviour_select(ui, &mut p.destination.archive_existing_behaviour);
                 });
                 ui.end_row();
 
-                let behaviour = &mut p.destination.item_existing_behaviour;
                 ui.label("Behaviour when item exists: ");
-                egui::ComboBox::new(self.id().with("item_behaviour_select"), "")
-                    .selected_text(format!("{behaviour}"))
-                    .show_ui(ui, |ui| {
-                        choice(ui, behaviour, DestinationExistingBehaviour::Skip);
-                        choice(ui, behaviour, DestinationExistingBehaviour::Remove);
-                        choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
-                        choice(
-                            ui,
-                            behaviour,
-                            DestinationExistingBehaviour::AppendDiscriminator,
-                        );
-                    });
+                behaviour_select(ui, &mut p.destination.item_existing_behaviour);
                 ui.end_row();
             });
 
@@ -348,12 +307,7 @@ impl TransformImages {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn destination_choice_fragment(
-        &mut self,
-        ui: &mut egui::Ui,
-        id_prefix: egui::Id,
-        p: &mut TransformBulkParams,
-    ) {
+    fn destination_choice_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         let curr_name = self
             .app_state
             .current_vault_name()
@@ -385,7 +339,7 @@ impl TransformImages {
 
                         if ui.button("Load a vault...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::LOAD_VAULT),
+                                self.id().with(request::LOAD_VAULT),
                                 "Load vault",
                                 |s, p| {
                                     Promise::spawn_async(
@@ -404,7 +358,7 @@ impl TransformImages {
                         ui.text_edit_singleline(&mut p.destination.directory_path);
                         if ui.button("Select...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::CHOOSE_DIRECTORY),
+                                self.id().with(request::CHOOSE_DIRECTORY),
                                 "Choose directory",
                                 |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
                             );
@@ -420,7 +374,7 @@ impl TransformImages {
                         ui.text_edit_singleline(&mut p.destination.archive_path);
                         if ui.button("Select...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::CHOOSE_ARCHIVE),
+                                self.id().with(request::CHOOSE_ARCHIVE),
                                 "Choose archive",
                                 |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
                             );
@@ -679,8 +633,8 @@ impl TransformImages {
         });
     }
 
-    fn update_preview_image(&mut self, req_prefix: egui::Id) -> Option<()> {
-        let id = req_prefix.with(request::LOAD_PREVIEW);
+    fn update_preview_image(&mut self) -> Option<()> {
+        let id = self.id().with(request::LOAD_PREVIEW);
         let item_id = self.preview_grid.get_first_selected_id()?;
         let params = self.state().transform_params.clone();
         if self.selected_item_id.as_ref() == Some(&item_id)
@@ -705,14 +659,10 @@ impl TransformImages {
     }
 
     fn top_preview_panel(&mut self, ui: &mut egui::Ui) {
-        let req_prefix = self.id().with(ui.next_auto_id());
-
-        if let Ok(image) =
-            self.handle_request(req_prefix.with(request::LOAD_PREVIEW), |res| match res {
-                AsyncTaskResult::PreviewReady { image, .. } => Ok(image),
-                _ => Err(res),
-            })
-        {
+        if let Ok(image) = self.handle_request(request::LOAD_PREVIEW, |res| match res {
+            AsyncTaskResult::PreviewReady { image, .. } => Ok(image),
+            _ => Err(res),
+        }) {
             let hndl = ui.ctx().load_texture(
                 "transform_preview",
                 image,
@@ -798,7 +748,7 @@ impl TransformImages {
                     });
                 }
 
-                self.update_preview_image(req_prefix);
+                self.update_preview_image();
 
                 Some(())
             });

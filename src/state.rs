@@ -26,10 +26,20 @@ const THUMBNAIL_LOAD_INTERVAL_MS: i64 = 50;
 const THUMBNAIL_LQ_LOAD_INTERVAL_MS: i64 = 10;
 pub const THUMBNAIL_LOW_QUALITY_HEIGHT: usize = 128;
 
-pub struct TaskInfo {
-    pub request_id: Option<egui::Id>,
-    pub name: String,
-    pub task_factory: TaskFactory,
+pub enum TaskInfo {
+    WithoutId {
+        name: String,
+        task_factory: TaskFactory,
+    },
+    WithId {
+        id: egui::Id,
+        name: String,
+        task_factory: TaskFactory,
+    },
+    Completed {
+        id: egui::Id,
+        result: AsyncTaskReturn,
+    },
 }
 
 pub(crate) struct AppState {
@@ -43,8 +53,6 @@ pub(crate) struct AppState {
     vault_loading: AtomicBool,
 
     shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutAction>>,
-
-    preview: Mutex<PreviewOptions>,
 
     thumbnail_cache: ThumbnailCache,
     thumbnail_cache_lq: ThumbnailCache,
@@ -92,7 +100,6 @@ impl Default for AppState {
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
             shortcuts: Default::default(),
-            preview: Default::default(),
             thumbnail_cache: ThumbnailCache::new(
                 THUMBNAIL_CACHE_SIZE,
                 TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
@@ -198,7 +205,7 @@ impl AppState {
             .collect()
     }
 
-    fn update_item_link(
+    pub fn update_item_link(
         &self,
         vault: &Vault,
         item: &Item,
@@ -211,6 +218,10 @@ impl AppState {
         let other_vault = self.get_vault(&other_vault_name)?;
 
         let other_item = other_vault.get_item(Path::new(&other_path.to_string()))?;
+        other_item.set_known_field_value(
+            fields::general::LINK,
+            (vault.name.clone().into(), item.path().into()),
+        );
 
         for field in item.iter_fields_with_defs(vault) {
             if field.definition().has_field(&fields::meta::NO_LINK.id) {
@@ -246,33 +257,28 @@ impl AppState {
         item: &Item,
         skip_save: bool,
     ) -> anyhow::Result<()> {
-        let link_res = self.update_item_link(&vault, &item)?;
+        let link_res = self.update_item_link(&vault, item)?;
         if skip_save {
             return Ok(());
         }
 
         if let Some(kind::ItemRef((other_vault_name, _))) = link_res.as_ref() {
-            self.save_vault_by_name(other_vault_name);
+            self.save_vault_by_name_deferred(other_vault_name);
         }
-        self.save_vault(vault);
+        self.save_vault_deferred(vault);
         Ok(())
     }
 
-    fn add_task_impl(
-        &self,
-        request_id: Option<egui::Id>,
-        name: String,
-        task_factory: impl FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        let mut l = self.task_queue.lock().unwrap();
-        l.push(TaskInfo {
-            request_id,
-            name,
-            task_factory: Box::new(task_factory),
-        });
+    pub fn unlink_item(&self, item: &Item) -> anyhow::Result<()> {
+        let Some((other_vault_name, other_path)) =
+            item.get_known_field_value(fields::general::LINK)?
+        else {
+            return Ok(());
+        };
+        let other_vault = self.get_vault(&other_vault_name)?;
+        let other_item = other_vault.get_item(Path::new(&other_path.to_string()))?;
+        other_item.remove_field(&fields::general::LINK.id);
+        Ok(())
     }
 
     pub fn add_dialog(&self, dialog: impl AppModal) {
@@ -288,7 +294,11 @@ impl AppState {
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(None, name.into(), task_factory);
+        let mut l = self.task_queue.lock().unwrap();
+        l.push(TaskInfo::WithoutId {
+            name: name.into(),
+            task_factory: Box::new(task_factory),
+        });
     }
 
     pub fn add_task_request(
@@ -300,7 +310,20 @@ impl AppState {
             + Sync
             + 'static,
     ) {
-        self.add_task_impl(Some(request_id), name.into(), task_factory);
+        let mut l = self.task_queue.lock().unwrap();
+        l.push(TaskInfo::WithId {
+            id: request_id,
+            name: name.into(),
+            task_factory: Box::new(task_factory),
+        });
+    }
+
+    pub fn add_completed_task(&self, request_id: egui::Id, result: AsyncTaskReturn) {
+        let mut l = self.task_queue.lock().unwrap();
+        l.push(TaskInfo::Completed {
+            id: request_id,
+            result,
+        });
     }
 
     pub fn catch<T, E: Into<anyhow::Error>, S: Into<String>>(
@@ -320,16 +343,8 @@ impl AppState {
 
     pub fn drain_tasks(&self, n: usize) -> Vec<TaskInfo> {
         let mut l = self.task_queue.lock().unwrap();
-        let mut v: Vec<_> = vec![];
-        for _ in 0..n {
-            if let Some(x) = l.pop() {
-                v.push(x);
-            } else {
-                break;
-            }
-        }
-
-        v
+        let len = l.len();
+        l.drain(..n.min(len)).collect()
     }
 
     pub fn drain_errors(&self) -> Vec<anyhow::Error> {
@@ -362,25 +377,25 @@ impl AppState {
         self.vault_loading.store(false, Ordering::Relaxed);
     }
 
-    pub fn save_current_vault(&self) {
+    pub fn save_current_vault_deferred(&self) {
         self.set_vault_loading();
         self.add_task("Save vault", |state, p| {
             Promise::spawn_async(crate::tasks::vault::save_current_vault(state, p))
         });
     }
 
-    pub fn save_vault(&self, vault: Arc<Vault>) {
+    pub fn save_vault_deferred(&self, vault: Arc<Vault>) {
         self.add_task(format!("Save {} vault", vault.name), |_, p| {
             Promise::spawn_async(crate::tasks::vault::save_vault(vault, p))
         });
     }
 
-    pub fn save_vault_by_name(&self, name: &str) {
+    pub fn save_vault_by_name_deferred(&self, name: &str) {
         let ctx = format!("Save {name} vault");
         let Ok(vault) = self.catch(|| ctx.clone(), || self.get_vault(name)) else {
             return;
         };
-        self.save_vault(vault);
+        self.save_vault_deferred(vault);
     }
 
     pub fn filter(&self) -> MutexGuard<'_, FilterExpression> {

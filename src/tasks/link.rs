@@ -13,7 +13,7 @@ use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::tasks::import::{on_import_result_send_progress, process_many, scan_recursively};
-use crate::tasks::vault::save_vault;
+use crate::tasks::vault::{save_current_and_linked_vaults, save_vault};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, SingleImportResult};
 
 const CONCURRENT_TASKS_LIMIT: usize = 16;
@@ -171,27 +171,7 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     )
     .await?;
 
-    {
-        let curr_vault = state.current_vault()?;
-        let linked_vault_names = curr_vault
-            .iter_linked_vault_names()
-            .into_iter()
-            .collect_vec();
-        let n_names = linked_vault_names.len();
-
-        save_vault(curr_vault, progress.sub_task("Save current vault", 0.025)).await?;
-
-        let sub_task = progress.sub_task("Save linked vaults", 0.025);
-        for (i, vault_name) in linked_vault_names.into_iter().enumerate() {
-            let weight = (i as f32) / (n_names as f32);
-            if let Ok(linked_vault) = state.get_vault(&vault_name) {
-                let task_name = format!("Save linked vault {}", linked_vault.name);
-                save_vault(linked_vault, sub_task.sub_task(&task_name, weight)).await?;
-            }
-        }
-    }
-
-    Ok(AsyncTaskResult::None)
+    save_current_and_linked_vaults(state, progress.sub_task("Save vault", 0.05)).await
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -232,9 +212,7 @@ async fn link_single_item_task(
     path: PathBuf,
     skip_save: bool,
 ) -> SingleImportResult {
-    spawn_blocking(move || link_single_item(vault, other_vault, state, path, skip_save))
-        .await
-        .unwrap()
+    spawn_blocking(move || link_single_item(vault, other_vault, state, path, skip_save)).await?
 }
 
 pub async fn link_vaults_by_path(
@@ -264,8 +242,8 @@ pub async fn link_vaults_by_path(
     )
     .await?;
 
-    state.save_vault(vault);
-    state.save_vault(other_vault);
+    state.save_vault_deferred(vault);
+    state.save_vault_deferred(other_vault);
 
     Ok(AsyncTaskResult::LinkComplete {
         other_vault_name,

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use itertools::Itertools;
 use tokio::task::block_in_place;
 
 use crate::data::Vault;
@@ -138,4 +139,35 @@ pub async fn save_current_vault(
 ) -> AsyncTaskReturn {
     let vault = state.current_vault()?;
     save_vault(vault, progress).await
+}
+
+pub async fn save_vault_and_links(
+    state: AppStateRef,
+    vault: Arc<Vault>,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let linked_vault_names = vault.iter_linked_vault_names().into_iter().collect_vec();
+    let n_names = linked_vault_names.len();
+
+    save_vault(vault, progress.sub_task("Save current vault", 0.5)).await?;
+
+    let sub_task = progress.sub_task("Save linked vaults", 0.5);
+    #[allow(clippy::cast_precision_loss)]
+    for (i, vault_name) in linked_vault_names.into_iter().enumerate() {
+        let weight = (i as f32) / (n_names as f32);
+        if let Ok(linked_vault) = state.get_vault(&vault_name) {
+            let task_name = format!("Save linked vault {}", linked_vault.name);
+            save_vault(linked_vault, sub_task.sub_task(&task_name, weight)).await?;
+        }
+    }
+
+    Ok(AsyncTaskResult::None)
+}
+
+pub async fn save_current_and_linked_vaults(
+    state: AppStateRef,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let curr_vault = state.current_vault()?;
+    save_vault_and_links(state, curr_vault, progress).await
 }

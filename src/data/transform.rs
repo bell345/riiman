@@ -9,49 +9,61 @@ pub struct ImageParams {
     pub compression: CompressionOptions,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BulkParams {
     pub source: SourceOptions,
     pub destination: DestinationOptions,
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum SourceKind {
     #[default]
+    #[display("Currently selected images")]
     Selection,
+    #[display("All images which match filters")]
     Filtered,
+    #[display("All images in vault")]
     All,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SourceOptions {
     pub kind: SourceKind,
     pub delete_source: bool,
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
+)]
 pub enum DestinationKind {
     #[default]
+    #[display("Same vault")]
     SameVault,
+    #[display("Different vault")]
     OtherVault,
     Directory,
     Archive,
 }
 
 #[derive(
-    Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
+    Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display,
 )]
 pub enum DestinationExistingBehaviour {
     #[default]
+    #[display("Skip over source item")]
     Skip,
+    #[display("Remove source item")]
     Remove,
+    #[display("Overwrite destination item")]
     Overwrite,
-    #[display("Append discriminator")]
+    #[display("Append discriminator to path")]
     AppendDiscriminator,
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DestinationOptions {
     pub kind: DestinationKind,
     pub vault_subdirectory: String,
@@ -232,4 +244,5 @@ pub enum ChromaSubsampling {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PathParams {
     pub format: String,
+    pub dry_run: bool,
 }

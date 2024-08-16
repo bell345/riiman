@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use eframe::egui;
@@ -11,7 +11,7 @@ use crate::fields;
 pub struct ThumbnailPosition {
     pub id: ItemId,
     pub rel_path: String,
-    pub abs_path: Option<String>,
+    pub abs_path: Option<PathBuf>,
     pub last_modified: Option<DateTime<Utc>>,
     pub inner_bounds: egui::Rect,
     pub outer_bounds: egui::Rect,
@@ -27,7 +27,7 @@ impl ThumbnailPosition {
     ) -> Self {
         let rel_path = item.path().to_string();
         let abs_path = vault.resolve_abs_path(Path::new(item.path())).ok();
-        let id = ItemId::from_rel_abs_path(rel_path.as_str(), abs_path.as_ref());
+        let id = ItemId::from_rel_abs_path(rel_path.as_str(), abs_path.as_deref());
 
         Self {
             id,

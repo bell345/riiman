@@ -1,19 +1,19 @@
 use crate::data::parse::FilterExpressionParseResult;
+use crate::data::transform::DestinationExistingBehaviour;
 use crate::data::{FilterExpression, ShortcutAction, ThumbnailCacheItem};
 use crate::errors::AppError;
+use crate::state::{AppState, AppStateRef, TaskInfo};
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 use eframe::egui;
 use eframe::egui::{vec2, FontData, FontDefinitions, KeyboardShortcut};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
-
-use crate::state::{AppState, AppStateRef};
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 
 use crate::tasks::sort::{SortDirection, SortExpression, SortType};
 use crate::tasks::transform::load_image_preview;
@@ -32,6 +32,7 @@ mod thumb_grid;
 pub mod widgets;
 
 pub use crate::ui::modals::AppModal;
+pub use crate::ui::modals::QueryResult;
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -54,6 +55,15 @@ pub fn choice<T: PartialEq + std::fmt::Display>(
     ui.selectable_value(value_ref, alternative, label);
 }
 
+pub fn radio_choice<T: PartialEq + std::fmt::Display>(
+    ui: &mut egui::Ui,
+    value_ref: &mut T,
+    alternative: T,
+) {
+    let label = alternative.to_string();
+    ui.radio_value(value_ref, alternative, label);
+}
+
 /// Buttons for modal windows. Must be declared before all other components. Note that the order
 /// of buttons in the UI is reversed.
 pub fn buttons(id: egui::Id, ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
@@ -62,6 +72,21 @@ pub fn buttons(id: egui::Id, ui: &mut egui::Ui, add_contents: impl FnOnce(&mut e
             add_contents(ui);
         });
     });
+}
+
+pub fn behaviour_select(ui: &mut egui::Ui, value_ref: &mut DestinationExistingBehaviour) {
+    egui::ComboBox::new(ui.auto_id_with("behaviour_select"), "")
+        .selected_text(format!("{value_ref}"))
+        .show_ui(ui, |ui| {
+            choice(ui, value_ref, DestinationExistingBehaviour::Skip);
+            choice(ui, value_ref, DestinationExistingBehaviour::Remove);
+            choice(ui, value_ref, DestinationExistingBehaviour::Overwrite);
+            choice(
+                ui,
+                value_ref,
+                DestinationExistingBehaviour::AppendDiscriminator,
+            );
+        });
 }
 
 pub(crate) struct App {
@@ -128,10 +153,16 @@ impl App {
         let capacity = MAX_RUNNING_TASKS - self.tasks.running_tasks_count();
         for info in self.state.drain_tasks(capacity) {
             let s = self.state.clone();
-            let factory = info.task_factory;
-            match info.request_id {
-                Some(id) => self.tasks.add_request(id, info.name, |tx| factory(s, tx)),
-                None => self.tasks.add(info.name, |tx| factory(s, tx)),
+            match info {
+                TaskInfo::WithoutId { name, task_factory } => {
+                    self.tasks.add(name, |tx| task_factory(s, tx));
+                }
+                TaskInfo::WithId {
+                    id,
+                    name,
+                    task_factory,
+                } => self.tasks.add_request(id, name, |tx| task_factory(s, tx)),
+                TaskInfo::Completed { id, result } => self.tasks.push_completed_task(id, result),
             }
         }
     }
@@ -201,7 +232,8 @@ impl App {
                     AsyncTaskResult::None
                     | AsyncTaskResult::FoundGalleryDl { .. }
                     | AsyncTaskResult::SelectedDirectory(_)
-                    | AsyncTaskResult::SelectedFile(_),
+                    | AsyncTaskResult::SelectedFile(_)
+                    | AsyncTaskResult::QueryResult(_),
                 ) => {}
                 Ok(AsyncTaskResult::VaultLoaded {
                     name,
@@ -233,8 +265,8 @@ impl App {
                     other_vault_name,
                     results,
                 }) => {
-                    self.state.save_current_vault();
-                    self.state.save_vault_by_name(&other_vault_name);
+                    self.state.save_current_vault_deferred();
+                    self.state.save_vault_by_name_deferred(&other_vault_name);
 
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
@@ -266,10 +298,16 @@ impl App {
                     );
                     self.add_modal_dialog(modals::Preview::new(id, hndl, *viewport_class));
                 }
+                Ok(AsyncTaskResult::PathTransformationComplete(results)) => {
+                    self.add_modal_dialog(modals::TransformResults::new(results));
+                }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented".to_string());
                 }
-                Err(e) => self.error(format!("{e:#}")),
+                Err(e) => {
+                    error!("{}", e.backtrace());
+                    self.error(format!("{e} {}", e.root_cause()));
+                }
             }
             ctx.request_repaint();
         }
@@ -317,7 +355,7 @@ impl App {
             {
                 info!("Save vault clicked!");
 
-                self.state.save_current_vault();
+                self.state.save_current_vault_deferred();
 
                 ui.close_menu();
             }
@@ -547,7 +585,9 @@ impl App {
                 #[allow(clippy::cast_possible_truncation)]
                 #[allow(clippy::cast_sign_loss)]
                 match &self.tasks.iter_progress()[..] {
-                    [] => {}
+                    [] => {
+                        return;
+                    }
                     [(name, ProgressState::NotStarted | ProgressState::Indeterminate), ..] => {
                         ui.add(egui::ProgressBar::new(0.0).text(name).animate(true));
                     }
@@ -567,6 +607,8 @@ impl App {
                         ui.add(egui::ProgressBar::new(1.0).text(name));
                     }
                 };
+
+                ctx.request_repaint();
             });
         });
     }
@@ -607,18 +649,6 @@ impl App {
                     });
             },
         );
-    }
-
-    fn get_double_clicked_item_path(&self) -> Option<String> {
-        let vault = self.state.current_vault_opt()?;
-        let item = self.thumbnail_grid.get_double_clicked_item(&vault)?;
-        let rel_path = Path::new(item.path());
-        self.state
-            .catch(
-                || format!("resolving absolute path for {}", item.path()),
-                || vault.resolve_abs_path(rel_path),
-            )
-            .ok()
     }
 
     fn central_panel_ui(&mut self, ctx: &egui::Context) {

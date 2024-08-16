@@ -1,24 +1,23 @@
-use crate::data::transform::{
-    ChromaSubsampling, CompressionFileType, DestinationExistingBehaviour, DestinationKind,
-    EsrganModel, FitAlgorithm, InfillTechnique, ScaleAlgorithm, SourceKind,
-};
+use crate::data::transform::{DestinationExistingBehaviour, DestinationKind, SourceKind};
 use crate::data::{ItemId, TransformBulkParams, TransformPathParams};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
-use crate::tasks::transform::transform_path;
+use crate::tasks::transform::{list_destination_paths, transform_path};
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::modals::AppModal;
-use crate::ui::{buttons, choice, indent, theme, widgets};
+use crate::ui::modals::query::{DefaultButton, QueryKind};
+use crate::ui::modals::{AppModal, QueryOptions};
+use crate::ui::{
+    behaviour_select, buttons, choice, indent, modals, radio_choice, theme, QueryResult,
+};
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::info;
 
 #[derive(
     Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::Display,
@@ -79,6 +78,7 @@ mod request {
     pub const CHOOSE_DIRECTORY: &str = "choose_directory";
     pub const CHOOSE_ARCHIVE: &str = "choose_archive";
     pub const LOAD_PREVIEW: &str = "load_preview";
+    pub const QUERY_CONFIRM: &str = "query_confirm";
 }
 
 impl TransformPaths {
@@ -101,12 +101,16 @@ impl TransformPaths {
         }
     }
 
-    fn update_selected_items(&mut self, source_kind: SourceKind) -> Result<(), ()> {
+    fn update_selected_items(
+        &mut self,
+        bulk: &TransformBulkParams,
+        params: &TransformPathParams,
+    ) -> Result<(), ()> {
         let vault = self.app_state.current_vault_catch()?;
-        let mut items = if source_kind == SourceKind::All {
+        let mut items = if bulk.source.kind == SourceKind::All {
             vault.iter_items().map(|i| Arc::clone(&i)).collect()
         } else {
-            let ids = match source_kind {
+            let ids = match bulk.source.kind {
                 SourceKind::Selection => self.app_state.selected_item_ids(),
                 SourceKind::Filtered => self.app_state.item_list_ids(),
                 SourceKind::All => unreachable!(),
@@ -121,10 +125,14 @@ impl TransformPaths {
 
         self.source_item_ids = items.iter().map(|i| ItemId::from_item(&vault, i)).collect();
 
-        let params = &self.state().transform_params;
         self.transformed_paths = items
             .into_iter()
-            .filter_map(|i| Some((ItemId::from_item(&vault, &i), transform_path(&i, params)?)))
+            .filter_map(|i| {
+                Some((
+                    ItemId::from_item(&vault, &i),
+                    transform_path(&i, params)?.to_string_lossy().into_owned(),
+                ))
+            })
             .collect();
 
         self.unique_paths = self
@@ -133,14 +141,33 @@ impl TransformPaths {
             .map(|(_, p)| p.clone())
             .collect();
 
-        self.n_conflicts = self
-            .transformed_paths
-            .iter()
-            .filter_map(|(_, p)| {
-                vault.get_item(Path::new(&p)).ok()?;
-                Some(p.clone())
-            })
-            .count();
+        self.n_conflicts = 0;
+        if let Ok(dest_paths) = list_destination_paths(&bulk.destination, self.app_state.clone()) {
+            let path_set: HashSet<_> = dest_paths.iter().map(|p| p.as_path()).collect();
+            match bulk.destination.kind {
+                DestinationKind::SameVault => {
+                    self.n_conflicts = self
+                        .transformed_paths
+                        .iter()
+                        // exclude items whose paths do not change
+                        .filter(|(id, p)| {
+                            !vault.get_item_opt_by_id(*id).is_some_and(|i| i.path() == p)
+                        })
+                        // count paths that collide with other items
+                        .filter(|(_, p)| path_set.contains(Path::new(p)))
+                        .count();
+                }
+                DestinationKind::OtherVault
+                | DestinationKind::Directory
+                | DestinationKind::Archive => {
+                    self.n_conflicts = self
+                        .transformed_paths
+                        .iter()
+                        .filter(|(_, p)| path_set.contains(Path::new(p)))
+                        .count();
+                }
+            }
+        }
 
         self.n_duplicates = self.transformed_paths.len() - self.unique_paths.len();
         self.source_items_updated = true;
@@ -154,56 +181,42 @@ impl TransformPaths {
         choice(ui, form_section, FormSection::Source);
         choice(ui, form_section, FormSection::Destination);
         choice(ui, form_section, FormSection::Format);
-        choice(ui, form_section, FormSection::Summary)
+        choice(ui, form_section, FormSection::Summary);
+    }
+
+    fn source_choice(&self, ui: &mut egui::Ui, value_ref: &mut SourceKind, value: SourceKind) {
+        ui.radio_value(
+            value_ref,
+            value,
+            format!("{} ({})", value, self.source_len(value)),
+        );
     }
 
     fn source_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         ui.vertical(|ui| {
             let source_kind = &mut p.source.kind;
-            let old_source_kind = *source_kind;
 
-            ui.radio_value(
-                source_kind,
-                SourceKind::Selection,
-                format!(
-                    "Currently selected images ({})",
-                    self.source_len(SourceKind::Selection)
-                ),
-            );
-            ui.radio_value(
-                source_kind,
-                SourceKind::Filtered,
-                format!(
-                    "All images which match filters ({})",
-                    self.source_len(SourceKind::Filtered)
-                ),
-            );
-            ui.radio_value(
-                source_kind,
-                SourceKind::All,
-                format!("All images in vault ({})", self.source_len(SourceKind::All)),
-            );
-
-            if *source_kind != old_source_kind {
-                self.update_selected_items(*source_kind)
-                    .expect("vault to exist");
-            }
+            self.source_choice(ui, source_kind, SourceKind::Selection);
+            self.source_choice(ui, source_kind, SourceKind::Filtered);
+            self.source_choice(ui, source_kind, SourceKind::All);
 
             ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
-            ui.checkbox(
-                &mut p.source.delete_source,
-                "Delete source images after transformation",
-            );
+            let delete_source = &mut p.source.delete_source;
+            ui.radio_value(delete_source, true, "Move (delete originals)");
+            ui.radio_value(delete_source, false, "Copy (retain originals)");
         });
     }
 
     fn handle_request<R>(
         &mut self,
-        req_id: egui::Id,
+        req_id: impl std::hash::Hash,
         check_fn: impl FnOnce(AsyncTaskResult) -> Result<R, AsyncTaskResult>,
     ) -> Result<R, ()> {
-        match self.app_state.try_take_request_result(req_id) {
+        match self
+            .app_state
+            .try_take_request_result(self.id().with(req_id))
+        {
             None => {}
             Some(Ok(res)) => match check_fn(res) {
                 Ok(r) => return Ok(r),
@@ -216,38 +229,28 @@ impl TransformPaths {
     }
 
     fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
-        let req_prefix = self.id().with(ui.next_auto_id());
-
-        if let Ok(name) = self.handle_request(req_prefix.with(request::LOAD_VAULT), |res| match res
-        {
+        if let Ok(name) = self.handle_request(request::LOAD_VAULT, |res| match res {
             AsyncTaskResult::VaultLoaded { name, .. } => Ok(name),
             _ => Err(res),
         }) {
             p.destination.other_vault_name = name;
         }
 
-        if let Ok(dir) =
-            self.handle_request(
-                req_prefix.with(request::CHOOSE_DIRECTORY),
-                |res| match res {
-                    AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
-                    _ => Err(res),
-                },
-            )
-        {
+        if let Ok(dir) = self.handle_request(request::CHOOSE_DIRECTORY, |res| match res {
+            AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
+            _ => Err(res),
+        }) {
             p.destination.directory_path = dir;
         }
 
-        if let Ok(file) =
-            self.handle_request(req_prefix.with(request::CHOOSE_ARCHIVE), |res| match res {
-                AsyncTaskResult::SelectedFile(file) => Ok(file),
-                _ => Err(res),
-            })
-        {
+        if let Ok(file) = self.handle_request(request::CHOOSE_ARCHIVE, |res| match res {
+            AsyncTaskResult::SelectedFile(file) => Ok(file),
+            _ => Err(res),
+        }) {
             p.destination.archive_path = file;
         }
 
-        self.destination_choice_fragment(ui, req_prefix, p);
+        self.destination_choice_fragment(ui, p);
 
         ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
 
@@ -295,36 +298,12 @@ impl TransformPaths {
                     egui::Label::new("Behaviour when archive exists: "),
                 );
                 ui.add_enabled_ui(p.destination.kind == DestinationKind::Archive, |ui| {
-                    let behaviour = &mut p.destination.archive_existing_behaviour;
-                    egui::ComboBox::new(self.id().with("archive_behaviour_select"), "")
-                        .selected_text(format!("{behaviour}"))
-                        .show_ui(ui, |ui| {
-                            choice(ui, behaviour, DestinationExistingBehaviour::Skip);
-                            choice(ui, behaviour, DestinationExistingBehaviour::Remove);
-                            choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
-                            choice(
-                                ui,
-                                behaviour,
-                                DestinationExistingBehaviour::AppendDiscriminator,
-                            );
-                        });
+                    behaviour_select(ui, &mut p.destination.archive_existing_behaviour);
                 });
                 ui.end_row();
 
-                let behaviour = &mut p.destination.item_existing_behaviour;
                 ui.label("Behaviour when item exists: ");
-                egui::ComboBox::new(self.id().with("item_behaviour_select"), "")
-                    .selected_text(format!("{behaviour}"))
-                    .show_ui(ui, |ui| {
-                        choice(ui, behaviour, DestinationExistingBehaviour::Skip);
-                        choice(ui, behaviour, DestinationExistingBehaviour::Remove);
-                        choice(ui, behaviour, DestinationExistingBehaviour::Overwrite);
-                        choice(
-                            ui,
-                            behaviour,
-                            DestinationExistingBehaviour::AppendDiscriminator,
-                        );
-                    });
+                behaviour_select(ui, &mut p.destination.item_existing_behaviour);
                 ui.end_row();
             });
 
@@ -335,12 +314,7 @@ impl TransformPaths {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn destination_choice_fragment(
-        &mut self,
-        ui: &mut egui::Ui,
-        id_prefix: egui::Id,
-        p: &mut TransformBulkParams,
-    ) {
+    fn destination_choice_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
         let curr_name = self
             .app_state
             .current_vault_name()
@@ -352,7 +326,7 @@ impl TransformPaths {
             .min_col_width(200.0)
             .show(ui, |ui| {
                 let dest_kind = &mut p.destination.kind;
-                ui.radio_value(dest_kind, DestinationKind::SameVault, "Same vault");
+                radio_choice(ui, dest_kind, DestinationKind::SameVault);
                 ui.end_row();
 
                 ui.radio_value(dest_kind, DestinationKind::OtherVault, "Different vault:");
@@ -372,7 +346,7 @@ impl TransformPaths {
 
                         if ui.button("Load a vault...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::LOAD_VAULT),
+                                self.id().with(request::LOAD_VAULT),
                                 "Load vault",
                                 |s, p| {
                                     Promise::spawn_async(
@@ -391,7 +365,7 @@ impl TransformPaths {
                         ui.text_edit_singleline(&mut p.destination.directory_path);
                         if ui.button("Select...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::CHOOSE_DIRECTORY),
+                                self.id().with(request::CHOOSE_DIRECTORY),
                                 "Choose directory",
                                 |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
                             );
@@ -407,7 +381,7 @@ impl TransformPaths {
                         ui.text_edit_singleline(&mut p.destination.archive_path);
                         if ui.button("Select...").clicked() {
                             self.app_state.add_task_request(
-                                id_prefix.with(request::CHOOSE_ARCHIVE),
+                                self.id().with(request::CHOOSE_ARCHIVE),
                                 "Choose archive",
                                 |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
                             );
@@ -418,6 +392,7 @@ impl TransformPaths {
     }
 
     fn format_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformPathParams) {
+        /*
         let Some(vault) = self.app_state.current_vault_opt() else {
             return;
         };
@@ -431,6 +406,12 @@ impl TransformPaths {
                 .desired_width(ui.available_width())
                 .show(ui);
         });
+         */
+
+        ui.label("Format is currently hardcoded as:");
+        ui.label(egui::RichText::new("twitter_{user_id}_{post_id}_{num}.{ext}").monospace());
+
+        ui.checkbox(&mut p.dry_run, "Is dry run?");
     }
 
     fn summary_fragment(
@@ -439,13 +420,32 @@ impl TransformPaths {
         bulk: &TransformBulkParams,
         p: &TransformPathParams,
     ) {
-        let Ok(vault) = self.app_state.current_vault() else {
-            return;
-        };
-
         egui::Grid::new(self.id().with("summary_grid"))
             .num_columns(2)
             .show(ui, |ui| {
+                ui.label("Source: ");
+                ui.label(format!(
+                    "{} ({})",
+                    bulk.source.kind,
+                    self.source_len(bulk.source.kind)
+                ));
+                ui.end_row();
+
+                ui.label("Destination:");
+                ui.label(match bulk.destination.kind {
+                    k @ DestinationKind::SameVault => k.to_string(),
+                    k @ DestinationKind::OtherVault => {
+                        format!("{k}: {}", bulk.destination.other_vault_name)
+                    }
+                    k @ DestinationKind::Directory => {
+                        format!("{k}: {}", bulk.destination.directory_path)
+                    }
+                    k @ DestinationKind::Archive => {
+                        format!("{k}: {}", bulk.destination.archive_path)
+                    }
+                });
+                ui.end_row();
+
                 ui.label("# of source items: ");
                 ui.label(format!("{}", self.source_item_ids.len()));
                 ui.end_row();
@@ -472,6 +472,18 @@ impl TransformPaths {
                     ui.colored_label(theme::ERROR_TEXT, format!("{}", self.n_duplicates));
                     ui.end_row();
                 }
+
+                ui.label("Operation: ");
+                ui.label(if bulk.source.delete_source {
+                    "Move (delete originals)"
+                } else {
+                    "Copy (retain originals)"
+                });
+                ui.end_row();
+
+                ui.label("Dry run: ");
+                ui.label(if p.dry_run { "Yes" } else { "No" });
+                ui.end_row();
 
                 ui.label("Behaviour when item already exists: ");
                 ui.label(format!("{}", bulk.destination.item_existing_behaviour));
@@ -569,7 +581,51 @@ impl TransformPaths {
     }
 
     fn validate(&self) -> Result<(), &'static str> {
+        let s = &self.state().bulk_params.source;
+        let d = &self.state().bulk_params.destination;
+        if d.kind == DestinationKind::OtherVault && d.other_vault_name.is_empty() {
+            return Err("Name of destination vault is required.");
+        }
+
+        if d.kind == DestinationKind::OtherVault
+            && self.app_state.get_vault(&d.other_vault_name).is_err()
+        {
+            return Err("Chosen destination vault was not found.");
+        }
+
+        if d.kind == DestinationKind::Directory && d.directory_path.is_empty() {
+            return Err("Name of destination directory is required.");
+        }
+
+        if d.kind == DestinationKind::Archive && d.archive_path.is_empty() {
+            return Err("Name of destination archive is required.");
+        }
+
+        if d.use_subdirectory && d.vault_subdirectory.is_empty() {
+            return Err("Name of vault destination subdirectory is required.");
+        }
+
+        if !s.delete_source && d.item_existing_behaviour == DestinationExistingBehaviour::Remove {
+            return Err(
+                "Behaviour when item already exists cannot be 'Remove' when copying items.",
+            );
+        }
+
         Ok(())
+    }
+
+    fn perform_transformation(&self) {
+        let Ok(vault) = self.app_state.current_vault_catch() else {
+            return;
+        };
+        let source_ids = self.source_item_ids.clone();
+        let bulk = self.state().bulk_params.clone();
+        let params = self.state().transform_params.clone();
+        self.app_state.add_task("Transform paths", |s, p| {
+            Promise::spawn_async(crate::tasks::transform::apply_path_transformations(
+                s, vault, source_ids, bulk, params, p,
+            ))
+        });
     }
 }
 
@@ -592,9 +648,10 @@ impl AppModal for TransformPaths {
 
         let selected_items_new_last_frame = self.source_items_updated;
         let old_transform_params = self.state().transform_params.clone();
+        let old_bulk_params = self.state().bulk_params.clone();
 
-        if !self.opened {
-            self.update_selected_items(self.state().bulk_params.source.kind)
+        if !self.opened || selected_items_new_last_frame {
+            self.update_selected_items(&old_bulk_params, &old_transform_params)
                 .expect("vault to exist");
         }
 
@@ -605,7 +662,32 @@ impl AppModal for TransformPaths {
             .show(ctx, |ui| {
                 buttons(self.id(), ui, |ui| {
                     if ui.button("Transform").clicked() {
-                        info!("Clicked transform");
+                        if let Err(e) = self.validate() {
+                            self.error_message = e.to_string().into();
+                        } else if self.n_duplicates > 0 || self.n_conflicts > 0 {
+                            let mut msg = String::new();
+                            if self.n_duplicates > 0 {
+                                msg.push_str(&format!("There will be {} items with the same transformed path.\n", self.n_duplicates));
+                            }
+                            if self.n_conflicts > 0 {
+                                msg.push_str(&format!("There will be {} items with transformed paths that are the same as existing items.\n", self.n_conflicts));
+                            }
+                            msg.push_str(&format!("\nCurrent duplicate behaviour: {}\n\nContinue?", self.state().bulk_params.destination.item_existing_behaviour));
+
+                            self.app_state.add_dialog(modals::Query::new(
+                                self.id().with(request::QUERY_CONFIRM),
+                                "Confirm",
+                                msg,
+                                QueryOptions {
+                                    kind: QueryKind::YesNo,
+                                    default_button: DefaultButton::Button2,
+                                    icon: egui_modal::Icon::Warning,
+                                }
+                            ));
+                        } else {
+                            self.perform_transformation();
+                            do_close = true;
+                        }
                     }
                     if ui.button("Close").clicked() {
                         do_close = true;
@@ -624,6 +706,25 @@ impl AppModal for TransformPaths {
 
         if self.state().transform_params != old_transform_params {
             self.source_items_updated = true;
+        }
+
+        if self.state().bulk_params != old_bulk_params {
+            self.source_items_updated = true;
+        }
+
+        if let Ok(query_res) = self.handle_request(request::QUERY_CONFIRM, |res| match res {
+            AsyncTaskResult::QueryResult(query_res) => Ok(query_res),
+            _ => Err(res),
+        }) {
+            if query_res == QueryResult::Yes {
+                if let Err(e) = self.validate() {
+                    self.error_message = e.to_string().into();
+                    do_close = false;
+                } else {
+                    self.perform_transformation();
+                    do_close = true;
+                }
+            }
         }
 
         if do_close {

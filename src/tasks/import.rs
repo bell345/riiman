@@ -21,7 +21,7 @@ use crate::tasks::{
 
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
-async fn import_single_image(
+pub async fn import_single_image(
     vault: Arc<Vault>,
     path: Box<Path>,
     last_modified: DateTime<Utc>,

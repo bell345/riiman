@@ -66,19 +66,19 @@ impl Default for GalleryDLParams {
             json_config: r#"{
     "extractor": {
         "twitter": {
-            "users": "https://twitter.com/{legacy[screen_name]}",
+            "users": "https://x.com/{legacy[screen_name]}",
             "text-tweets": true,
             "quoted": true,
             "retweets": true,
             "logout": true,
-            "replies":"self",
-            "filename": "twitter_{author[name]}_{tweet_id}_{num}.{extension}",
+            "replies": "self",
+            "filename": "twitter_{author[id]}_{tweet_id}_{num}.{extension}",
             "parent-directory": true,
             "postprocessors": [
                 {
                     "name": "metadata",
                     "event": "post",
-                    "filename": "twitter_{author[name]}_{tweet_id}_main.json"
+                    "filename": "twitter_{author[id]}_{tweet_id}_main.json"
                 }
             ]
         }

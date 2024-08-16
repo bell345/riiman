@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ThumbnailParams {
-    pub abs_path: String,
+    pub abs_path: PathBuf,
     pub rel_path: String,
     pub last_modified: Option<DateTime<Utc>>,
     pub height: usize,
@@ -28,13 +28,13 @@ impl ThumbnailParams {
     }
 
     pub fn tex_name(&self) -> String {
-        format!("{}_{}", self.abs_path, self.height)
+        format!("{}_{}", self.abs_path.to_string_lossy(), self.height)
     }
 
     pub fn hash_path(&self) -> Box<Path> {
         let mut id = format!(
             "{}_{}_{}",
-            self.abs_path,
+            self.abs_path.to_string_lossy(),
             self.height,
             self.last_modified
                 .map_or(String::new(), |dt| dt.to_rfc3339())

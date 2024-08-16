@@ -52,7 +52,8 @@ pub async fn load_image_thumbnail_with_fs(
         .with_context(|| {
             format!(
                 "while ensuring directory for thumbnail at {} for {}",
-                hash_file_str, params.abs_path
+                hash_file_str,
+                params.abs_path.display()
             )
         })?;
 
@@ -65,7 +66,8 @@ pub async fn load_image_thumbnail_with_fs(
             wand.write_image(hash_file_str).with_context(|| {
                 format!(
                     "while writing thumbnail at {} for {}",
-                    hash_file_str, params.abs_path
+                    hash_file_str,
+                    params.abs_path.display()
                 )
             })?;
             Ok(wand)
@@ -101,8 +103,12 @@ pub async fn commit_thumbnail_to_fs(params: &ThumbnailParams) -> AsyncTaskReturn
 
     block_in_place(|| {
         let wand = load_image_thumbnail_from_file(params)?;
-        wand.write_image(hash_file_str)
-            .with_context(|| format!("while committing thumbnail for {}", params.abs_path))?;
+        wand.write_image(hash_file_str).with_context(|| {
+            format!(
+                "while committing thumbnail for {}",
+                params.abs_path.display()
+            )
+        })?;
 
         Ok(AsyncTaskResult::None)
     })

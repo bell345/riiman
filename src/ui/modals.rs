@@ -8,9 +8,11 @@ mod manage_vaults;
 mod message;
 mod new_vault;
 mod preview;
+mod query;
 mod tag_shortcuts;
 mod transform_images;
 mod transform_paths;
+mod transform_results;
 
 pub use delete_def::DeleteDefinition;
 pub use download::Download;
@@ -20,9 +22,11 @@ pub use manage_vaults::ManageVaults;
 pub use message::Message;
 pub use new_vault::NewVault;
 pub use preview::Preview;
+pub use query::{Query, QueryOptions, QueryResult};
 pub use tag_shortcuts::TagShortcuts;
 pub use transform_images::TransformImages;
 pub use transform_paths::TransformPaths;
+pub use transform_results::TransformResults;
 
 pub trait AppModal: Send + Sync + 'static {
     fn id(&self) -> eframe::egui::Id;

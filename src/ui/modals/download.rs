@@ -139,7 +139,7 @@ impl Download {
 
         body.row(ROW_HEIGHT, |mut row| {
             row.col(|ui| {
-                ui.label("Data source: ");
+                ui.label("Credentials: ");
             });
             row.col(|ui| {
                 egui::ComboBox::new("gallery_dl_login_combo", "")

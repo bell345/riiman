@@ -17,7 +17,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Add;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::info;
 
@@ -150,7 +150,7 @@ impl ThumbnailGrid {
             .and_then(|id| vault.get_item_opt_by_id(id))
     }
 
-    pub fn get_double_clicked_item_path(&self) -> Option<String> {
+    pub fn get_double_clicked_item_path(&self) -> Option<PathBuf> {
         let vault = self.app_state.current_vault_opt()?;
         let item = self.get_double_clicked_item(&vault)?;
         let rel_path = Path::new(item.path());
@@ -490,7 +490,7 @@ impl ThumbnailGrid {
 
         for params in self.app_state.drain_thumbnail_requests() {
             self.app_state.add_task(
-                format!("Load thumbnail for {}", params.abs_path),
+                format!("Load thumbnail for {}", params.abs_path.to_string_lossy()),
                 move |_, p| {
                     if params.height <= THUMBNAIL_LOW_QUALITY_HEIGHT {
                         Promise::spawn_async(load_image_thumbnail_with_fs(params, p))

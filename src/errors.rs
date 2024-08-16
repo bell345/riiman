@@ -1,5 +1,6 @@
 use crate::data::FieldValue;
 use crate::data::{FieldType, ItemId};
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,6 +31,8 @@ pub enum AppError {
     MissingFieldDefinition { id: Uuid },
     #[error("missing item with path {path}")]
     MissingItem { path: String },
+    #[error("missing file associated with item at path {abs_path}")]
+    MissingFile { abs_path: PathBuf },
     #[error("missing item with ID {id:?}")]
     MissingItemId { id: ItemId },
     #[error("found infinite loop that contains field ID {field_id}")]
