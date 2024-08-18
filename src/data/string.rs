@@ -1,15 +1,21 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 #[allow(clippy::module_name_repetitions)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Utf32CachedString {
     inner: String,
     utf32: nucleo_matcher::Utf32String,
+}
+
+impl Debug for Utf32CachedString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner, f)
+    }
 }
 
 impl Default for Utf32CachedString {
@@ -103,12 +109,15 @@ where
 
 impl Display for Utf32CachedString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.inner.fmt(f)
+        Display::fmt(&self.inner, f)
     }
 }
 
 impl Utf32CachedString {
     pub fn utf32(&self) -> &nucleo_matcher::Utf32String {
         &self.utf32
+    }
+    pub fn into_string(self) -> String {
+        self.inner
     }
 }

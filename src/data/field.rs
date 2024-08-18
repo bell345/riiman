@@ -407,6 +407,7 @@ pub type Value = kind::Value;
 pub type Type = kind::Type;
 
 #[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Clone, Copy)]
 pub struct KnownField<T: kind::TagLike> {
     pub id: Uuid,
     pub name: &'static str,

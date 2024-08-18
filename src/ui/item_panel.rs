@@ -15,6 +15,7 @@ use crate::data::{
 use crate::state::AppStateRef;
 use crate::take_shortcut;
 use crate::tasks::transform::load_image_preview;
+use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTag;
 use crate::ui::widgets;
@@ -291,13 +292,9 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
         }
 
         let shortcuts = self.app_state.shortcuts();
-        for (shortcut, action) in shortcuts {
-            if matches!(action, ShortcutAction::None) {
-                continue;
-            }
-
+        for (shortcut, behaviour) in shortcuts {
             if ui.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
-                match action {
+                match behaviour.action {
                     ShortcutAction::None => {}
                     ShortcutAction::ToggleTag(tag_id) => {
                         if item.has_field(&tag_id) {
@@ -316,6 +313,14 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
                         }
                     }
                 }
+
+                if behaviour.move_next {
+                    self.app_state.add_completed_task(
+                        egui::Id::new("main_thumbnail_grid")
+                            .with(super::thumb_grid::TAB_REQUEST_ID),
+                        Ok(AsyncTaskResult::NextItem),
+                    );
+                }
             }
         }
     }
@@ -331,9 +336,10 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             ) else {
                 return;
             };
-            self.app_state.add_task("Load image preview", move |_, _| {
-                Promise::spawn_blocking(move || load_image_preview(abs_path))
-            });
+            self.app_state
+                .add_global_task("Load image preview", move |_, _| {
+                    Promise::spawn_blocking(move || load_image_preview(abs_path))
+                });
         }
 
         if self.state.is_editing {

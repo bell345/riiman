@@ -6,16 +6,21 @@ use crate::data::{ItemId, TransformBulkParams, TransformImageParams};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
-use crate::tasks::transform::{get_transformed_size, load_transformed_image_preview};
+use crate::tasks::transform::{
+    get_transformed_size, list_destination_paths, load_transformed_image_preview,
+};
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::modals::AppModal;
+use crate::ui::modals::query::{DefaultButton, QueryKind};
+use crate::ui::modals::{AppModal, QueryOptions};
 use crate::ui::thumb_grid::ThumbnailGrid;
-use crate::ui::{behaviour_select, buttons, choice, indent};
+use crate::ui::{behaviour_select, buttons, choice, indent, modals, theme, QueryResult};
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
+use ordered_float::OrderedFloat;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -30,6 +35,7 @@ enum FormSection {
     Scale,
     Infill,
     Compression,
+    Summary,
 }
 
 pub struct TransformImages {
@@ -37,6 +43,8 @@ pub struct TransformImages {
     preview_grid: ThumbnailGrid,
     source_item_ids: Vec<ItemId>,
     source_items_updated: bool,
+    item_paths: Vec<(ItemId, String)>,
+    n_conflicts: usize,
     selected_item_id: Option<ItemId>,
     selected_preview_hndl: Option<egui::TextureHandle>,
     params_of_selected_preview: Option<TransformImageParams>,
@@ -54,6 +62,8 @@ impl Default for TransformImages {
             preview_grid: ThumbnailGrid::new("transform_modal_preview_grid"),
             source_item_ids: Default::default(),
             source_items_updated: false,
+            item_paths: Default::default(),
+            n_conflicts: 0,
             selected_item_id: None,
             selected_preview_hndl: None,
             params_of_selected_preview: None,
@@ -80,6 +90,7 @@ mod request {
     pub const CHOOSE_DIRECTORY: &str = "choose_directory";
     pub const CHOOSE_ARCHIVE: &str = "choose_archive";
     pub const LOAD_PREVIEW: &str = "load_preview";
+    pub const QUERY_CONFIRM: &str = "query_confirm";
 }
 
 impl TransformImages {
@@ -102,12 +113,12 @@ impl TransformImages {
         }
     }
 
-    fn update_selected_items(&mut self, source_kind: SourceKind) -> Result<(), ()> {
+    fn update_selected_items(&mut self, bulk: &TransformBulkParams) -> Result<(), ()> {
         let vault = self.app_state.current_vault_catch()?;
-        let mut items = if source_kind == SourceKind::All {
+        let mut items = if bulk.source.kind == SourceKind::All {
             vault.iter_items().map(|i| Arc::clone(&i)).collect()
         } else {
-            let ids = match source_kind {
+            let ids = match bulk.source.kind {
                 SourceKind::Selection => self.app_state.selected_item_ids(),
                 SourceKind::Filtered => self.app_state.item_list_ids(),
                 SourceKind::All => unreachable!(),
@@ -121,9 +132,33 @@ impl TransformImages {
         )?;
 
         self.source_item_ids = items
-            .into_iter()
+            .iter()
             .map(|i| ItemId::from_item(&vault, &i))
             .collect();
+
+        self.item_paths = items
+            .into_iter()
+            .map(|i| (ItemId::from_item(&vault, &i), i.path().to_string()))
+            .collect();
+
+        self.n_conflicts = if let Ok(dest_paths) =
+            list_destination_paths(&bulk.destination, self.app_state.clone())
+        {
+            let path_set: HashSet<_> = dest_paths.iter().map(|p| p.as_path()).collect();
+            match bulk.destination.kind {
+                DestinationKind::SameVault => 0,
+                DestinationKind::OtherVault
+                | DestinationKind::Directory
+                | DestinationKind::Archive => self
+                    .item_paths
+                    .iter()
+                    .filter(|(_, p)| path_set.contains(Path::new(p)))
+                    .count(),
+            }
+        } else {
+            0
+        };
+
         self.source_items_updated = true;
 
         Ok(())
@@ -167,6 +202,10 @@ impl TransformImages {
                     });
                     row.col(|ui| choice(ui, form_section, FormSection::Compression));
                 });
+                body.row(row_height, |mut row| {
+                    row.col(|ui| {});
+                    row.col(|ui| choice(ui, form_section, FormSection::Summary));
+                });
             });
     }
 
@@ -188,8 +227,7 @@ impl TransformImages {
             self.source_choice(ui, source_kind, SourceKind::All);
 
             if *source_kind != old_source_kind {
-                self.update_selected_items(*source_kind)
-                    .expect("vault to exist");
+                self.update_selected_items(p).expect("vault to exist");
             }
 
             ui.add_space(ui.style().spacing.item_spacing.y * 2.0);
@@ -633,6 +671,62 @@ impl TransformImages {
         });
     }
 
+    fn summary_fragment(
+        &mut self,
+        ui: &mut egui::Ui,
+        bulk: &mut TransformBulkParams,
+        p: &mut TransformImageParams,
+    ) {
+        egui::Grid::new(self.id().with("summary_grid"))
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("Source: ");
+                ui.label(format!(
+                    "{} ({})",
+                    bulk.source.kind,
+                    self.source_len(bulk.source.kind)
+                ));
+                ui.end_row();
+
+                ui.label("Destination:");
+                ui.label(match bulk.destination.kind {
+                    k @ DestinationKind::SameVault => k.to_string(),
+                    k @ DestinationKind::OtherVault => {
+                        format!("{k}: {}", bulk.destination.other_vault_name)
+                    }
+                    k @ DestinationKind::Directory => {
+                        format!("{k}: {}", bulk.destination.directory_path)
+                    }
+                    k @ DestinationKind::Archive => {
+                        format!("{k}: {}", bulk.destination.archive_path)
+                    }
+                });
+                ui.end_row();
+
+                if self.n_conflicts > 0 {
+                    ui.colored_label(theme::ERROR_TEXT, "# of conflicts with existing items: ");
+                    ui.colored_label(theme::ERROR_TEXT, format!("{}", self.n_conflicts));
+                    ui.end_row();
+                }
+
+                ui.label("Operation: ");
+                ui.label(if bulk.source.delete_source {
+                    "Move (delete originals)"
+                } else {
+                    "Copy (retain originals)"
+                });
+                ui.end_row();
+
+                ui.label("Dry run: ");
+                ui.checkbox(&mut p.dry_run, "");
+                ui.end_row();
+
+                ui.label("Behaviour when item already exists: ");
+                ui.label(format!("{}", bulk.destination.item_existing_behaviour));
+                ui.end_row();
+            });
+    }
+
     fn update_preview_image(&mut self) -> Option<()> {
         let id = self.id().with(request::LOAD_PREVIEW);
         let item_id = self.preview_grid.get_first_selected_id()?;
@@ -741,11 +835,12 @@ impl TransformImages {
                 );
 
                 if let Some(abs_path) = self.preview_grid.get_double_clicked_item_path() {
-                    self.app_state.add_task("Load image preview", move |_, _| {
-                        Promise::spawn_blocking(move || {
-                            load_transformed_image_preview(abs_path, &params)
-                        })
-                    });
+                    self.app_state
+                        .add_global_task("Load image preview", move |_, _| {
+                            Promise::spawn_blocking(move || {
+                                load_transformed_image_preview(abs_path, &params)
+                            })
+                        });
                 }
 
                 self.update_preview_image();
@@ -801,6 +896,9 @@ impl TransformImages {
                                 FormSection::Compression => {
                                     self.compression_fragment(ui, &mut global_params);
                                 }
+                                FormSection::Summary => {
+                                    self.summary_fragment(ui, &mut bulk_params, &mut global_params)
+                                }
                             }
 
                             self.state_mut().transform_params = global_params;
@@ -815,7 +913,115 @@ impl TransformImages {
     }
 
     fn validate(&self) -> Result<(), &'static str> {
+        let s = &self.state().bulk_params.source;
+        let d = &self.state().bulk_params.destination;
+        let p = &self.state().transform_params;
+        if d.kind == DestinationKind::OtherVault && d.other_vault_name.is_empty() {
+            return Err("Name of destination vault is required.");
+        }
+
+        if d.kind == DestinationKind::OtherVault
+            && self.app_state.get_vault(&d.other_vault_name).is_err()
+        {
+            return Err("Chosen destination vault was not found.");
+        }
+
+        if d.kind == DestinationKind::Directory && d.directory_path.is_empty() {
+            return Err("Name of destination directory is required.");
+        }
+
+        if d.kind == DestinationKind::Archive && d.archive_path.is_empty() {
+            return Err("Name of destination archive is required.");
+        }
+
+        if d.kind == DestinationKind::Archive {
+            return Err("Archive destinations are not yet supported.");
+        }
+
+        if d.use_subdirectory && d.vault_subdirectory.is_empty() {
+            return Err("Name of vault destination subdirectory is required.");
+        }
+
+        if !s.delete_source && d.item_existing_behaviour == DestinationExistingBehaviour::Remove {
+            return Err(
+                "Behaviour when item already exists cannot be 'Remove' when copying items.",
+            );
+        }
+
+        if d.kind == DestinationKind::SameVault
+            && matches!(
+                d.item_existing_behaviour,
+                DestinationExistingBehaviour::Remove | DestinationExistingBehaviour::Skip
+            )
+        {
+            return Err(
+                "Behaviour when item already exists for same-vault transformations cannot be 'Remove' or 'Skip'."
+            );
+        }
+
+        if p.scale.enabled {
+            if p.scale.scale_algorithm == ScaleAlgorithm::Esrgan {
+                return Err("ESRGAN scaling is not implemented yet.");
+            }
+
+            if p.scale.use_target_width && p.scale.target_width == 0 {
+                return Err("Target width must be greater than 0.");
+            }
+
+            if p.scale.use_target_height && p.scale.target_height == 0 {
+                return Err("Target height must be greater than 0.");
+            }
+
+            if p.scale.use_maximum_scaling
+                && (!p.scale.maximum_scaling.0.is_normal() || p.scale.maximum_scaling.0 <= 0.0)
+            {
+                return Err("Maximum scaling factor must be a valid finite number greater than 0.");
+            }
+        }
+
+        if p.infill.enabled {
+            let (OrderedFloat(m), OrderedFloat(n)) = p.infill.target_aspect_ratio;
+            if !m.is_normal() || m <= 0.0 || !n.is_normal() || n <= 0.0 {
+                return Err(
+                    "Aspect ratio must consist of two valid finite numbers greater than 0.",
+                );
+            }
+
+            if p.infill.use_gaussian && p.infill.gaussian_radius == 0 {
+                return Err("Gaussian radius must be greater than 0.");
+            }
+
+            if p.infill.use_contrast
+                && (!p.infill.contrast_change.0.is_normal()
+                    || !(-1.0..=1.0).contains(&p.infill.contrast_change.0))
+            {
+                return Err("Contrast change must be between -100% and 100%.");
+            }
+
+            if p.infill.use_brightness
+                && (!p.infill.brightness_change.0.is_normal()
+                    || !(-1.0..=1.0).contains(&p.infill.brightness_change.0))
+            {
+                return Err("Brightness change must be between -100% and 100%.");
+            }
+        }
+
         Ok(())
+    }
+
+    fn perform_transformation(&self) {
+        let Ok(vault) = self.app_state.current_vault_catch() else {
+            return;
+        };
+        let source_ids = self.source_item_ids.clone();
+        let bulk = self.state().bulk_params.clone();
+        let params = self.state().transform_params.clone();
+        self.app_state.add_global_task("Transform images", |s, p| {
+            info!("spawn task");
+            Promise::spawn_async(crate::tasks::transform::apply_image_transformations(
+                s, vault, source_ids, bulk, params, p,
+            ))
+        });
     }
 }
 
@@ -837,10 +1043,11 @@ impl AppModal for TransformImages {
         let mut do_close = false;
 
         let selected_items_new_last_frame = self.source_items_updated;
+        let old_bulk_params = self.state().bulk_params.clone();
         let old_transform_params = self.state().transform_params.clone();
 
         if !self.opened {
-            self.update_selected_items(self.state().bulk_params.source.kind)
+            self.update_selected_items(&old_bulk_params)
                 .expect("vault to exist");
         }
 
@@ -851,7 +1058,32 @@ impl AppModal for TransformImages {
             .show(ctx, |ui| {
                 buttons(self.id(), ui, |ui| {
                     if ui.button("Transform").clicked() {
-                        info!("Clicked transform");
+                        if let Err(e) = self.validate() {
+                            self.error_message = e.to_string().into();
+                        } else if self.n_conflicts > 0 {
+                            let msg = format!(
+                                "There will be {} items that conflict with existing items.\n\
+                            \n\
+                            Current duplicate behaviour: {}\n\
+                            \n\
+                            Continue?",
+                                self.n_conflicts,
+                                self.state().bulk_params.destination.item_existing_behaviour
+                            );
+                            self.app_state.add_dialog(modals::Query::new(
+                                self.id().with(request::QUERY_CONFIRM),
+                                "Confirm",
+                                msg,
+                                QueryOptions {
+                                    kind: QueryKind::YesNo,
+                                    default_button: DefaultButton::Button2,
+                                    icon: egui_modal::Icon::Warning,
+                                },
+                            ));
+                        } else {
+                            self.perform_transformation();
+                            do_close = true;
+                        }
                     }
                     if ui.button("Close").clicked() {
                         do_close = true;
@@ -870,6 +1102,25 @@ impl AppModal for TransformImages {
 
         if self.state().transform_params != old_transform_params {
             self.source_items_updated = true;
+        }
+
+        if self.state().bulk_params != old_bulk_params {
+            self.source_items_updated = true;
+        }
+
+        if let Ok(query_res) = self.handle_request(request::QUERY_CONFIRM, |res| match res {
+            AsyncTaskResult::QueryResult(query_res) => Ok(query_res),
+            _ => Err(res),
+        }) {
+            if query_res == QueryResult::Yes {
+                if let Err(e) = self.validate() {
+                    self.error_message = e.to_string().into();
+                    do_close = false;
+                } else {
+                    self.perform_transformation();
+                    do_close = true;
+                }
+            }
         }
 
         if do_close {

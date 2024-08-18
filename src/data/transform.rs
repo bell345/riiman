@@ -7,6 +7,7 @@ pub struct ImageParams {
     pub scale: ScaleOptions,
     pub infill: InfillOptions,
     pub compression: CompressionOptions,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

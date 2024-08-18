@@ -1,5 +1,6 @@
 use crate::tasks::ProgressState;
 use dashmap::DashMap;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 pub type ProgressReceiver = tokio::sync::watch::Receiver<ProgressState>;
@@ -11,6 +12,12 @@ pub trait ProgressSender: Send + Sync {
 }
 
 pub type ProgressSenderRef = Box<dyn ProgressSender>;
+
+impl Debug for ProgressSenderRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProgressSenderRef")
+    }
+}
 
 struct SubTaskProgress {
     weight: f32,

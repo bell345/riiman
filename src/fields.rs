@@ -112,6 +112,12 @@ field_defs! {
         #[id("7bb22e14-0ae3-481a-a85b-b5b826384297")]
         #[tag(meta::no_link)]
         link: ItemRef,
+        #[id("e214ba5c-d97a-48f1-94ba-5cd97a08f1f1")]
+        #[tag(meta::no_link)]
+        original: ItemRef,
+        #[id("c6accb60-e2ed-4441-accb-60e2ed644112")]
+        #[tag(meta::no_link)]
+        derived: List,
         #[id("ba3ef373-a26a-48d6-9205-5ded815c6f73")]
         #[tag(meta::no_link)]
         skip: Tag

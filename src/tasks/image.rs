@@ -1,5 +1,6 @@
 use crate::errors::AppError;
 use anyhow::{anyhow, Context};
+use chrono::{DateTime, Utc};
 use eframe::egui;
 use eframe::egui::{vec2, Vec2};
 use magick_rust::{FilterType, MagickWand};
@@ -15,6 +16,25 @@ pub fn read_image(path: impl AsRef<Path>) -> anyhow::Result<MagickWand> {
     )
     .with_context(|| format!("while reading from image at {}", path.as_ref().display()))?;
     Ok(wand)
+}
+
+pub fn write_image(wand: &MagickWand, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    wand.write_image(
+        path.as_ref()
+            .to_str()
+            .ok_or(AppError::InvalidUnicode)
+            .with_context(|| format!("decoding path: {}", path.as_ref().display()))?,
+    )
+    .with_context(|| format!("while writing to path {}", path.as_ref().display()))?;
+    Ok(())
+}
+
+pub async fn get_last_modified(path: impl AsRef<Path>) -> DateTime<Utc> {
+    tokio::fs::metadata(path.as_ref())
+        .await
+        .and_then(|m| m.modified())
+        .map(|m| m.into())
+        .unwrap_or(Utc::now())
 }
 
 #[allow(clippy::cast_precision_loss)]

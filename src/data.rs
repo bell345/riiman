@@ -19,7 +19,7 @@ pub use item_cache::ItemCache;
 pub use item_id::ItemId;
 pub use preview::DebugViewportClass;
 pub use preview::PreviewOptions;
-pub use shortcut::ShortcutAction;
+pub use shortcut::{ShortcutAction, ShortcutBehaviour};
 pub use string::Utf32CachedString;
 pub use thumbnail::{ThumbnailCache, ThumbnailCacheItem, ThumbnailParams};
 pub use transform::BulkParams as TransformBulkParams;

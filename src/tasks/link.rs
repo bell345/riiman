@@ -147,13 +147,8 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
                 return None;
             }
 
-            let extension = match path.extension() {
-                None => OsString::from("json"),
-                Some(ext) => format!("{}.json", ext.to_str()?).into(),
-            };
-
             if let Some((sidecar_path, sidecar_date)) =
-                path_to_last_modified_map.remove_entry(&path.with_extension(extension))
+                path_to_last_modified_map.remove_entry(&path.with_extension("json"))
             {
                 Some((path, sidecar_path, sidecar_date))
             } else {
@@ -200,7 +195,7 @@ fn link_single_item(
         ),
     );
 
-    state.commit_item(vault, &item, skip_save)?;
+    state.commit_item(other_vault, &other_item, skip_save)?;
 
     Ok(path.into_boxed_path())
 }

@@ -1,3 +1,4 @@
+use crate::data::transform::DestinationExistingBehaviour;
 use crate::data::FieldValue;
 use crate::data::{FieldType, ItemId};
 use std::path::PathBuf;
@@ -47,6 +48,12 @@ pub enum AppError {
     UnexpectedJsonSidecar { path: String, error: Option<String> },
     #[error("missing fields width, height expected of images for item with path {path}")]
     MissingImageFields { path: String },
+    #[error("the destination existing behaviour is invalid for this destination: {behaviour}")]
+    InvalidDestinationExistingBehaviour {
+        behaviour: DestinationExistingBehaviour,
+    },
+    #[error("cannot remove current vault (name: {current_vault_name})")]
+    CannotRemoveCurrentVault { current_vault_name: String },
 }
 
 impl AppError {

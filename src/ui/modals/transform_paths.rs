@@ -601,6 +601,10 @@ impl TransformPaths {
             return Err("Name of destination archive is required.");
         }
 
+        if d.kind == DestinationKind::Archive {
+            return Err("Archive destinations are not yet supported.");
+        }
+
         if d.use_subdirectory && d.vault_subdirectory.is_empty() {
             return Err("Name of vault destination subdirectory is required.");
         }
@@ -621,7 +625,7 @@ impl TransformPaths {
         let source_ids = self.source_item_ids.clone();
         let bulk = self.state().bulk_params.clone();
         let params = self.state().transform_params.clone();
-        self.app_state.add_task("Transform paths", |s, p| {
+        self.app_state.add_global_task("Transform paths", |s, p| {
             Promise::spawn_async(crate::tasks::transform::apply_path_transformations(
                 s, vault, source_ids, bulk, params, p,
             ))

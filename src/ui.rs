@@ -1,6 +1,6 @@
 use crate::data::parse::FilterExpressionParseResult;
 use crate::data::transform::DestinationExistingBehaviour;
-use crate::data::{FilterExpression, ShortcutAction, ThumbnailCacheItem};
+use crate::data::{FilterExpression, ShortcutBehaviour, ThumbnailCacheItem};
 use crate::errors::AppError;
 use crate::state::{AppState, AppStateRef, TaskInfo};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
@@ -103,7 +103,6 @@ pub(crate) struct App {
     search_text: String,
 
     expand_right_panel: bool,
-    focused: Option<egui::Id>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -115,7 +114,7 @@ struct AppStorage {
     sorts: Vec<SortExpression>,
     filter: FilterExpression,
     search_text: String,
-    shortcuts: Vec<(KeyboardShortcut, ShortcutAction)>,
+    shortcuts2: Vec<(KeyboardShortcut, ShortcutBehaviour)>,
 }
 
 impl AppStorage {
@@ -134,7 +133,6 @@ impl App {
             sort_direction: Default::default(),
             search_text: String::new(),
             expand_right_panel: false,
-            focused: None,
         }
     }
 
@@ -146,7 +144,7 @@ impl App {
             + Sync
             + 'static,
     ) {
-        self.state.add_task(name, task_factory);
+        self.state.add_global_task(name, task_factory);
     }
 
     fn add_queued_tasks(&mut self) {
@@ -154,15 +152,20 @@ impl App {
         for info in self.state.drain_tasks(capacity) {
             let s = self.state.clone();
             match info {
-                TaskInfo::WithoutId { name, task_factory } => {
+                TaskInfo::GlobalTask { name, task_factory } => {
                     self.tasks.add(name, |tx| task_factory(s, tx));
                 }
-                TaskInfo::WithId {
+                TaskInfo::GlobalMessage { result } => {
+                    self.tasks.push_message(result);
+                }
+                TaskInfo::TaskRequest {
                     id,
                     name,
                     task_factory,
                 } => self.tasks.add_request(id, name, |tx| task_factory(s, tx)),
-                TaskInfo::Completed { id, result } => self.tasks.push_completed_task(id, result),
+                TaskInfo::CompletedTaskRequest { id, result } => {
+                    self.tasks.push_completed_task(id, result)
+                }
             }
         }
     }
@@ -211,7 +214,7 @@ impl App {
 
         self.state
             .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
-        self.state.set_shortcuts(stored_state.shortcuts);
+        self.state.set_shortcuts(stored_state.shortcuts2);
 
         Some(())
     }
@@ -233,7 +236,8 @@ impl App {
                     | AsyncTaskResult::FoundGalleryDl { .. }
                     | AsyncTaskResult::SelectedDirectory(_)
                     | AsyncTaskResult::SelectedFile(_)
-                    | AsyncTaskResult::QueryResult(_),
+                    | AsyncTaskResult::QueryResult(_)
+                    | AsyncTaskResult::NextItem,
                 ) => {}
                 Ok(AsyncTaskResult::VaultLoaded {
                     name,
@@ -298,7 +302,7 @@ impl App {
                     );
                     self.add_modal_dialog(modals::Preview::new(id, hndl, *viewport_class));
                 }
-                Ok(AsyncTaskResult::PathTransformationComplete(results)) => {
+                Ok(AsyncTaskResult::TransformationComplete(results)) => {
                     self.add_modal_dialog(modals::TransformResults::new(results));
                 }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
@@ -348,16 +352,26 @@ impl App {
                 ui.close_menu();
             }
 
-            if self.state.current_vault().is_ok()
-                && ui
+            if let Ok(curr_vault) = self.state.current_vault() {
+                if ui
                     .add_enabled(!vault_loading, egui::Button::new("Save"))
                     .clicked()
-            {
-                info!("Save vault clicked!");
+                {
+                    for item in curr_vault.iter_items() {
+                        if let Err(e) = self.state.update_item_links(&curr_vault, &item) {
+                            self.error(format!(
+                                "Error updating item link for {}: {}",
+                                item.path(),
+                                e
+                            ));
+                            break;
+                        }
+                    }
 
-                self.state.save_current_vault_deferred();
+                    self.state.save_current_vault_deferred();
 
-                ui.close_menu();
+                    ui.close_menu();
+                }
             }
 
             let manage_text = if self.state.has_unresolved_vaults() {
@@ -442,6 +456,38 @@ impl App {
             if ui.button("Sidecars").clicked() {
                 self.add_task("Link sidecars", |state, p| {
                     Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
+                });
+                ui.close_menu();
+            }
+            if ui.button("Remove all in vault").clicked() {
+                self.add_task("Remove links from vault", |state, p| {
+                    Promise::spawn_async(async move {
+                        let current_vault = state.current_vault()?;
+                        for item in current_vault.iter_items() {
+                            state.unlink_item(&current_vault, &item).ok();
+                        }
+                        state.save_current_vault_deferred();
+                        Ok(AsyncTaskResult::None)
+                    })
+                });
+                ui.close_menu();
+            }
+            if ui.button("Remove invalid links").clicked() {
+                self.add_task("Remove invalid links", |state, p| {
+                    Promise::spawn_async(async move {
+                        let current_vault = state.current_vault()?;
+                        for item in current_vault.iter_items() {
+                            let links = item.links()?;
+                            for link in links {
+                                if state.resolve_link(link).is_none() {
+                                    state.unlink_item(&current_vault, &item).ok();
+                                }
+                            }
+                        }
+                        state.save_current_vault_deferred();
+                        state.refresh_unresolved_vaults();
+                        Ok(AsyncTaskResult::None)
+                    })
                 });
                 ui.close_menu();
             }
@@ -728,8 +774,13 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(f) = self.focused.take() {
-            ctx.memory_mut(|m| m.request_focus(f));
+        let selected_ids = self.thumbnail_grid.get_selected_ids();
+        if let &[selected_id] = selected_ids.as_slice() {
+            if ctx.memory(|m| m.focused()).is_none() {
+                ctx.memory_mut(|m| {
+                    m.request_focus(selected_id.to_egui_id(self.thumbnail_grid.id()));
+                });
+            }
         }
 
         let errors = self.state.drain_errors();
@@ -756,14 +807,6 @@ impl eframe::App for App {
         self.bottom_panel_ui(ctx);
 
         self.central_panel_ui(ctx);
-
-        self.focused = ctx.memory(|m| m.focused());
-
-        let selected_ids = self.thumbnail_grid.get_selected_ids();
-        if let &[selected_id] = selected_ids.as_slice() {
-            self.focused
-                .get_or_insert(selected_id.to_egui_id(self.thumbnail_grid.id()));
-        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -774,7 +817,7 @@ impl eframe::App for App {
             sorts: self.state.sorts().clone(),
             filter: self.state.filter().clone(),
             search_text: self.search_text.clone(),
-            shortcuts: self.state.shortcuts(),
+            shortcuts2: self.state.shortcuts(),
         };
 
         storage.set_string(

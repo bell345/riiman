@@ -9,7 +9,7 @@ use crate::state::AppStateRef;
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
-use crate::ui::theme;
+use crate::ui::{modals, theme};
 
 #[derive(Default)]
 pub struct ManageVaults {
@@ -104,7 +104,12 @@ impl ManageVaults {
                     }
                     (Some(_), false) => {
                         if ui.button("Select").clicked() {
-                            if let Err(e) = state.set_current_vault_name(name) {
+                            if let Err(e) = state.set_current_vault_name(name.clone()) {
+                                self.widget_state.error_message = Some(e.to_string());
+                            }
+                        }
+                        if ui.button("Clear").clicked() {
+                            if let Err(e) = state.unload_vault(&name) {
                                 self.widget_state.error_message = Some(e.to_string());
                             }
                         }
@@ -187,6 +192,17 @@ impl ManageVaults {
                             }
                         })
                 });
+            });
+            ui.vertical_centered_justified(|ui| {
+                if ui.button("New...").clicked() {
+                    state.add_dialog(modals::NewVault::default());
+                }
+                if ui.button("Open...").clicked() {
+                    state.set_vault_loading();
+                    state.add_global_task("Load vault", |s, p| {
+                        Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, true))
+                    });
+                }
             });
         });
     }

@@ -1,5 +1,6 @@
 use std::collections::hash_map::Iter;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::path::Path;
 
@@ -16,13 +17,22 @@ use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Item {
     path: Utf32CachedString,
     fields: DashMap<Uuid, FieldValue>,
 }
 
+impl Debug for Item {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Item")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Item {
+    #[tracing::instrument]
     pub fn new(path: String) -> Item {
         Item {
             path: path.into(),
@@ -56,6 +66,17 @@ impl Item {
             }
             .into(),
         )
+    }
+
+    pub fn links(&self) -> anyhow::Result<Vec<kind::ItemRef>> {
+        let mut links = vec![];
+        links.extend(self.get_known_field_value(fields::general::LINK)?);
+        links.extend(self.get_known_field_value(fields::general::ORIGINAL)?);
+        if let Some(l) = self.get_known_field_value(fields::general::DERIVED)? {
+            links.extend(l.into_iter().filter_map(|v| v.as_itemref_opt().cloned()));
+        }
+
+        Ok(links.into_iter().map(|l| l.into()).collect())
     }
 }
 

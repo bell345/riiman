@@ -4,7 +4,7 @@ use crate::take_shortcut;
 use crate::tasks::thumb_grid::{river_layout, ThumbnailPosition};
 use crate::tasks::thumbnail::{load_image_thumbnail, load_image_thumbnail_with_fs};
 use crate::tasks::transform::get_transformed_size;
-use crate::tasks::{RiverParams, ThumbnailGridInfo};
+use crate::tasks::{AsyncTaskResult, RiverParams, ThumbnailGridInfo};
 use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::theme::get_accent_color;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -20,6 +20,7 @@ use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::info;
+use uuid::{uuid, Uuid};
 
 const THUMBNAIL_SCROLL_COOLDOWN_INTERVAL_MS: i64 = 1500;
 
@@ -29,6 +30,7 @@ const CHECKBOX_ALIGN: egui::Align2 = egui::Align2::RIGHT_TOP;
 const CHECKBOX_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
 const CHECKBOX_INTERACT_SIZE: f32 = 16.0;
 const HIGHLIGHT_PADDING: f32 = 2.0;
+pub const TAB_REQUEST_ID: Uuid = uuid!("524b6f5c-385e-4ee9-a1a8-ccc234765564");
 
 pub struct ThumbnailGrid {
     id: egui::Id,
@@ -168,11 +170,18 @@ impl ThumbnailGrid {
         };
         let selected_egui_id = selected_id.to_egui_id(self.id());
 
-        if ui
+        let next_item_requested = matches!(
+            self.app_state
+                .try_take_request_result(self.id().with(TAB_REQUEST_ID)),
+            Some(Ok(AsyncTaskResult::NextItem))
+        );
+
+        if (ui
             .memory(|r| r.focused())
             .is_some_and(|f| f == selected_egui_id)
             && self.state.select_mode == SelectMode::Single
-            && take_shortcut!(ui, Tab)
+            && take_shortcut!(ui, Tab))
+            || next_item_requested
         {
             if let Some((i, _)) = thumbnails.iter().find_position(|pos| selected_id == pos.id) {
                 let delta = if ui.input(|i| i.modifiers.shift) {
@@ -188,6 +197,7 @@ impl ThumbnailGrid {
                 });
                 self.state.checked_items.clear();
                 self.state.checked_items.insert(next_id, true);
+                let _ = self.app_state.update_item_list();
             }
         }
     }
@@ -489,7 +499,7 @@ impl ThumbnailGrid {
         self.last_vp = Some(vp.rect);
 
         for params in self.app_state.drain_thumbnail_requests() {
-            self.app_state.add_task(
+            self.app_state.add_global_task(
                 format!("Load thumbnail for {}", params.abs_path.to_string_lossy()),
                 move |_, p| {
                     if params.height <= THUMBNAIL_LOW_QUALITY_HEIGHT {

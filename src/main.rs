@@ -1,6 +1,6 @@
-use std::time::Duration;
-
 use crate::built_info::built_time;
+use std::time::Duration;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
@@ -36,6 +36,7 @@ mod ui;
 fn main() -> Result<(), impl std::error::Error> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .init();
 
     println!("Hello, world!");

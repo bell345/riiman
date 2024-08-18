@@ -84,6 +84,7 @@ pub async fn import_single_image(
     Ok(path)
 }
 
+#[tracing::instrument]
 pub async fn select_and_import_one(
     vault: Arc<Vault>,
     progress: ProgressSenderRef,
@@ -216,6 +217,7 @@ pub fn on_import_result_send_progress(
     }
 }
 
+#[tracing::instrument]
 pub async fn import_images_recursively(
     vault: Arc<Vault>,
     progress: ProgressSenderRef,

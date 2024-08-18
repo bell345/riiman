@@ -84,13 +84,16 @@ impl AppModal for LinkVault {
                     match self.verify() {
                         Ok(()) => {
                             let other_vault_name = self.selected_vault_name.clone();
-                            state.add_task(format!("Link with {other_vault_name}"), |s, p| {
-                                Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
-                                    other_vault_name,
-                                    s,
-                                    p,
-                                ))
-                            });
+                            state.add_global_task(
+                                format!("Link with {other_vault_name}"),
+                                |s, p| {
+                                    Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
+                                        other_vault_name,
+                                        s,
+                                        p,
+                                    ))
+                                },
+                            );
                         }
                         Err(e) => {
                             self.error_message = Some(e);

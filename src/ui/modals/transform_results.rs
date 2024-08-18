@@ -1,14 +1,14 @@
 use crate::state::AppStateRef;
-use crate::tasks::transform::{PathContext, PathTransformResult};
-use crate::ui::buttons;
+use crate::tasks::transform::{TransformResult, TransformReturn};
 use crate::ui::modals::AppModal;
+use crate::ui::{buttons, modals};
+use anyhow::anyhow;
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
-use std::path::Path;
 
 pub struct TransformResults {
     modal: Option<Modal>,
-    results: Vec<anyhow::Result<PathTransformResult>>,
+    results: Vec<anyhow::Result<TransformResult>>,
     app_state: AppStateRef,
     opened: bool,
     is_open: bool,
@@ -18,50 +18,27 @@ pub struct TransformResults {
 enum ResultType {
     Move,
     Copy,
+    InPlace,
     Skip,
     Delete,
     Error,
 }
 
-impl From<&anyhow::Result<PathTransformResult>> for ResultType {
-    fn from(value: &anyhow::Result<PathTransformResult>) -> Self {
+impl From<&anyhow::Result<TransformResult>> for ResultType {
+    fn from(value: &anyhow::Result<TransformResult>) -> Self {
         match value {
-            Ok(PathTransformResult::CopySuccess { .. }) => Self::Copy,
-            Ok(PathTransformResult::MoveSuccess { .. }) => Self::Move,
-            Ok(PathTransformResult::RemovedWithoutTransform(_)) => Self::Delete,
-            Ok(PathTransformResult::NoTransform(_)) => Self::Skip,
+            Ok(TransformResult::CopySuccess { .. }) => Self::Copy,
+            Ok(TransformResult::MoveSuccess { .. }) => Self::Move,
+            Ok(TransformResult::InPlaceTransform(_)) => Self::InPlace,
+            Ok(TransformResult::RemovedWithoutTransform(_)) => Self::Delete,
+            Ok(TransformResult::NoTransform(_)) => Self::Skip,
             Err(_) => Self::Error,
         }
     }
 }
 
-fn get_old_path(res: &anyhow::Result<PathTransformResult>) -> Option<&Path> {
-    match res {
-        Ok(
-            PathTransformResult::NoTransform(buf)
-            | PathTransformResult::RemovedWithoutTransform(buf)
-            | PathTransformResult::MoveSuccess { removed: buf, .. }
-            | PathTransformResult::CopySuccess { original: buf, .. },
-        ) => Some(buf.as_path()),
-        Err(e) => match e.downcast_ref::<PathContext>() {
-            Some(PathContext(buf)) => Some(buf.as_path()),
-            None => None,
-        },
-    }
-}
-
-fn get_new_path(res: &anyhow::Result<PathTransformResult>) -> Option<&Path> {
-    match res {
-        Ok(
-            PathTransformResult::MoveSuccess { created: buf, .. }
-            | PathTransformResult::CopySuccess { copy: buf, .. },
-        ) => Some(buf.as_path()),
-        _ => None,
-    }
-}
-
 impl TransformResults {
-    pub fn new(results: Vec<anyhow::Result<PathTransformResult>>) -> Self {
+    pub fn new(results: Vec<anyhow::Result<TransformResult>>) -> Self {
         Self {
             modal: None,
             results,
@@ -90,22 +67,33 @@ impl TransformResults {
                             ui.label("New");
                         });
                     })
-                    .body(|mut body| {
+                    .body(|body| {
                         body.rows(24.0, self.results.len(), |mut row| {
                             let Some(item) = self.results.get(row.index()) else {
                                 return;
                             };
 
                             row.col(|ui| {
-                                ui.label(ResultType::from(item).to_string());
+                                let label = ResultType::from(item).to_string();
+                                match item {
+                                    Ok(_) => {
+                                        ui.label(label);
+                                    }
+                                    Err(e) => {
+                                        if ui.button(label).clicked() {
+                                            self.app_state
+                                                .add_dialog(modals::Message::error(format!("{e}")));
+                                        }
+                                    }
+                                };
                             });
                             row.col(|ui| {
-                                if let Some(s) = get_old_path(item).map(|p| p.to_string_lossy()) {
+                                if let Some(s) = item.orig_path().map(|p| p.to_string_lossy()) {
                                     ui.label(s);
                                 }
                             });
                             row.col(|ui| {
-                                if let Some(s) = get_new_path(item).map(|p| p.to_string_lossy()) {
+                                if let Some(s) = item.new_path().map(|p| p.to_string_lossy()) {
                                     ui.label(s);
                                 }
                             });

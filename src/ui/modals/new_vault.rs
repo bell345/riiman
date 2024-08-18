@@ -41,13 +41,10 @@ impl AppModal for NewVault {
                     } else {
                         let Self { name, .. } = std::mem::take(self);
                         state.set_vault_loading();
-                        state.add_task("Create vault", |s, p| {
-                            Promise::spawn_async(tasks::vault::save_new_vault(
-                                s,
-                                Vault::new(name),
-                                p,
-                            ))
+                        state.add_global_task("Create vault", |s, p| {
+                            Promise::spawn_async(tasks::vault::save_new_vault(s, name, p))
                         });
+                        modal.close();
                     }
                 }
                 modal.button(ui, "Cancel");

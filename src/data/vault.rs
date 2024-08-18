@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::{HashSet, VecDeque};
+use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -20,8 +21,9 @@ use crate::errors::{AppError, HierarchyError};
 use crate::fields;
 use crate::state::AppStateRef;
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Vault {
+    #[serde(skip)]
     pub name: String,
     definitions: DashMap<Uuid, FieldDefinition>,
     fields: DashMap<Uuid, FieldValue>,
@@ -32,6 +34,14 @@ pub struct Vault {
     pub file_path: Option<Box<Path>>,
     #[serde(skip)]
     items_by_id: DashMap<ItemId, Weak<Item>>,
+}
+
+impl Debug for Vault {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vault")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 enum HierarchyWalkPosition {
@@ -48,6 +58,7 @@ impl HierarchyWalkPosition {
 }
 
 impl Vault {
+    #[tracing::instrument]
     pub fn new(name: String) -> Vault {
         Vault {
             name,
@@ -58,6 +69,11 @@ impl Vault {
     }
 
     pub fn with_file_path(mut self, path: &Path) -> Self {
+        if let Some(name) = path.file_stem() {
+            if let Some(s) = name.to_str() {
+                self.name = s.to_string();
+            }
+        }
         self.set_file_path(path);
         self
     }
@@ -154,6 +170,7 @@ impl Vault {
         }
     }
 
+    #[tracing::instrument]
     pub fn set_file_path(&mut self, path: &Path) {
         self.file_path = Some(path.into());
         self.set_last_updated();
@@ -205,6 +222,7 @@ impl Vault {
             .ok_or(anyhow!(AppError::MissingItemId { id }))
     }
 
+    #[tracing::instrument]
     pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self
@@ -220,12 +238,17 @@ impl Vault {
             .clone())
     }
 
+    pub fn itemref_of(&self, item: &Item) -> kind::ItemRef {
+        kind::ItemRef((self.name.clone().into(), item.path_string().to_owned()))
+    }
+
     pub fn resolve_item_ids(&self, ids: &[ItemId]) -> Vec<Arc<Item>> {
         ids.iter()
             .filter_map(|id| self.get_item_opt_by_id(*id))
             .collect()
     }
 
+    #[tracing::instrument]
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
         let rel_path = self.resolve_rel_path(path)?;
         self.items.remove(rel_path);
@@ -252,6 +275,7 @@ impl Vault {
         ids.filter_map(|id| self.get_definition(&id))
     }
 
+    #[tracing::instrument]
     pub fn iter_field_ancestor_paths(&self, id: &Uuid) -> Vec<VecDeque<Uuid>> {
         let Some(def) = self.get_definition(id) else {
             return vec![];
@@ -270,6 +294,7 @@ impl Vault {
         paths
     }
 
+    #[tracing::instrument]
     pub fn iter_descendants(&self, id: &Uuid) -> Vec<Ref<'_, Uuid, FieldDefinition>> {
         let mut res = vec![];
         let mut queue = vec![*id];
@@ -292,13 +317,9 @@ impl Vault {
     pub fn iter_linked_vault_names(&self) -> HashSet<String> {
         self.items
             .iter()
-            .filter_map(|item| {
-                let (vault_name, _) = item
-                    .get_known_field_value(fields::general::LINK)
-                    .ok()
-                    .flatten()?;
-                Some(vault_name.to_string())
-            })
+            .filter_map(|item| item.links().ok())
+            .flatten()
+            .map(|kind::ItemRef((n, _))| n.into_string())
             .collect()
     }
 

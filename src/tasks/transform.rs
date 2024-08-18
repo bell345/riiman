@@ -4,8 +4,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crate::data::transform::{
-    BulkParams, DestinationKind, DestinationOptions, FitAlgorithm, InfillOptions, InfillTechnique,
-    ScaleAlgorithm, ScaleOptions,
+    BulkParams, DestinationExistingBehaviour, DestinationKind, DestinationOptions, FitAlgorithm,
+    InfillOptions, InfillTechnique, ScaleAlgorithm, ScaleOptions,
 };
 use crate::data::{
     FieldStore, Item, ItemId, TransformBulkParams, TransformImageParams, TransformPathParams, Vault,
@@ -13,7 +13,9 @@ use crate::data::{
 use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
-use crate::tasks::image::{export_all_rgba, read_image, wand_to_image};
+use crate::tasks::image::{
+    export_all_rgba, get_last_modified, read_image, wand_to_image, write_image,
+};
 use crate::tasks::import::{import_single_image, process_many};
 use crate::tasks::vault::save_vault_and_links;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
@@ -196,13 +198,13 @@ fn do_blur_infill(
     let crop_rect = if in_ratio > out_ratio {
         // vertical center crop
         Rect::from_min_size(
-            pos2((out_size.x - size.x) / 2.0, 0.0).floor(),
+            pos2((size.x - (size.y * out_ratio)) / 2.0, 0.0).floor(),
             vec2(size.y * out_ratio, size.y).floor(),
         )
     } else {
         // horizontal center crop
         Rect::from_min_size(
-            pos2(0.0, (out_size.y - size.y) / 2.0).floor(),
+            pos2(0.0, (size.y - (size.x / out_ratio)) / 2.0).floor(),
             vec2(size.x, size.x / out_ratio).floor(),
         )
     };
@@ -316,6 +318,11 @@ fn scale_with_xbrz(
     Ok(())
 }
 
+/// Transforms an image contained in a MagickWand instance according to the given parameters.
+///
+/// If a thumbnail of the image is given in the `wand` parameter, you should provide the full size
+/// of the image as the `full_size` parameter to ensure that the transformations to the thumbnail
+/// will accurately reflect the result of transforming the original image.
 pub fn transform_wand(
     wand: &mut MagickWand,
     params: &TransformImageParams,
@@ -439,11 +446,45 @@ pub fn transform_path(item: &Item, params: &TransformPathParams) -> Option<PathB
 }
 
 #[derive(Debug)]
-pub enum PathTransformResult {
+pub enum TransformResult {
     NoTransform(PathBuf),
+    InPlaceTransform(PathBuf),
     RemovedWithoutTransform(PathBuf),
     MoveSuccess { removed: PathBuf, created: PathBuf },
     CopySuccess { original: PathBuf, copy: PathBuf },
+}
+
+pub trait TransformReturn {
+    fn orig_path(&self) -> Option<&Path>;
+    fn new_path(&self) -> Option<&Path>;
+}
+
+impl TransformReturn for anyhow::Result<TransformResult> {
+    fn orig_path(&self) -> Option<&Path> {
+        match self {
+            Ok(
+                TransformResult::NoTransform(buf)
+                | TransformResult::InPlaceTransform(buf)
+                | TransformResult::RemovedWithoutTransform(buf)
+                | TransformResult::MoveSuccess { removed: buf, .. }
+                | TransformResult::CopySuccess { original: buf, .. },
+            ) => Some(buf.as_path()),
+            Err(e) => match e.downcast_ref::<PathContext>() {
+                Some(PathContext(buf)) => Some(buf.as_path()),
+                None => None,
+            },
+        }
+    }
+
+    fn new_path(&self) -> Option<&Path> {
+        match self {
+            Ok(
+                TransformResult::MoveSuccess { created: buf, .. }
+                | TransformResult::CopySuccess { copy: buf, .. },
+            ) => Some(buf.as_path()),
+            _ => None,
+        }
+    }
 }
 
 struct Discriminator<'a> {
@@ -498,16 +539,13 @@ async fn apply_path_transformation(
     state: AppStateRef,
     vault: Arc<Vault>,
     item_id: ItemId,
-    bulk: Arc<BulkParams>,
-    params: Arc<TransformPathParams>,
-) -> anyhow::Result<PathTransformResult> {
-    use self::PathTransformResult::*;
-    use crate::data::transform::DestinationExistingBehaviour::*;
-
+    bulk: &BulkParams,
+    params: &TransformPathParams,
+) -> anyhow::Result<TransformResult> {
     let old_item = vault.get_item_by_id(item_id)?;
     let old_abs_path = vault.resolve_abs_path(Path::new(old_item.path()))?;
     let Some(mut new_path) = transform_path(&old_item, &params) else {
-        return Ok(NoTransform(old_abs_path));
+        return Ok(TransformResult::NoTransform(old_abs_path));
     };
 
     let exist_behaviour = bulk.destination.item_existing_behaviour;
@@ -517,7 +555,7 @@ async fn apply_path_transformation(
         () => {
             if !dry_run {
                 vault.remove_item(&Path::new(old_item.path()))?;
-                state.unlink_item(&old_item)?;
+                state.unlink_item(&vault, &old_item)?;
                 tokio::fs::remove_file(&old_abs_path).await?;
             }
         };
@@ -526,7 +564,7 @@ async fn apply_path_transformation(
     match bulk.destination.kind {
         k @ (DestinationKind::SameVault | DestinationKind::OtherVault) => {
             if k == DestinationKind::SameVault && new_path.as_os_str() == old_item.path() {
-                return Ok(NoTransform(old_abs_path));
+                return Ok(TransformResult::NoTransform(old_abs_path));
             }
 
             let other_vault = match k {
@@ -537,11 +575,11 @@ async fn apply_path_transformation(
                 _ => unreachable!(),
             };
 
-            if exist_behaviour == AppendDiscriminator {
+            if exist_behaviour == DestinationExistingBehaviour::AppendDiscriminator {
                 let Some(disc_path) = Discriminator::from_path(&new_path)
                     .and_then(|d| d.into_unique_path(|p| Some(other_vault.get_item(p).is_err())))
                 else {
-                    return Ok(NoTransform(old_abs_path));
+                    return Ok(TransformResult::NoTransform(old_abs_path));
                 };
                 new_path = disc_path;
             }
@@ -559,16 +597,16 @@ async fn apply_path_transformation(
                     if bulk.source.delete_source {
                         if !dry_run {
                             vault.remove_item(&Path::new(old_item.path()))?;
-                            state.update_item_link(&other_vault, &$item)?;
+                            state.update_item_links(&other_vault, &$item)?;
                             tokio::fs::remove_file(&old_abs_path).await?;
                         }
-                        return Ok(MoveSuccess {
+                        return Ok(TransformResult::MoveSuccess {
                             removed: old_abs_path,
                             created: new_abs_path,
                         });
                     }
 
-                    return Ok(CopySuccess {
+                    return Ok(TransformResult::CopySuccess {
                         original: old_abs_path,
                         copy: new_abs_path,
                     });
@@ -600,15 +638,10 @@ async fn apply_path_transformation(
                         .into());
                     }
 
-                    let last_modified = tokio::fs::metadata(&new_abs_path)
-                        .await
-                        .and_then(|m| m.modified())
-                        .map(|m| m.into())
-                        .unwrap_or(Utc::now());
                     import_single_image(
                         Arc::clone(&other_vault),
-                        new_path.clone().into_boxed_path(),
-                        last_modified,
+                        new_abs_path.clone().into_boxed_path(),
+                        get_last_modified(&new_abs_path).await,
                     )
                     .await?;
                     other_vault.get_item(&new_path)?
@@ -624,12 +657,15 @@ async fn apply_path_transformation(
             };
 
             match exist_behaviour {
-                Remove if bulk.source.delete_source => {
+                DestinationExistingBehaviour::Remove if bulk.source.delete_source => {
                     remove!();
-                    Ok(RemovedWithoutTransform(old_abs_path))
+                    Ok(TransformResult::RemovedWithoutTransform(old_abs_path))
                 }
-                Skip | Remove => Ok(NoTransform(old_abs_path)),
-                Overwrite | AppendDiscriminator => {
+                DestinationExistingBehaviour::Skip | DestinationExistingBehaviour::Remove => {
+                    Ok(TransformResult::NoTransform(old_abs_path))
+                }
+                DestinationExistingBehaviour::Overwrite
+                | DestinationExistingBehaviour::AppendDiscriminator => {
                     move_or_copy_into!(other_item);
                 }
             }
@@ -638,7 +674,7 @@ async fn apply_path_transformation(
             let mut new_abs_path =
                 Path::new(&bulk.destination.directory_path).join(Path::new(&new_path));
 
-            if exist_behaviour == AppendDiscriminator {
+            if exist_behaviour == DestinationExistingBehaviour::AppendDiscriminator {
                 let Some(disc_path) = Discriminator::from_path(&new_abs_path).and_then(|d| {
                     d.into_unique_path(|p| match fs::metadata(p) {
                         Ok(_) => Some(false),
@@ -646,7 +682,7 @@ async fn apply_path_transformation(
                         Err(_) => None,
                     })
                 }) else {
-                    return Ok(NoTransform(old_abs_path));
+                    return Ok(TransformResult::NoTransform(old_abs_path));
                 };
                 new_abs_path = disc_path;
             }
@@ -654,25 +690,261 @@ async fn apply_path_transformation(
             let dest_file_exists = tokio::fs::try_exists(&new_abs_path).await?;
 
             match (dest_file_exists, exist_behaviour) {
-                (true, Remove) if bulk.source.delete_source => {
+                (true, DestinationExistingBehaviour::Remove) if bulk.source.delete_source => {
                     remove!();
-                    Ok(RemovedWithoutTransform(old_abs_path))
+                    Ok(TransformResult::RemovedWithoutTransform(old_abs_path))
                 }
-                (true, Remove | Skip) => Ok(NoTransform(old_abs_path)),
-                (false, _) | (true, Overwrite | AppendDiscriminator) => {
+                (
+                    true,
+                    DestinationExistingBehaviour::Remove | DestinationExistingBehaviour::Skip,
+                ) => Ok(TransformResult::NoTransform(old_abs_path)),
+                (false, _)
+                | (
+                    true,
+                    DestinationExistingBehaviour::Overwrite
+                    | DestinationExistingBehaviour::AppendDiscriminator,
+                ) => {
                     if !dry_run {
                         tokio::fs::copy(&old_abs_path, &new_abs_path).await?;
                     }
                     if bulk.source.delete_source {
                         remove!();
-                        return Ok(MoveSuccess {
+                        return Ok(TransformResult::MoveSuccess {
                             removed: old_abs_path,
                             created: new_abs_path,
                         });
                     }
 
-                    Ok(CopySuccess {
+                    Ok(TransformResult::CopySuccess {
                         original: old_abs_path,
+                        copy: new_abs_path,
+                    })
+                }
+            }
+        }
+        DestinationKind::Archive => todo!(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn apply_image_transformation(
+    state: AppStateRef,
+    vault: Arc<Vault>,
+    item_id: ItemId,
+    bulk: &BulkParams,
+    params: &TransformImageParams,
+) -> anyhow::Result<TransformResult> {
+    let orig_item = vault.get_item_by_id(item_id)?;
+    let orig_abs_path = vault.resolve_abs_path(Path::new(orig_item.path()))?;
+    let rel_path = Path::new(vault.resolve_rel_path(Path::new(orig_item.path()))?);
+
+    // TODO: handle compression options
+
+    let mut wand = read_image(&orig_abs_path)?;
+
+    let exist_behaviour = bulk.destination.item_existing_behaviour;
+    let dry_run = params.dry_run;
+
+    macro_rules! remove {
+        () => {
+            if !dry_run {
+                vault.remove_item(rel_path)?;
+                state.unlink_item(&vault, &orig_item)?;
+                tokio::fs::remove_file(&orig_abs_path).await?;
+            }
+        };
+    }
+
+    macro_rules! move_or_copy_into {
+        ($vault:ident, $abs_path:ident) => {
+            if !dry_run {
+                transform_wand(&mut wand, params, None)?;
+                write_image(&wand, &$abs_path)?;
+                import_single_image(
+                    Arc::clone(&$vault),
+                    $abs_path.clone().into_boxed_path(),
+                    Utc::now(),
+                )
+                .await?;
+                let new_item = $vault.get_item(&$abs_path)?;
+                orig_item.insert_value_into_list(
+                    fields::general::DERIVED,
+                    $vault.itemref_of(&new_item).into(),
+                )?;
+                new_item.set_known_field_value(
+                    fields::general::ORIGINAL,
+                    vault.itemref_of(&orig_item).into(),
+                );
+                state.update_item_links(&$vault, &orig_item)?;
+            }
+            if bulk.source.delete_source {
+                remove!();
+                return Ok(TransformResult::MoveSuccess {
+                    removed: orig_abs_path,
+                    created: $abs_path,
+                });
+            }
+
+            return Ok(TransformResult::CopySuccess {
+                original: orig_abs_path,
+                copy: $abs_path,
+            });
+        };
+    }
+
+    match bulk.destination.kind {
+        DestinationKind::SameVault => match exist_behaviour {
+            DestinationExistingBehaviour::Skip | DestinationExistingBehaviour::Remove => {
+                Err(AppError::InvalidDestinationExistingBehaviour {
+                    behaviour: exist_behaviour,
+                }
+                .into())
+            }
+            DestinationExistingBehaviour::Overwrite => {
+                if !dry_run {
+                    transform_wand(&mut wand, params, None)?;
+                    write_image(&wand, &orig_abs_path)?;
+                    import_single_image(
+                        Arc::clone(&vault),
+                        orig_abs_path.clone().into_boxed_path(),
+                        Utc::now(),
+                    )
+                    .await?;
+                    state.update_item_links(&vault, &orig_item)?;
+                }
+
+                Ok(TransformResult::InPlaceTransform(orig_abs_path))
+            }
+            DestinationExistingBehaviour::AppendDiscriminator => {
+                let Some(new_rel_path) = Discriminator::from_path(&rel_path)
+                    .and_then(|d| d.into_unique_path(|p| Some(vault.get_item(p).is_err())))
+                else {
+                    return Ok(TransformResult::NoTransform(orig_abs_path));
+                };
+
+                let new_abs_path = vault.resolve_abs_path(&new_rel_path)?;
+                move_or_copy_into!(vault, new_abs_path);
+            }
+        },
+        DestinationKind::OtherVault => {
+            let other_vault = state.get_vault(&bulk.destination.other_vault_name)?;
+
+            let new_rel_path = match exist_behaviour {
+                DestinationExistingBehaviour::AppendDiscriminator => {
+                    let Some(disc_path) =
+                        Discriminator::from_path(Path::new(&rel_path)).and_then(|d| {
+                            d.into_unique_path(|p| Some(other_vault.get_item(p).is_err()))
+                        })
+                    else {
+                        return Ok(TransformResult::NoTransform(orig_abs_path));
+                    };
+                    disc_path
+                }
+                _ => rel_path.into(),
+            };
+
+            let other_item_exists = other_vault.get_item(&new_rel_path).is_ok();
+            let new_abs_path = other_vault.resolve_abs_path(&new_rel_path)?;
+            let dest_file_exists = tokio::fs::try_exists(&new_abs_path).await?;
+
+            // if item+file exists:
+            //      fall through, use exist_behaviour
+            // if item exists, but file does not:
+            //      unexpected condition, return error
+            // if file exists but item does not:
+            //      import item for other_vault, and then fall through and use exist_behaviour
+            // if neither exists:
+            //      create item for other_vault based on old_item
+
+            match (other_item_exists, dest_file_exists) {
+                (true, true) => {}
+                (true, false) => {
+                    return Err(AppError::MissingFile {
+                        abs_path: new_abs_path,
+                    }
+                    .into())
+                }
+                (false, true) => {
+                    if dry_run {
+                        return Err(AppError::MissingItem {
+                            path: new_rel_path.to_string_lossy().into(),
+                        }
+                        .into());
+                    }
+
+                    import_single_image(
+                        Arc::clone(&other_vault),
+                        new_abs_path.clone().into_boxed_path(),
+                        get_last_modified(&new_abs_path).await,
+                    )
+                    .await?;
+                }
+                (false, false) => {
+                    move_or_copy_into!(other_vault, new_abs_path);
+                }
+            };
+
+            match exist_behaviour {
+                DestinationExistingBehaviour::Remove if bulk.source.delete_source => {
+                    remove!();
+                    Ok(TransformResult::RemovedWithoutTransform(orig_abs_path))
+                }
+                DestinationExistingBehaviour::Skip | DestinationExistingBehaviour::Remove => {
+                    Ok(TransformResult::NoTransform(orig_abs_path))
+                }
+                DestinationExistingBehaviour::Overwrite
+                | DestinationExistingBehaviour::AppendDiscriminator => {
+                    move_or_copy_into!(other_vault, new_abs_path);
+                }
+            }
+        }
+        DestinationKind::Directory => {
+            let mut new_abs_path =
+                Path::new(&bulk.destination.directory_path).join(Path::new(&rel_path));
+
+            if exist_behaviour == DestinationExistingBehaviour::AppendDiscriminator {
+                let Some(disc_path) = Discriminator::from_path(&new_abs_path).and_then(|d| {
+                    d.into_unique_path(|p| match fs::metadata(p) {
+                        Ok(_) => Some(false),
+                        Err(e) if e.kind() == ErrorKind::NotFound => Some(true),
+                        Err(_) => None,
+                    })
+                }) else {
+                    return Ok(TransformResult::NoTransform(orig_abs_path));
+                };
+                new_abs_path = disc_path;
+            }
+
+            let dest_file_exists = tokio::fs::try_exists(&new_abs_path).await?;
+
+            match (dest_file_exists, exist_behaviour) {
+                (true, DestinationExistingBehaviour::Remove) if bulk.source.delete_source => {
+                    remove!();
+                    Ok(TransformResult::RemovedWithoutTransform(orig_abs_path))
+                }
+                (
+                    true,
+                    DestinationExistingBehaviour::Remove | DestinationExistingBehaviour::Skip,
+                ) => Ok(TransformResult::NoTransform(orig_abs_path)),
+                (false, _)
+                | (
+                    true,
+                    DestinationExistingBehaviour::Overwrite
+                    | DestinationExistingBehaviour::AppendDiscriminator,
+                ) => {
+                    if !dry_run {
+                        write_image(&wand, &new_abs_path)?;
+                    }
+                    if bulk.source.delete_source {
+                        remove!();
+                        return Ok(TransformResult::MoveSuccess {
+                            removed: orig_abs_path,
+                            created: new_abs_path,
+                        });
+                    }
+
+                    Ok(TransformResult::CopySuccess {
+                        original: orig_abs_path,
                         copy: new_abs_path,
                     })
                 }
@@ -697,15 +969,29 @@ async fn apply_path_transformation_wrap(
     item_id: ItemId,
     bulk: Arc<BulkParams>,
     params: Arc<TransformPathParams>,
-) -> anyhow::Result<PathTransformResult> {
+) -> anyhow::Result<TransformResult> {
     let path = vault.resolve_abs_path(Path::new(vault.get_item_by_id(item_id)?.path()))?;
-    apply_path_transformation(state, vault, item_id, bulk, params)
+    apply_path_transformation(state, vault, item_id, &bulk, &params)
+        .await
+        .with_context(|| PathContext(path))
+}
+
+async fn apply_image_transformation_wrap(
+    state: AppStateRef,
+    vault: Arc<Vault>,
+    item_id: ItemId,
+    bulk: Arc<BulkParams>,
+    params: Arc<TransformImageParams>,
+) -> anyhow::Result<TransformResult> {
+    let path = vault.resolve_abs_path(Path::new(vault.get_item_by_id(item_id)?.path()))?;
+    apply_image_transformation(state, vault, item_id, &bulk, &params)
         .await
         .with_context(|| PathContext(path))
 }
 
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
+#[tracing::instrument]
 pub async fn apply_path_transformations(
     state: AppStateRef,
     vault: Arc<Vault>,
@@ -718,7 +1004,7 @@ pub async fn apply_path_transformations(
     let params = Arc::new(params);
     let results = process_many(
         item_ids,
-        progress.sub_task("Import", 0.90),
+        progress.sub_task("Transform", 0.90),
         |id| {
             apply_path_transformation_wrap(
                 state.clone(),
@@ -728,16 +1014,67 @@ pub async fn apply_path_transformations(
                 Arc::clone(&params),
             )
         },
-        |_result, progress, p| {
-            progress.send(ProgressState::Determinate(p));
+        |result, progress, p| {
+            progress.send(match result.orig_path() {
+                Some(orig) => ProgressState::DeterminateWithMessage(p, orig.display().to_string()),
+                None => ProgressState::Determinate(p),
+            });
         },
         CONCURRENT_TASKS_LIMIT,
     )
     .await?;
 
-    save_vault_and_links(state, vault, progress.sub_task("Save", 0.05)).await?;
+    save_vault_and_links(state.clone(), vault, progress.sub_task("Save", 0.025)).await?;
+    if bulk.destination.kind == DestinationKind::OtherVault {
+        if let Ok(other_vault) = state.get_vault(&bulk.destination.other_vault_name) {
+            save_vault_and_links(state, other_vault, progress.sub_task("Save", 0.025)).await?;
+        }
+    }
 
-    Ok(AsyncTaskResult::PathTransformationComplete(results))
+    Ok(AsyncTaskResult::TransformationComplete(results))
+}
+
+#[tracing::instrument]
+pub async fn apply_image_transformations(
+    state: AppStateRef,
+    vault: Arc<Vault>,
+    item_ids: Vec<ItemId>,
+    bulk: TransformBulkParams,
+    params: TransformImageParams,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let bulk = Arc::new(bulk);
+    let params = Arc::new(params);
+    let results = process_many(
+        item_ids,
+        progress.sub_task("Transform", 0.90),
+        |id| {
+            apply_image_transformation_wrap(
+                state.clone(),
+                Arc::clone(&vault),
+                id,
+                Arc::clone(&bulk),
+                Arc::clone(&params),
+            )
+        },
+        |result, progress, p| {
+            progress.send(match result.orig_path() {
+                Some(orig) => ProgressState::DeterminateWithMessage(p, orig.display().to_string()),
+                None => ProgressState::Determinate(p),
+            });
+        },
+        CONCURRENT_TASKS_LIMIT,
+    )
+    .await?;
+
+    save_vault_and_links(state.clone(), vault, progress.sub_task("Save", 0.025)).await?;
+    if bulk.destination.kind == DestinationKind::OtherVault {
+        if let Ok(other_vault) = state.get_vault(&bulk.destination.other_vault_name) {
+            save_vault_and_links(state, other_vault, progress.sub_task("Save", 0.025)).await?;
+        }
+    }
+
+    Ok(AsyncTaskResult::TransformationComplete(results))
 }
 
 #[cfg(test)]

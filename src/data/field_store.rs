@@ -1,6 +1,6 @@
 use crate::data::field_refs::FieldDefValueRef;
 use crate::data::{
-    FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault,
+    kind, FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault,
 };
 use crate::errors::AppError;
 use crate::fields;
@@ -10,11 +10,13 @@ use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use eframe::egui;
+use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::ops::Deref;
 use uuid::Uuid;
 
-pub trait FieldStore {
+pub trait FieldStore: Debug {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
 
     fn get_known_field_value<V, T: FieldLike<V>>(
@@ -34,7 +36,7 @@ pub trait FieldStore {
         }
     }
 
-    fn get_or_insert_known_field_value<V, T: FieldLike<V>>(
+    fn get_or_insert_known_field_value<V: Debug, T: FieldLike<V>>(
         &self,
         field: KnownField<T>,
         default_value: V,
@@ -51,11 +53,52 @@ pub trait FieldStore {
             .with_context(|| format!("while retrieving field {}", field.name))
     }
 
-    fn set_known_field_value<V, T: FieldLike<V>>(&self, field: KnownField<T>, value: V) {
+    fn set_known_field_value<V: Debug, T: FieldLike<V>>(&self, field: KnownField<T>, value: V) {
         *self
             .fields()
             .entry(field.id)
             .or_insert_with(|| <T as Default>::default().into()) = T::from(value).into();
+    }
+
+    fn insert_value_into_list(
+        &self,
+        field: KnownField<kind::List>,
+        value: FieldValue,
+    ) -> anyhow::Result<()> {
+        let mut list = self.get_or_insert_known_field_value(field.clone(), vec![])?;
+        if !list.contains(&value) {
+            list.push(value);
+        }
+        self.set_known_field_value(field, list);
+
+        Ok(())
+    }
+
+    fn remove_value_from_list(
+        &self,
+        field: KnownField<kind::List>,
+        value: &FieldValue,
+    ) -> anyhow::Result<()> {
+        if let Some(mut list) = self.get_known_field_value(field.clone())? {
+            while let Some((pos, _)) = list.iter().find_position(|i| *i == value) {
+                list.swap_remove(pos);
+            }
+            self.set_known_field_value(field, list);
+        }
+
+        Ok(())
+    }
+
+    fn list_contains(
+        &self,
+        field: KnownField<kind::List>,
+        value: &FieldValue,
+    ) -> anyhow::Result<bool> {
+        if let Some(list) = self.get_known_field_value(field)? {
+            Ok(list.contains(value))
+        } else {
+            Ok(false)
+        }
     }
 
     fn has_field(&self, field_id: &Uuid) -> bool {
@@ -123,6 +166,12 @@ pub trait FieldStore {
         self.iter_fields()
             .map(|f| *f.key())
             .filter_map(|id| self.get_field_with_def(&id, vault))
+    }
+
+    fn cloned_fields_with_defs(&self, vault: &Vault) -> Vec<(FieldDefinition, FieldValue)> {
+        self.iter_fields_with_defs(vault)
+            .map(|r| (r.definition().clone(), r.value().clone()))
+            .collect()
     }
 
     fn has_tag(&self, vault: &Vault, tag_id: &Uuid) -> anyhow::Result<bool> {

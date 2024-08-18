@@ -6,7 +6,9 @@ use crate::state::AppStateRef;
 use crate::take_shortcut;
 use crate::ui::AppModal;
 use eframe::egui;
-use eframe::egui::{pos2, vec2, ViewportClass, ViewportId};
+use eframe::egui::{
+    pos2, vec2, TextureFilter, TextureOptions, TextureWrapMode, ViewportClass, ViewportId,
+};
 
 pub struct Preview {
     id: egui::Id,
@@ -46,6 +48,11 @@ impl Preview {
             |ui| {
                 let img = egui::Image::from_texture(egui::load::SizedTexture::from_handle(&hndl))
                     .bg_fill(egui::Color32::BLACK)
+                    .texture_options(TextureOptions {
+                        magnification: TextureFilter::Linear,
+                        minification: TextureFilter::Linear,
+                        wrap_mode: TextureWrapMode::ClampToEdge,
+                    })
                     .shrink_to_fit();
 
                 let res = ui.add(img);

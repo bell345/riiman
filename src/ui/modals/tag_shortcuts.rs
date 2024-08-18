@@ -1,7 +1,7 @@
 use eframe::egui;
 use eframe::egui::KeyboardShortcut;
 
-use crate::data::{FieldType, ShortcutAction};
+use crate::data::{FieldType, ShortcutAction, ShortcutBehaviour};
 use crate::state::AppStateRef;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
@@ -31,7 +31,7 @@ impl TagShortcuts {
     fn table_row(
         &mut self,
         shortcut: KeyboardShortcut,
-        action: ShortcutAction,
+        behaviour: &mut ShortcutBehaviour,
         row: &mut egui_extras::Strip,
         state: AppStateRef,
     ) {
@@ -45,7 +45,7 @@ impl TagShortcuts {
             let Ok(vault) = state.current_vault_catch() else {
                 return;
             };
-            match action {
+            match behaviour.action {
                 ShortcutAction::None => {
                     let mut tag_id_opt = None;
                     ui.add(
@@ -53,7 +53,7 @@ impl TagShortcuts {
                             .filter_types(&[FieldType::Tag]),
                     );
                     if let Some(new_tag_id) = tag_id_opt {
-                        state.set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                        behaviour.action = ShortcutAction::ToggleTag(new_tag_id);
                     }
                 }
                 ShortcutAction::ToggleTag(tag_id) => {
@@ -66,7 +66,7 @@ impl TagShortcuts {
                     );
                     match tag_id_opt {
                         Some(new_tag_id) if new_tag_id != tag_id => {
-                            state.set_shortcut(shortcut, ShortcutAction::ToggleTag(new_tag_id));
+                            behaviour.action = ShortcutAction::ToggleTag(new_tag_id);
                         }
                         _ => {}
                     }
@@ -75,9 +75,13 @@ impl TagShortcuts {
         });
 
         row.cell(|ui| {
-            if matches!(action, ShortcutAction::ToggleTag(_)) && ui.button("Clear").clicked() {
-                state.set_shortcut(shortcut, ShortcutAction::None);
+            if !matches!(behaviour.action, ShortcutAction::None) && ui.button("Clear").clicked() {
+                behaviour.action = ShortcutAction::None;
             }
+        });
+
+        row.cell(|ui| {
+            ui.checkbox(&mut behaviour.move_next, "Move next?");
         });
     }
     //noinspection DuplicatedCode
@@ -90,19 +94,24 @@ impl TagShortcuts {
                     egui_extras::StripBuilder::new(ui)
                         .sizes(egui_extras::Size::exact(24.0), shortcuts.len())
                         .vertical(|mut strip| {
-                            for (shortcut, action) in shortcuts {
+                            for (shortcut, mut behaviour) in shortcuts {
                                 strip.strip(|builder| {
                                     builder
                                         .size(egui_extras::Size::exact(100.0))
                                         .size(egui_extras::Size::remainder())
                                         .size(egui_extras::Size::exact(100.0))
+                                        .size(egui_extras::Size::exact(100.0))
                                         .horizontal(|mut strip| {
+                                            let old_behaviour = behaviour.clone();
                                             self.table_row(
                                                 shortcut,
-                                                action,
+                                                &mut behaviour,
                                                 &mut strip,
                                                 state.clone(),
                                             );
+                                            if behaviour != old_behaviour {
+                                                state.set_shortcut(shortcut, behaviour);
+                                            }
                                         });
                                 });
                             }

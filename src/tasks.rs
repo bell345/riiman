@@ -14,7 +14,7 @@ use crate::data::{DebugViewportClass, ThumbnailParams};
 use crate::state::AppStateRef;
 pub use crate::tasks::thumb_grid::RiverParams;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
-use crate::tasks::transform::PathTransformResult;
+use crate::tasks::transform::TransformResult;
 use crate::ui::QueryResult;
 
 pub(crate) mod choose;
@@ -62,7 +62,8 @@ pub enum AsyncTaskResult {
     SelectedDirectory(String),
     SelectedFile(String),
     QueryResult(QueryResult),
-    PathTransformationComplete(Vec<anyhow::Result<PathTransformResult>>),
+    TransformationComplete(Vec<anyhow::Result<TransformResult>>),
+    NextItem,
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
@@ -104,9 +105,9 @@ impl Task {
         }
     }
 
-    pub fn from_ready(id: egui::Id, value: AsyncTaskReturn) -> Self {
+    pub fn from_ready(id: Option<egui::Id>, value: AsyncTaskReturn) -> Self {
         Self {
-            id: Some(id),
+            id,
             promise: Promise::from_ready(value),
             name: String::new(),
             progress_rx: None,
@@ -135,6 +136,10 @@ impl TaskState {
     ) {
         self.running_tasks
             .push(Task::with_progress(None, name, factory));
+    }
+
+    pub fn push_message(&mut self, result: AsyncTaskReturn) {
+        self.running_tasks.push(Task::from_ready(None, result));
     }
 
     fn clear_tasks_by_id(&mut self, id: egui::Id) {
@@ -167,7 +172,7 @@ impl TaskState {
     pub fn push_completed_task(&mut self, id: egui::Id, value: AsyncTaskReturn) {
         self.clear_tasks_by_id(id);
         self.requests.insert(id);
-        self.running_tasks.push(Task::from_ready(id, value));
+        self.running_tasks.push(Task::from_ready(Some(id), value));
     }
 
     pub fn running_tasks_count(&self) -> usize {

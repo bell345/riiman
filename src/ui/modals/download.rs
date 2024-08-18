@@ -333,7 +333,7 @@ impl AppModal for Download {
                         modal.open();
                     } else {
                         let params = self.params.clone();
-                        app_state.add_task(self.params.task_name(), |state, progress| {
+                        app_state.add_global_task(self.params.task_name(), |state, progress| {
                             Promise::spawn_async(
                                 crate::tasks::download::perform_gallery_dl_download(
                                     state, progress, params,

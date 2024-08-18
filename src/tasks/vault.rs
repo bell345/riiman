@@ -10,6 +10,7 @@ use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 
+#[tracing::instrument]
 pub async fn choose_and_load_vault(
     state: AppStateRef,
     progress: ProgressSenderRef,
@@ -49,6 +50,7 @@ pub async fn choose_and_load_vault(
     }
 }
 
+#[tracing::instrument]
 pub async fn load_vault_from_path(
     path: String,
     state: AppStateRef,
@@ -76,6 +78,7 @@ pub async fn load_vault_from_path(
     })
 }
 
+#[tracing::instrument]
 pub async fn save_vault(vault: Arc<Vault>, progress: ProgressSenderRef) -> AsyncTaskReturn {
     let file_path = vault.file_path.clone();
     let name = vault.name.clone();
@@ -107,15 +110,19 @@ pub async fn save_vault(vault: Arc<Vault>, progress: ProgressSenderRef) -> Async
     Ok(AsyncTaskResult::VaultSaved(name))
 }
 
+#[tracing::instrument]
 pub async fn save_new_vault(
     state: AppStateRef,
-    mut vault: Vault,
+    name: String,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter("riiman vault file", &["riiman"])
+        .set_file_name(format!("{name}.riiman"));
 
     let fp = dialog.save_file().await.ok_or(AppError::UserCancelled)?;
     let path = fp.path();
+    let mut vault = Vault::new(name);
     vault.set_file_path(path);
 
     let vault = Arc::new(vault);
@@ -133,6 +140,7 @@ pub async fn save_new_vault(
     })
 }
 
+#[tracing::instrument]
 pub async fn save_current_vault(
     state: AppStateRef,
     progress: ProgressSenderRef,
@@ -141,6 +149,7 @@ pub async fn save_current_vault(
     save_vault(vault, progress).await
 }
 
+#[tracing::instrument]
 pub async fn save_vault_and_links(
     state: AppStateRef,
     vault: Arc<Vault>,
@@ -149,7 +158,7 @@ pub async fn save_vault_and_links(
     let linked_vault_names = vault.iter_linked_vault_names().into_iter().collect_vec();
     let n_names = linked_vault_names.len();
 
-    save_vault(vault, progress.sub_task("Save current vault", 0.5)).await?;
+    let res = save_vault(vault, progress.sub_task("Save current vault", 0.5)).await?;
 
     let sub_task = progress.sub_task("Save linked vaults", 0.5);
     #[allow(clippy::cast_precision_loss)]
@@ -161,9 +170,10 @@ pub async fn save_vault_and_links(
         }
     }
 
-    Ok(AsyncTaskResult::None)
+    Ok(res)
 }
 
+#[tracing::instrument]
 pub async fn save_current_and_linked_vaults(
     state: AppStateRef,
     progress: ProgressSenderRef,
