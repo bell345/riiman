@@ -150,10 +150,21 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
             if let Some((sidecar_path, sidecar_date)) =
                 path_to_last_modified_map.remove_entry(&path.with_extension("json"))
             {
-                Some((path, sidecar_path, sidecar_date))
-            } else {
-                None
+                return Some((path, sidecar_path, sidecar_date));
             }
+
+            let extension = match path.extension() {
+                None => OsString::from("json"),
+                Some(ext) => format!("{}.json", ext.to_str()?).into(),
+            };
+
+            if let Some((sidecar_path, sidecar_date)) =
+                path_to_last_modified_map.remove_entry(&path.with_extension(extension))
+            {
+                return Some((path, sidecar_path, sidecar_date));
+            }
+
+            None
         })
         .collect_vec();
 

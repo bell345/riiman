@@ -1,6 +1,6 @@
 [package]
 name = "riiman"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Thomas Bell <github.com/bell345>"]
 license = "MIT"
 edition = "2021"
