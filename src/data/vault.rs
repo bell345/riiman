@@ -222,7 +222,6 @@ impl Vault {
             .ok_or(anyhow!(AppError::MissingItemId { id }))
     }
 
-    #[tracing::instrument]
     pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self
@@ -248,7 +247,6 @@ impl Vault {
             .collect()
     }
 
-    #[tracing::instrument]
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
         let rel_path = self.resolve_rel_path(path)?;
         self.items.remove(rel_path);

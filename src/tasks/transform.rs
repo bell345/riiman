@@ -47,6 +47,13 @@ fn get_image_size(wand: &MagickWand) -> Vec2 {
     )
 }
 
+fn get_image_rect_in_canvas(wand: &MagickWand) -> Rect {
+    let (_, _, x, y) = wand.get_image_page();
+    let width = wand.get_image_width();
+    let height = wand.get_image_height();
+    Rect::from_min_size(pos2(x as f32, y as f32), vec2(width as f32, height as f32))
+}
+
 fn get_scaled_size(size: impl Into<Vec2>, options: &ScaleOptions) -> Vec2 {
     let size = size.into();
     let use_width = options.use_target_width;
@@ -121,12 +128,12 @@ fn determine_infill_technique(
 
     let trim_wand = MagickWand::new_from_image(&wand.get_image()?)?;
     trim_wand.trim_image(colour_tolerance)?;
-    let trim_size = get_image_size(&trim_wand);
+    let trim_rect = get_image_rect_in_canvas(&trim_wand);
 
     match (
         target_ratio < source_ratio,
-        trim_size.x < source_size.x,
-        trim_size.y < source_size.y,
+        trim_rect.min.x > 0.0 && trim_rect.max.x < source_size.x,
+        trim_rect.min.y > 0.0 && trim_rect.max.y < source_size.y,
     ) {
         (true, _, trimmed) | (false, trimmed, _) => {
             if trimmed {

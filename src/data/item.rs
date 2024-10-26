@@ -32,7 +32,6 @@ impl Debug for Item {
 }
 
 impl Item {
-    #[tracing::instrument]
     pub fn new(path: String) -> Item {
         Item {
             path: path.into(),
