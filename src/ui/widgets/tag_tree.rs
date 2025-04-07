@@ -10,7 +10,6 @@ use eframe::emath::Rect;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use std::collections::HashSet;
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct TagTree<'a> {
@@ -239,7 +238,7 @@ impl<'a> Widget for TagTree<'a> {
         let text_res = ui.add(widgets::SearchBox::new(
             self.widget_id.with("search_box"),
             &mut state.search_text,
-            Arc::clone(&vault),
+            &vault,
         ));
 
         ui.separator();

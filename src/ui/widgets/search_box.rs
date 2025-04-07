@@ -16,7 +16,6 @@ use eframe::egui::{
 use eframe::epaint::FontFamily;
 use eframe::{egui, epaint};
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use uuid::Uuid;
 
 use crate::data::parse::{
@@ -30,7 +29,7 @@ use crate::ui::cloneable_state::CloneablePersistedState;
 use crate::ui::input::update_index;
 use crate::ui::{widgets, DUMMY_TAG_REPLACEMENT_FAMILY};
 
-pub struct SearchBox<'a> {
+pub struct SearchBox<'a, 'v> {
     id: egui::Id,
     icon: String,
     placeholder: String,
@@ -42,7 +41,7 @@ pub struct SearchBox<'a> {
     tags: Option<&'a Vec<FieldDefinition>>,
     margin: Margin,
     state: State,
-    vault: Arc<Vault>,
+    vault: &'v Vault,
     interactive: bool,
 }
 
@@ -136,8 +135,8 @@ fn popup_below_widget_at_offset<R>(
     }
 }
 
-impl<'a> SearchBox<'a> {
-    pub fn new(widget_id: impl std::hash::Hash, text: &'a mut String, vault: Arc<Vault>) -> Self {
+impl<'a, 'v> SearchBox<'a, 'v> {
+    pub fn new(widget_id: impl std::hash::Hash, text: &'a mut String, vault: &'v Vault) -> Self {
         Self {
             id: egui::Id::new(widget_id),
             icon: "\u{1f50d}".into(),
@@ -1079,7 +1078,7 @@ impl<'a> SearchBox<'a> {
     }
 }
 
-impl<'a> Widget for SearchBox<'a> {
+impl<'a, 'v> Widget for SearchBox<'a, 'v> {
     fn ui(self, ui: &mut Ui) -> Response {
         self.show(ui)
     }

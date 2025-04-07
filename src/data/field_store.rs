@@ -1,23 +1,36 @@
 use crate::data::field_refs::FieldDefValueRef;
 use crate::data::{
-    kind, FieldDefinition, FieldLike, FieldValue, KnownField, TagLike, Utf32CachedString, Vault,
+    kind, FieldDefinition, FieldLike, FieldValue, KnownField, Utf32CachedString, Vault,
 };
 use crate::errors::AppError;
 use crate::fields;
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use dashmap::iter::Iter;
-use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
-use eframe::egui;
 use itertools::Itertools;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::Deref;
 use uuid::Uuid;
 
 pub trait FieldStore: Debug {
     fn fields(&self) -> &DashMap<Uuid, FieldValue>;
+
+    fn last_modified(&self) -> DateTime<Utc> {
+        self.fields()
+            .get(&fields::meta::LAST_MODIFIED.id)
+            .and_then(|v| v.as_datetime_opt().copied())
+            .unwrap_or(Utc::now())
+    }
+
+    fn set_last_updated(&self) {
+        self.fields().insert(
+            fields::meta::LAST_MODIFIED.id,
+            FieldValue::DateTime(Utc::now()),
+        );
+    }
 
     fn get_known_field_value<V, T: FieldLike<V>>(
         &self,
@@ -46,7 +59,10 @@ pub trait FieldStore: Debug {
     {
         self.fields()
             .entry(field.id)
-            .or_insert(T::from(default_value).into())
+            .or_insert_with(|| {
+                self.set_last_updated();
+                T::from(default_value).into()
+            })
             .clone()
             .try_into()
             .map(|v: T| -> V { v.into() })
@@ -54,10 +70,8 @@ pub trait FieldStore: Debug {
     }
 
     fn set_known_field_value<V: Debug, T: FieldLike<V>>(&self, field: KnownField<T>, value: V) {
-        *self
-            .fields()
-            .entry(field.id)
-            .or_insert_with(|| <T as Default>::default().into()) = T::from(value).into();
+        self.fields().insert(field.id, T::from(value).into());
+        self.set_last_updated();
     }
 
     fn insert_value_into_list(
@@ -106,7 +120,9 @@ pub trait FieldStore: Debug {
     }
 
     fn remove_field(&self, field_id: &Uuid) -> Option<(Uuid, FieldValue)> {
-        self.fields().remove(field_id)
+        self.fields()
+            .remove(field_id)
+            .inspect(|_| self.set_last_updated())
     }
 
     fn get_field_value(&self, field_id: &Uuid) -> Option<Ref<'_, Uuid, FieldValue>> {
@@ -115,6 +131,7 @@ pub trait FieldStore: Debug {
 
     fn set_field_value(&self, field_id: Uuid, value: FieldValue) {
         self.fields().insert(field_id, value);
+        self.set_last_updated();
     }
 
     fn get_field_value_typed<V, T: FieldLike<V>>(

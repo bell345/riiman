@@ -15,6 +15,7 @@ pub struct ThumbnailPosition {
     pub last_modified: Option<DateTime<Utc>>,
     pub inner_bounds: egui::Rect,
     pub outer_bounds: egui::Rect,
+    pub image_size: Option<Vec2>,
 }
 
 impl ThumbnailPosition {
@@ -24,6 +25,7 @@ impl ThumbnailPosition {
         last_modified: Option<DateTime<Utc>>,
         inner_bounds: egui::Rect,
         outer_bounds: egui::Rect,
+        image_size: Option<Vec2>,
     ) -> Self {
         let rel_path = item.path().to_string();
         let abs_path = vault.resolve_abs_path(Path::new(item.path())).ok();
@@ -36,6 +38,7 @@ impl ThumbnailPosition {
             last_modified,
             inner_bounds,
             outer_bounds,
+            image_size,
         }
     }
 
@@ -265,6 +268,7 @@ pub fn river_layout(
             last_modified,
             bounds,
             outer_bounds,
+            Some(size),
         ));
         inc_axis(&mut curr_pos, main_axis, outer_bounds.size());
         sum_of_ratios += fix_aspect_ratio(bounds.aspect_ratio(), main_axis);

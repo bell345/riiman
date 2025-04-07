@@ -1,6 +1,6 @@
 use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use dashmap::DashMap;
 use eframe::egui;
@@ -9,22 +9,20 @@ use poll_promise::Promise;
 use uuid::Uuid;
 
 use crate::data::{
-    FieldDefinition, FieldStore, FieldType, FieldValue, Item, ShortcutAction, SimpleFieldStore,
-    Vault,
+    FieldDefinition, FieldStore, FieldType, FieldValue, Item, SimpleFieldStore, Vault,
 };
 use crate::state::AppStateRef;
 use crate::take_shortcut;
 use crate::tasks::transform::load_image_preview;
-use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::EditTag;
 use crate::ui::widgets;
 use crate::ui::widgets::ListEditResult;
 
-pub struct ItemPanel<'a, Ref: Deref<Target = Item> + 'a> {
+pub struct ItemPanel<'a, 'v, Ref: Deref<Target = Item> + 'a> {
     id: egui::Id,
     items: &'a Vec<Ref>,
-    vault: Arc<Vault>,
+    vault: &'v Vault,
     state: State,
     app_state: AppStateRef,
 }
@@ -61,11 +59,11 @@ impl Default for CreateState {
     }
 }
 
-impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
+impl<'a, 'v, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, 'v, Ref> {
     pub fn new(
         id: impl std::hash::Hash,
         items: &'a Vec<Ref>,
-        vault: Arc<Vault>,
+        vault: &'v Vault,
         app_state: AppStateRef,
     ) -> Self {
         Self {
@@ -93,16 +91,12 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             }
 
             let result = ui.add(
-                widgets::FindTag::new(
-                    self.id.with("new_tag"),
-                    &mut state.tag_id,
-                    Arc::clone(&self.vault),
-                )
-                .desired_width(desired_width)
-                .show_tag(true)
-                .create_request(&mut new_tag_name)
-                .exclude_ids(exclude_ids)
-                .exclude_types(&[FieldType::Container]),
+                widgets::FindTag::new(self.id.with("new_tag"), &mut state.tag_id, &self.vault)
+                    .desired_width(desired_width)
+                    .show_tag(true)
+                    .create_request(&mut new_tag_name)
+                    .exclude_ids(exclude_ids)
+                    .exclude_types(&[FieldType::Container]),
             );
 
             if state.focused {
@@ -290,39 +284,6 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
             self.state.is_adding = true;
             self.state.quick_create_state = Default::default();
         }
-
-        let shortcuts = self.app_state.shortcuts();
-        for (shortcut, behaviour) in shortcuts {
-            if ui.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
-                match behaviour.action {
-                    ShortcutAction::None => {}
-                    ShortcutAction::ToggleTag(tag_id) => {
-                        if item.has_field(&tag_id) {
-                            item.remove_field(&tag_id);
-                        } else {
-                            match self.vault.get_definition(&tag_id) {
-                                Some(def) if def.field_type == FieldType::Tag => {
-                                    item.set_field_value(tag_id, FieldValue::Tag);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if self.app_state.commit_item_catch(None, item, false).is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                if behaviour.move_next {
-                    self.app_state.add_completed_task(
-                        egui::Id::new("main_thumbnail_grid")
-                            .with(super::thumb_grid::TAB_REQUEST_ID),
-                        Ok(AsyncTaskResult::NextItem),
-                    );
-                }
-            }
-        }
     }
 
     pub fn single_ui(&mut self, ui: &mut Ui, item: &Item) {
@@ -358,18 +319,15 @@ impl<'a, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, Ref> {
     }
 }
 
-impl<'a, Ref: Deref<Target = Item> + 'a> Widget for ItemPanel<'a, Ref> {
+impl<'a, 'v, Ref: Deref<Target = Item> + 'a> Widget for ItemPanel<'a, 'v, Ref> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         self.state = State::load(ui.ctx(), self.id).unwrap_or_default();
 
         let res = ui
-            .vertical(|ui| {
-                if self.items.len() == 1 {
-                    let item = self.items.first().unwrap();
-                    self.single_ui(ui, item);
-                } else {
-                    self.multiple_ui(ui);
-                }
+            .vertical(|ui| match &self.items[..] {
+                [] => {}
+                [ref item] => self.single_ui(ui, item),
+                _ => self.multiple_ui(ui),
             })
             .response;
 

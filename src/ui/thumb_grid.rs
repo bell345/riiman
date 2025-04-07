@@ -10,7 +10,7 @@ use crate::ui::theme::get_accent_color;
 use chrono::{DateTime, TimeDelta, Utc};
 use dashmap::DashMap;
 use eframe::egui;
-use eframe::egui::TextureHandle;
+use eframe::egui::{Layout, TextureHandle};
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use poll_promise::Promise;
@@ -30,6 +30,13 @@ const CHECKBOX_ALIGN: egui::Align2 = egui::Align2::RIGHT_TOP;
 const CHECKBOX_SIZE: egui::Vec2 = egui::vec2(32.0, 32.0);
 const CHECKBOX_INTERACT_SIZE: f32 = 16.0;
 const HIGHLIGHT_PADDING: f32 = 2.0;
+const SIZE_LABEL_PADDING: egui::Vec2 = egui::vec2(6.0, 4.0);
+const SIZE_LABEL_ROUNDING: egui::Rounding = egui::Rounding {
+    nw: 0.0,
+    ne: 4.0,
+    sw: 0.0,
+    se: 0.0,
+};
 pub const TAB_REQUEST_ID: Uuid = uuid!("524b6f5c-385e-4ee9-a1a8-ccc234765564");
 
 pub struct ThumbnailGrid {
@@ -197,7 +204,8 @@ impl ThumbnailGrid {
                 });
                 self.state.checked_items.clear();
                 self.state.checked_items.insert(next_id, true);
-                let _ = self.app_state.update_item_list();
+                self.app_state
+                    .add_global_message(Ok(AsyncTaskResult::RequestGridUpdate));
             }
         }
     }
@@ -317,7 +325,7 @@ impl ThumbnailGrid {
         ui.ctx()
             .check_for_id_clash(res.id, res.rect, "thumbnail image");
 
-        if res.hover_pos().map_or(false, |p| outer_bounds.contains(p)) {
+        if res.hover_pos().is_some_and(|p| outer_bounds.contains(p)) {
             self.next_hover = Some(item.id);
         }
         if res.is_pointer_button_down_on() {
@@ -349,6 +357,10 @@ impl ThumbnailGrid {
         {
             self.render_checkbox(ui, item, &res);
         }
+
+        if let Some(&size) = item.image_size.as_ref() {
+            self.render_size_label(ui, size, &res);
+        }
     }
 
     fn render_checkbox(
@@ -369,7 +381,7 @@ impl ThumbnailGrid {
 
             if checkbox_res
                 .hover_pos()
-                .map_or(false, |p| checkbox_res.rect.contains(p))
+                .is_some_and(|p| checkbox_res.rect.contains(p))
             {
                 self.next_hover = Some(item.id);
             }
@@ -386,6 +398,25 @@ impl ThumbnailGrid {
                     *check_ref.value_mut() ^= true;
                 }
             }
+        });
+    }
+
+    fn render_size_label(
+        &self,
+        ui: &mut egui::Ui,
+        egui::Vec2 { x, y }: egui::Vec2,
+        image_res: &egui::Response,
+    ) {
+        ui.allocate_ui_at_rect(image_res.rect, |ui| {
+            ui.with_layout(Layout::left_to_right(egui::Align::BOTTOM), |ui| {
+                egui::Frame::none()
+                    .inner_margin(SIZE_LABEL_PADDING)
+                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100))
+                    .rounding(SIZE_LABEL_ROUNDING)
+                    .show(ui, |ui| {
+                        ui.colored_label(egui::Color32::WHITE, format!("{x}x{y}"));
+                    });
+            });
         });
     }
 

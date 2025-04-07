@@ -3,22 +3,18 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use crate::data::{
-    kind, FieldStore, FilterExpression, Item, ItemCache, ItemId, KnownField, ShortcutBehaviour,
-    ThumbnailCache, ThumbnailCacheItem, ThumbnailParams, Vault,
+    kind, FieldStore, Item, KnownField, ThumbnailCache, ThumbnailCacheItem, ThumbnailParams, Vault,
 };
-use crate::errors::AppError;
+use crate::errors::{AppError, AppResult};
 use crate::fields;
-use crate::tasks::sort::{SortDirection, SortExpression};
 use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 use crate::ui::AppModal;
 use chrono::TimeDelta;
 use dashmap::{DashMap, DashSet};
 use eframe::egui;
-use eframe::egui::KeyboardShortcut;
-use indexmap::IndexMap;
 use poll_promise::Promise;
 
 const THUMBNAIL_CACHE_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
@@ -55,18 +51,8 @@ pub(crate) struct AppState {
     current_vault_name: Mutex<Option<String>>,
     vault_loading: AtomicBool,
 
-    shortcuts: Mutex<IndexMap<KeyboardShortcut, ShortcutBehaviour>>,
-
     thumbnail_cache: ThumbnailCache,
     thumbnail_cache_lq: ThumbnailCache,
-
-    filter: Mutex<FilterExpression>,
-    sorts: Mutex<Vec<SortExpression>>,
-
-    filtered_item_list: ItemCache,
-    item_list_is_new: AtomicBool,
-
-    selected_item_ids: Mutex<Vec<ItemId>>,
 }
 
 impl Debug for AppState {
@@ -75,31 +61,9 @@ impl Debug for AppState {
     }
 }
 
-macro_rules! shortcut {
-    ($modifier:ident + $key:ident) => {
-        KeyboardShortcut::new(egui::Modifiers::$modifier, egui::Key::$key)
-    };
-    ($key:ident) => {
-        KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::$key)
-    };
-}
-
-const DEFAULT_SHORTCUTS: [KeyboardShortcut; 10] = [
-    shortcut!(CTRL + Num1),
-    shortcut!(CTRL + Num2),
-    shortcut!(CTRL + Num3),
-    shortcut!(CTRL + Num4),
-    shortcut!(CTRL + Num5),
-    shortcut!(CTRL + Num6),
-    shortcut!(CTRL + Num7),
-    shortcut!(CTRL + Num8),
-    shortcut!(CTRL + Num9),
-    shortcut!(CTRL + Num0),
-];
-
 impl Default for AppState {
     fn default() -> Self {
-        let res = Self {
+        Self {
             task_queue: Default::default(),
             results: Default::default(),
             error_queue: Default::default(),
@@ -108,7 +72,6 @@ impl Default for AppState {
             unresolved_vaults: Default::default(),
             current_vault_name: Default::default(),
             vault_loading: Default::default(),
-            shortcuts: Default::default(),
             thumbnail_cache: ThumbnailCache::new(
                 THUMBNAIL_CACHE_SIZE,
                 TimeDelta::milliseconds(THUMBNAIL_LOAD_INTERVAL_MS),
@@ -119,21 +82,7 @@ impl Default for AppState {
                 TimeDelta::milliseconds(THUMBNAIL_LQ_LOAD_INTERVAL_MS),
                 true,
             ),
-            filter: Mutex::new(FilterExpression::TagMatch(fields::image::NAMESPACE.id)),
-            sorts: Mutex::new(vec![SortExpression::Path(SortDirection::Ascending)]),
-            filtered_item_list: Default::default(),
-            item_list_is_new: Default::default(),
-            selected_item_ids: Default::default(),
-        };
-
-        {
-            let mut shortcuts = res.shortcuts.lock().unwrap();
-            for shortcut in DEFAULT_SHORTCUTS {
-                shortcuts.insert(shortcut, Default::default());
-            }
         }
-
-        res
     }
 }
 
@@ -151,7 +100,9 @@ impl AppState {
         }
 
         self.unresolved_vaults.remove(&*name);
-        self.vaults.insert(name.to_string(), Arc::new(vault));
+        let arc = Arc::new(vault);
+        arc.add_parent_refs();
+        self.vaults.insert(name.to_string(), arc);
         if set_as_current {
             self.set_current_vault_name(name.into())
                 .expect("vault we just added should exist");
@@ -493,8 +444,8 @@ impl AppState {
 
     #[tracing::instrument]
     pub fn save_vault_deferred(&self, vault: Arc<Vault>) {
-        self.add_global_task(format!("Save {} vault", vault.name), |_, p| {
-            Promise::spawn_async(crate::tasks::vault::save_vault(vault, p))
+        self.add_global_task(format!("Save {} vault", vault.name), |state, p| {
+            Promise::spawn_async(crate::tasks::vault::save_vault_and_links(state, vault, p))
         });
     }
 
@@ -507,78 +458,18 @@ impl AppState {
         self.save_vault_deferred(vault);
     }
 
-    pub fn filter(&self) -> MutexGuard<'_, FilterExpression> {
-        self.filter.lock().unwrap()
-    }
-
-    pub fn sorts(&self) -> MutexGuard<'_, Vec<SortExpression>> {
-        self.sorts.lock().unwrap()
-    }
-
-    pub fn set_filter_and_sorts(&self, filter: FilterExpression, sorts: Vec<SortExpression>) {
-        *self.filter.lock().unwrap() = filter;
-        *self.sorts.lock().unwrap() = sorts;
-    }
-
-    pub fn item_list_ids(&self) -> Vec<ItemId> {
-        self.filtered_item_list.item_ids()
-    }
-
-    pub fn len_item_list(&self) -> usize {
-        self.filtered_item_list.len_items()
-    }
-
-    pub fn update_item_list(&self) -> anyhow::Result<bool> {
+    pub fn current_vault_and_item(&self) -> AppResult<(Arc<Vault>, Arc<Item>)> {
         let vault = self.current_vault()?;
-        let is_new_item_list =
-            self.filtered_item_list
-                .update(&vault, &self.filter(), &self.sorts())?;
-        self.item_list_is_new
-            .store(is_new_item_list, Ordering::Relaxed);
-        Ok(is_new_item_list)
-    }
-
-    pub fn item_list_is_new(&self) -> bool {
-        self.item_list_is_new.load(Ordering::Relaxed)
-    }
-
-    pub fn update_selection(&self, item_ids: Vec<ItemId>) {
-        *self.selected_item_ids.lock().unwrap() = item_ids;
-    }
-
-    pub fn len_selected_items(&self) -> usize {
-        self.selected_item_ids.lock().unwrap().len()
-    }
-
-    pub fn selected_item_ids(&self) -> Vec<ItemId> {
-        self.selected_item_ids
-            .lock()
-            .unwrap()
-            .iter()
-            .copied()
-            .collect()
-    }
-
-    pub fn shortcuts(&self) -> Vec<(KeyboardShortcut, ShortcutBehaviour)> {
-        self.shortcuts
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (*k, v.clone()))
-            .collect()
-    }
-
-    #[tracing::instrument]
-    pub fn set_shortcut(&self, shortcut: KeyboardShortcut, behaviour: ShortcutBehaviour) {
-        self.shortcuts.lock().unwrap().insert(shortcut, behaviour);
-    }
-
-    #[tracing::instrument]
-    pub fn set_shortcuts(&self, shortcuts: Vec<(KeyboardShortcut, ShortcutBehaviour)>) {
-        let mut l = self.shortcuts.lock().unwrap();
-        for (shortcut, behaviour) in shortcuts {
-            l.insert(shortcut, behaviour);
-        }
+        let item = {
+            let v_cache = vault.cache();
+            let item_id = match v_cache.selection.as_slice() {
+                [] => return Err(AppError::NoSelectedItems),
+                [item_id] => item_id,
+                _ => return Err(AppError::MultipleSelectedItems),
+            };
+            vault.get_item_by_id(*item_id)?
+        };
+        Ok((vault, item))
     }
 
     pub fn commit_thumbnail(&self, params: ThumbnailParams, item: ThumbnailCacheItem) {
@@ -638,6 +529,13 @@ impl AppStateRef {
         self.catch(|| "getting current vault", || self.current_vault())
     }
 
+    pub fn get_vault_catch(&self, vault_name: &str) -> Result<Arc<Vault>, ()> {
+        self.catch(
+            || format!("getting vault with name: {vault_name}"),
+            || self.get_vault(vault_name),
+        )
+    }
+
     pub fn commit_item_catch(
         &self,
         vault: Option<Arc<Vault>>,
@@ -651,6 +549,12 @@ impl AppStateRef {
             || format!("updating item {}", item.path()),
             || self.commit_item(vault, item, skip_save),
         )
+    }
+}
+
+impl AsRef<AppState> for AppStateRef {
+    fn as_ref(&self) -> &AppState {
+        self
     }
 }
 

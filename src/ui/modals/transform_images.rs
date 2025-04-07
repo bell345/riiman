@@ -2,19 +2,20 @@ use crate::data::transform::{
     ChromaSubsampling, CompressionFileType, DestinationExistingBehaviour, DestinationKind,
     EsrganModel, FitAlgorithm, InfillTechnique, ScaleAlgorithm, SourceKind,
 };
-use crate::data::{ItemId, TransformBulkParams, TransformImageParams};
+use crate::data::{ItemId, TransformBulkParams, TransformImageParams, Vault};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
 use crate::tasks::transform::{
     get_transformed_size, list_destination_paths, load_transformed_image_preview,
 };
-use crate::tasks::AsyncTaskResult;
+use crate::tasks::{AsyncTaskResult, TaskDeclaration};
 use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::modals::query::{DefaultButton, QueryKind};
+use crate::ui::modals::query::{DefaultButton, QueryDeclaration, QueryKind};
 use crate::ui::modals::{AppModal, QueryOptions};
 use crate::ui::thumb_grid::ThumbnailGrid;
-use crate::ui::{behaviour_select, buttons, choice, indent, modals, theme, QueryResult};
+use crate::ui::{behaviour_select, buttons, choice, indent, theme, QueryResult};
+use anyhow::anyhow;
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
 use ordered_float::OrderedFloat;
@@ -50,30 +51,16 @@ pub struct TransformImages {
     params_of_selected_preview: Option<TransformImageParams>,
     error_message: Option<String>,
     state: Option<State>,
+    vault: Arc<Vault>,
     app_state: AppStateRef,
     opened: bool,
     is_open: bool,
-}
 
-impl Default for TransformImages {
-    fn default() -> Self {
-        Self {
-            modal: None,
-            preview_grid: ThumbnailGrid::new("transform_modal_preview_grid"),
-            source_item_ids: Default::default(),
-            source_items_updated: false,
-            item_paths: Default::default(),
-            n_conflicts: 0,
-            selected_item_id: None,
-            selected_preview_hndl: None,
-            params_of_selected_preview: None,
-            state: None,
-            error_message: None,
-            app_state: Default::default(),
-            opened: false,
-            is_open: true,
-        }
-    }
+    load_vault_task: TaskDeclaration,
+    choose_directory_task: TaskDeclaration,
+    choose_archive_task: TaskDeclaration,
+    load_preview_task: TaskDeclaration,
+    confirm_query: QueryDeclaration,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -85,15 +72,60 @@ struct State {
 
 impl CloneablePersistedState for State {}
 
-mod request {
-    pub const LOAD_VAULT: &str = "load_vault";
-    pub const CHOOSE_DIRECTORY: &str = "choose_directory";
-    pub const CHOOSE_ARCHIVE: &str = "choose_archive";
-    pub const LOAD_PREVIEW: &str = "load_preview";
-    pub const QUERY_CONFIRM: &str = "query_confirm";
-}
+const ID_STRING: &str = "transform_images_modal";
 
 impl TransformImages {
+    pub fn new(vault: Arc<Vault>, app_state: AppStateRef) -> Self {
+        Self {
+            modal: None,
+            preview_grid: ThumbnailGrid::new("transform_modal_preview_grid"),
+            source_item_ids: vec![],
+            source_items_updated: false,
+            item_paths: vec![],
+            n_conflicts: 0,
+            selected_item_id: None,
+            selected_preview_hndl: None,
+            params_of_selected_preview: None,
+            error_message: None,
+            state: None,
+            vault,
+            app_state,
+            opened: false,
+            is_open: true,
+
+            load_vault_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("load_vault"),
+                "Load vault",
+                |s, p| {
+                    Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, false))
+                },
+            ),
+            choose_directory_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("choose_directory"),
+                "Choose directory",
+                |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
+            ),
+            choose_archive_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("choose_archive"),
+                "Choose archive",
+                |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
+            ),
+            load_preview_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("load_preview"),
+                "Load preview",
+                |_, _| Promise::from_ready(Err(anyhow!("this task should be generated"))),
+            ),
+            confirm_query: QueryDeclaration::new(
+                egui::Id::from(ID_STRING).with("query_confirm"),
+                "Confirm",
+                QueryOptions {
+                    kind: QueryKind::YesNo,
+                    default_button: DefaultButton::Button2,
+                    icon: egui_modal::Icon::Warning,
+                },
+            ),
+        }
+    }
     fn state(&self) -> &State {
         self.state.as_ref().unwrap()
     }
@@ -103,42 +135,27 @@ impl TransformImages {
     }
 
     fn source_len(&self, source_type: SourceKind) -> usize {
-        match source_type {
-            SourceKind::Selection => self.app_state.len_selected_items(),
-            SourceKind::Filtered => self.app_state.len_item_list(),
-            SourceKind::All => self
-                .app_state
-                .current_vault_opt()
-                .map_or(0, |vault| vault.len_items()),
-        }
+        self.vault.resolve_items_len(source_type.into())
     }
 
     fn update_selected_items(&mut self, bulk: &TransformBulkParams) -> Result<(), ()> {
-        let vault = self.app_state.current_vault_catch()?;
-        let mut items = if bulk.source.kind == SourceKind::All {
-            vault.iter_items().map(|i| Arc::clone(&i)).collect()
-        } else {
-            let ids = match bulk.source.kind {
-                SourceKind::Selection => self.app_state.selected_item_ids(),
-                SourceKind::Filtered => self.app_state.item_list_ids(),
-                SourceKind::All => unreachable!(),
-            };
-            vault.resolve_item_ids(&ids)
-        };
+        let cache = self.vault.cache();
+        let sorts = &cache.item_list.params.sorts;
+        let mut items = self.vault.resolve_items(bulk.source.kind.into(), &cache);
 
         self.app_state.catch(
             || "sorting preview selection",
-            || sort_items_unstable(&mut items, &vault, &self.app_state.sorts()),
+            || sort_items_unstable(&mut items, &self.vault, sorts),
         )?;
 
         self.source_item_ids = items
             .iter()
-            .map(|i| ItemId::from_item(&vault, &i))
+            .map(|i| ItemId::from_item(&self.vault, &i))
             .collect();
 
         self.item_paths = items
             .into_iter()
-            .map(|i| (ItemId::from_item(&vault, &i), i.path().to_string()))
+            .map(|i| (ItemId::from_item(&self.vault, &i), i.path().to_string()))
             .collect();
 
         self.n_conflicts = if let Ok(dest_paths) =
@@ -260,24 +277,21 @@ impl TransformImages {
     }
 
     fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
-        if let Ok(name) = self.handle_request(request::LOAD_VAULT, |res| match res {
-            AsyncTaskResult::VaultLoaded { name, .. } => Ok(name),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::VaultLoaded { name, .. }) =
+            self.load_vault_task.try_take(&self.app_state)
+        {
             p.destination.other_vault_name = name;
         }
 
-        if let Ok(dir) = self.handle_request(request::CHOOSE_DIRECTORY, |res| match res {
-            AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::SelectedDirectory(dir)) =
+            self.choose_directory_task.try_take(&self.app_state)
+        {
             p.destination.directory_path = dir;
         }
 
-        if let Ok(file) = self.handle_request(request::CHOOSE_ARCHIVE, |res| match res {
-            AsyncTaskResult::SelectedFile(file) => Ok(file),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::SelectedFile(file)) =
+            self.choose_archive_task.try_take(&self.app_state)
+        {
             p.destination.archive_path = file;
         }
 
@@ -376,15 +390,7 @@ impl TransformImages {
                             });
 
                         if ui.button("Load a vault...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::LOAD_VAULT),
-                                "Load vault",
-                                |s, p| {
-                                    Promise::spawn_async(
-                                        crate::tasks::vault::choose_and_load_vault(s, p, false),
-                                    )
-                                },
-                            );
+                            self.load_vault_task.request(&self.app_state);
                         }
                     });
                 });
@@ -395,11 +401,7 @@ impl TransformImages {
                     ui.add_enabled_ui(*dest_kind == DestinationKind::Directory, |ui| {
                         ui.text_edit_singleline(&mut p.destination.directory_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::CHOOSE_DIRECTORY),
-                                "Choose directory",
-                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
-                            );
+                            self.choose_directory_task.request(&self.app_state);
                         }
                     });
                 });
@@ -411,11 +413,7 @@ impl TransformImages {
                     ui.add_enabled_ui(*dest_kind == DestinationKind::Archive, |ui| {
                         ui.text_edit_singleline(&mut p.destination.archive_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::CHOOSE_ARCHIVE),
-                                "Choose archive",
-                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
-                            );
+                            self.choose_archive_task.request(&self.app_state);
                         }
                     });
                 })
@@ -728,7 +726,7 @@ impl TransformImages {
     }
 
     fn update_preview_image(&mut self) -> Option<()> {
-        let id = self.id().with(request::LOAD_PREVIEW);
+        let id = self.load_preview_task.id;
         let item_id = self.preview_grid.get_first_selected_id()?;
         let params = self.state().transform_params.clone();
         if self.selected_item_id.as_ref() == Some(&item_id)
@@ -753,10 +751,9 @@ impl TransformImages {
     }
 
     fn top_preview_panel(&mut self, ui: &mut egui::Ui) {
-        if let Ok(image) = self.handle_request(request::LOAD_PREVIEW, |res| match res {
-            AsyncTaskResult::PreviewReady { image, .. } => Ok(image),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::PreviewReady { image, .. }) =
+            self.load_preview_task.try_take(&self.app_state)
+        {
             let hndl = ui.ctx().load_texture(
                 "transform_preview",
                 image,
@@ -1070,16 +1067,7 @@ impl AppModal for TransformImages {
                                 self.n_conflicts,
                                 self.state().bulk_params.destination.item_existing_behaviour
                             );
-                            self.app_state.add_dialog(modals::Query::new(
-                                self.id().with(request::QUERY_CONFIRM),
-                                "Confirm",
-                                msg,
-                                QueryOptions {
-                                    kind: QueryKind::YesNo,
-                                    default_button: DefaultButton::Button2,
-                                    icon: egui_modal::Icon::Warning,
-                                },
-                            ));
+                            self.confirm_query.open(&self.app_state, msg);
                         } else {
                             self.perform_transformation();
                             do_close = true;
@@ -1108,18 +1096,15 @@ impl AppModal for TransformImages {
             self.source_items_updated = true;
         }
 
-        if let Ok(query_res) = self.handle_request(request::QUERY_CONFIRM, |res| match res {
-            AsyncTaskResult::QueryResult(query_res) => Ok(query_res),
-            _ => Err(res),
-        }) {
-            if query_res == QueryResult::Yes {
-                if let Err(e) = self.validate() {
-                    self.error_message = e.to_string().into();
-                    do_close = false;
-                } else {
-                    self.perform_transformation();
-                    do_close = true;
-                }
+        if let Some(AsyncTaskResult::QueryResult(QueryResult::Yes)) =
+            self.confirm_query.try_take(&self.app_state)
+        {
+            if let Err(e) = self.validate() {
+                self.error_message = e.to_string().into();
+                do_close = false;
+            } else {
+                self.perform_transformation();
+                do_close = true;
             }
         }
 

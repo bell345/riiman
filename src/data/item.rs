@@ -1,26 +1,35 @@
-use std::collections::hash_map::Iter;
-use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
-use std::ops::Deref;
-use std::path::Path;
-
 use anyhow::Context;
+use chrono::Utc;
 use dashmap::DashMap;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
+use std::ops::Deref;
+use std::path::Path;
+use std::sync::{Arc, RwLock, Weak};
 use uuid::Uuid;
 
-use crate::data::field::KnownField;
 use crate::data::field_store::FieldStore;
-use crate::data::{kind, FieldDefinition, FieldValue, Utf32CachedString, Vault};
+use crate::data::{kind, FieldValue, Utf32CachedString, Vault};
 use crate::errors::AppError;
 use crate::fields;
-use crate::state::AppStateRef;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Item {
     path: Utf32CachedString,
     fields: DashMap<Uuid, FieldValue>,
+    #[serde(skip)]
+    vault: RwLock<Weak<Vault>>,
+}
+
+impl Clone for Item {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            fields: self.fields.clone(),
+            vault: RwLock::new(self.vault.read().unwrap().clone()),
+        }
+    }
 }
 
 impl Debug for Item {
@@ -36,7 +45,12 @@ impl Item {
         Item {
             path: path.into(),
             fields: Default::default(),
+            vault: RwLock::new(Weak::new()),
         }
+    }
+
+    pub fn with_vault(&self, vault: &Arc<Vault>) {
+        *self.vault.write().unwrap() = Arc::downgrade(vault);
     }
 
     pub fn path(&self) -> &str {
@@ -83,6 +97,16 @@ impl FieldStore for Item {
     fn fields(&self) -> &DashMap<Uuid, FieldValue> {
         &self.fields
     }
+
+    fn set_last_updated(&self) {
+        self.fields.insert(
+            fields::meta::LAST_MODIFIED.id,
+            FieldValue::DateTime(Utc::now()),
+        );
+        if let Some(vault) = self.vault.read().unwrap().upgrade() {
+            vault.set_last_updated();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -93,7 +117,7 @@ mod test {
 
     #[test]
     fn test_has_tag() {
-        let vault = Vault::new("test".to_string());
+        let vault = Arc::new(Vault::new("test".to_string()));
         let path = Path::new("path");
         //let mut item = vault.ensure_item_mut(Path::new("path")).unwrap();
 

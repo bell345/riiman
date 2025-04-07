@@ -44,7 +44,9 @@ pub enum SortExpression {
     Field(Uuid, SortDirection),
 }
 
-#[derive(Default, Debug, Display, Eq, PartialEq)]
+#[derive(
+    Default, Debug, Display, Eq, PartialEq, Copy, Clone, serde::Serialize, serde::Deserialize,
+)]
 pub enum SortType {
     #[default]
     Path,

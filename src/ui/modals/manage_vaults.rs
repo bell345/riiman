@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-use eframe::egui;
-use eframe::egui::Color32;
-use poll_promise::Promise;
-
+use crate::data::FieldStore;
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::AsyncTaskResult;
 use crate::ui::cloneable_state::CloneableTempState;
 use crate::ui::modals::AppModal;
 use crate::ui::{modals, theme};
+use eframe::egui;
+use eframe::egui::Color32;
+use poll_promise::Promise;
 
 #[derive(Default)]
 pub struct ManageVaults {
@@ -137,6 +137,10 @@ impl ManageVaults {
                     Some(Ok(AsyncTaskResult::VaultLoaded { name: res_name, .. }))
                         if &res_name == name =>
                     {
+                        // TODO: hack?
+                        if let Ok(current_vault) = state.current_vault_catch() {
+                            current_vault.set_last_updated();
+                        }
                         // expected, but state is already updated so we don't need to do anything
                     }
                     Some(Ok(AsyncTaskResult::VaultLoaded { name: res_name, .. })) => {

@@ -10,11 +10,11 @@ use tokio::fs::DirEntry;
 use tokio::task::JoinSet;
 use tracing::info;
 
-use crate::errors::AppError;
+use crate::errors::{path_to_str, AppError};
 use crate::fields;
 use crate::state::THUMBNAIL_LOW_QUALITY_HEIGHT;
 use crate::tasks::thumbnail::commit_thumbnail_to_fs;
-use crate::tasks::vault::save_vault;
+use crate::tasks::vault::save_vault_without_links;
 use crate::tasks::{
     AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, SingleImportResult,
 };
@@ -70,8 +70,7 @@ pub async fn import_single_image(
     #[allow(clippy::cast_possible_wrap)]
     {
         let wand = MagickWand::new();
-        wand.ping_image(path.to_str().ok_or(AppError::InvalidUnicode)?)
-            .with_context(|| format!("while reading image metadata of {}", path.display()))?;
+        wand.ping_image(path_to_str(&path)?)?;
 
         let width = wand.get_image_width() as i64;
         let height = wand.get_image_height() as i64;
@@ -254,7 +253,7 @@ pub async fn import_images_recursively(
     )
     .await?;
 
-    save_vault(vault, progress.sub_task("Save", 0.05)).await?;
+    save_vault_without_links(vault, progress.sub_task("Save", 0.05)).await?;
 
     Ok(AsyncTaskResult::ImportComplete {
         path: root_dir.into(),

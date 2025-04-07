@@ -22,7 +22,7 @@ pub use manage_vaults::ManageVaults;
 pub use message::Message;
 pub use new_vault::NewVault;
 pub use preview::Preview;
-pub use query::{Query, QueryOptions, QueryResult};
+pub use query::{QueryOptions, QueryResult};
 pub use tag_shortcuts::TagShortcuts;
 pub use transform_images::TransformImages;
 pub use transform_paths::TransformPaths;

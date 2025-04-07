@@ -2,6 +2,10 @@ use std::env::consts::EXE_EXTENSION;
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 
+use crate::data::Vault;
+use crate::errors::{path_to_str, AppError};
+use crate::state::AppStateRef;
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumDiscriminants};
@@ -10,10 +14,6 @@ use tokio::process::{ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use uuid::Uuid;
-
-use crate::errors::AppError;
-use crate::state::AppStateRef;
-use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 
 #[derive(
     Debug, Default, Clone, PartialEq, Eq, Display, EnumDiscriminants, Serialize, Deserialize,
@@ -157,11 +157,7 @@ pub async fn select_gallery_dl(
 
     let fp = dialog.pick_file().await.ok_or(AppError::UserCancelled)?;
 
-    let path = fp
-        .path()
-        .to_str()
-        .ok_or(AppError::InvalidUnicode)?
-        .to_string();
+    let path = path_to_str(fp.path())?.to_string();
 
     check_gallery_dl(path).await
 }
@@ -215,10 +211,11 @@ async fn async_tee(
 
 #[allow(clippy::module_name_repetitions)]
 pub async fn perform_gallery_dl_download(
-    state: AppStateRef,
+    vault: Arc<Vault>,
     progress: ProgressSenderRef,
     params: GalleryDLParams,
 ) -> AsyncTaskReturn {
+    let root_dir = vault.root_dir()?;
     let dl_progress = progress.sub_task("Download", 0.5);
     dl_progress.send(ProgressState::Determinate(0.0));
 
@@ -230,8 +227,7 @@ pub async fn perform_gallery_dl_download(
 
     let mut cmd = Command::new(prog.as_str());
     cmd.arg(params.source_url());
-    cmd.arg("--directory")
-        .arg(state.current_vault()?.root_dir()?);
+    cmd.arg("--directory").arg(root_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -295,5 +291,7 @@ pub async fn perform_gallery_dl_download(
         }));
     }
 
-    Ok(AsyncTaskResult::None)
+    Ok(AsyncTaskResult::DownloadComplete {
+        vault_name: vault.name.clone(),
+    })
 }

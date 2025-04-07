@@ -2,7 +2,6 @@ use eframe::egui::Color32;
 use egui_modal::Modal;
 use poll_promise::Promise;
 
-use crate::data::Vault;
 use crate::state::AppStateRef;
 use crate::tasks;
 use crate::ui::modals::AppModal;

@@ -1,16 +1,14 @@
 use crate::data::transform::{DestinationExistingBehaviour, DestinationKind, SourceKind};
-use crate::data::{ItemId, TransformBulkParams, TransformPathParams};
+use crate::data::{ItemId, TransformBulkParams, TransformPathParams, Vault};
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::sort::sort_items_unstable;
 use crate::tasks::transform::{list_destination_paths, transform_path};
-use crate::tasks::AsyncTaskResult;
+use crate::tasks::{AsyncTaskResult, TaskDeclaration};
 use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::modals::query::{DefaultButton, QueryKind};
+use crate::ui::modals::query::{DefaultButton, QueryDeclaration, QueryKind};
 use crate::ui::modals::{AppModal, QueryOptions};
-use crate::ui::{
-    behaviour_select, buttons, choice, indent, modals, radio_choice, theme, QueryResult,
-};
+use crate::ui::{behaviour_select, buttons, choice, indent, radio_choice, theme, QueryResult};
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
@@ -41,27 +39,14 @@ pub struct TransformPaths {
     error_message: Option<String>,
     state: Option<State>,
     app_state: AppStateRef,
+    vault: Arc<Vault>,
     opened: bool,
     is_open: bool,
-}
 
-impl Default for TransformPaths {
-    fn default() -> Self {
-        Self {
-            modal: None,
-            source_item_ids: Default::default(),
-            transformed_paths: Default::default(),
-            unique_paths: Default::default(),
-            n_conflicts: 0,
-            n_duplicates: 0,
-            source_items_updated: false,
-            state: None,
-            error_message: None,
-            app_state: Default::default(),
-            opened: false,
-            is_open: true,
-        }
-    }
+    load_vault_task: TaskDeclaration,
+    choose_directory_task: TaskDeclaration,
+    choose_archive_task: TaskDeclaration,
+    confirm_query: QueryDeclaration,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -73,15 +58,53 @@ struct State {
 
 impl CloneablePersistedState for State {}
 
-mod request {
-    pub const LOAD_VAULT: &str = "load_vault";
-    pub const CHOOSE_DIRECTORY: &str = "choose_directory";
-    pub const CHOOSE_ARCHIVE: &str = "choose_archive";
-    pub const LOAD_PREVIEW: &str = "load_preview";
-    pub const QUERY_CONFIRM: &str = "query_confirm";
-}
+const ID_STRING: &str = "transform_paths_modal";
 
 impl TransformPaths {
+    pub fn new(vault: Arc<Vault>, app_state: AppStateRef) -> Self {
+        Self {
+            modal: None,
+            source_item_ids: vec![],
+            source_items_updated: false,
+            transformed_paths: vec![],
+            unique_paths: Default::default(),
+            n_conflicts: 0,
+            n_duplicates: 0,
+            error_message: None,
+            state: None,
+            app_state,
+            vault,
+            opened: false,
+            is_open: true,
+
+            load_vault_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("load_vault"),
+                "Load vault",
+                |s, p| {
+                    Promise::spawn_async(crate::tasks::vault::choose_and_load_vault(s, p, false))
+                },
+            ),
+            choose_directory_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("choose_directory"),
+                "Choose directory",
+                |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
+            ),
+            choose_archive_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("choose_archive"),
+                "Choose archive",
+                |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
+            ),
+            confirm_query: QueryDeclaration::new(
+                egui::Id::from(ID_STRING).with("query_confirm"),
+                "Confirm",
+                QueryOptions {
+                    kind: QueryKind::YesNo,
+                    default_button: DefaultButton::Button2,
+                    icon: egui_modal::Icon::Warning,
+                },
+            ),
+        }
+    }
     fn state(&self) -> &State {
         self.state.as_ref().unwrap()
     }
@@ -91,14 +114,7 @@ impl TransformPaths {
     }
 
     fn source_len(&self, source_type: SourceKind) -> usize {
-        match source_type {
-            SourceKind::Selection => self.app_state.len_selected_items(),
-            SourceKind::Filtered => self.app_state.len_item_list(),
-            SourceKind::All => self
-                .app_state
-                .current_vault_opt()
-                .map_or(0, |vault| vault.len_items()),
-        }
+        self.vault.resolve_items_len(source_type.into())
     }
 
     fn update_selected_items(
@@ -106,30 +122,25 @@ impl TransformPaths {
         bulk: &TransformBulkParams,
         params: &TransformPathParams,
     ) -> Result<(), ()> {
-        let vault = self.app_state.current_vault_catch()?;
-        let mut items = if bulk.source.kind == SourceKind::All {
-            vault.iter_items().map(|i| Arc::clone(&i)).collect()
-        } else {
-            let ids = match bulk.source.kind {
-                SourceKind::Selection => self.app_state.selected_item_ids(),
-                SourceKind::Filtered => self.app_state.item_list_ids(),
-                SourceKind::All => unreachable!(),
-            };
-            vault.resolve_item_ids(&ids)
-        };
+        let cache = self.vault.cache();
+        let sorts = &cache.item_list.params.sorts;
+        let mut items = self.vault.resolve_items(bulk.source.kind.into(), &cache);
 
         self.app_state.catch(
             || "sorting preview selection",
-            || sort_items_unstable(&mut items, &vault, &self.app_state.sorts()),
+            || sort_items_unstable(&mut items, &self.vault, sorts),
         )?;
 
-        self.source_item_ids = items.iter().map(|i| ItemId::from_item(&vault, i)).collect();
+        self.source_item_ids = items
+            .iter()
+            .map(|i| ItemId::from_item(&self.vault, i))
+            .collect();
 
         self.transformed_paths = items
             .into_iter()
             .filter_map(|i| {
                 Some((
-                    ItemId::from_item(&vault, &i),
+                    ItemId::from_item(&self.vault, &i),
                     transform_path(&i, params)?.to_string_lossy().into_owned(),
                 ))
             })
@@ -151,7 +162,10 @@ impl TransformPaths {
                         .iter()
                         // exclude items whose paths do not change
                         .filter(|(id, p)| {
-                            !vault.get_item_opt_by_id(*id).is_some_and(|i| i.path() == p)
+                            !self
+                                .vault
+                                .get_item_opt_by_id(*id)
+                                .is_some_and(|i| i.path() == p)
                         })
                         // count paths that collide with other items
                         .filter(|(_, p)| path_set.contains(Path::new(p)))
@@ -229,24 +243,21 @@ impl TransformPaths {
     }
 
     fn destination_fragment(&mut self, ui: &mut egui::Ui, p: &mut TransformBulkParams) {
-        if let Ok(name) = self.handle_request(request::LOAD_VAULT, |res| match res {
-            AsyncTaskResult::VaultLoaded { name, .. } => Ok(name),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::VaultLoaded { name, .. }) =
+            self.load_vault_task.try_take(&self.app_state)
+        {
             p.destination.other_vault_name = name;
         }
 
-        if let Ok(dir) = self.handle_request(request::CHOOSE_DIRECTORY, |res| match res {
-            AsyncTaskResult::SelectedDirectory(dir) => Ok(dir),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::SelectedDirectory(dir)) =
+            self.choose_directory_task.try_take(&self.app_state)
+        {
             p.destination.directory_path = dir;
         }
 
-        if let Ok(file) = self.handle_request(request::CHOOSE_ARCHIVE, |res| match res {
-            AsyncTaskResult::SelectedFile(file) => Ok(file),
-            _ => Err(res),
-        }) {
+        if let Some(AsyncTaskResult::SelectedFile(file)) =
+            self.choose_archive_task.try_take(&self.app_state)
+        {
             p.destination.archive_path = file;
         }
 
@@ -345,15 +356,7 @@ impl TransformPaths {
                             });
 
                         if ui.button("Load a vault...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::LOAD_VAULT),
-                                "Load vault",
-                                |s, p| {
-                                    Promise::spawn_async(
-                                        crate::tasks::vault::choose_and_load_vault(s, p, false),
-                                    )
-                                },
-                            );
+                            self.load_vault_task.request(&self.app_state);
                         }
                     });
                 });
@@ -364,11 +367,7 @@ impl TransformPaths {
                     ui.add_enabled_ui(*dest_kind == DestinationKind::Directory, |ui| {
                         ui.text_edit_singleline(&mut p.destination.directory_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::CHOOSE_DIRECTORY),
-                                "Choose directory",
-                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_folder()),
-                            );
+                            self.choose_directory_task.request(&self.app_state);
                         }
                     });
                 });
@@ -380,11 +379,7 @@ impl TransformPaths {
                     ui.add_enabled_ui(*dest_kind == DestinationKind::Archive, |ui| {
                         ui.text_edit_singleline(&mut p.destination.archive_path);
                         if ui.button("Select...").clicked() {
-                            self.app_state.add_task_request(
-                                self.id().with(request::CHOOSE_ARCHIVE),
-                                "Choose archive",
-                                |_, _| Promise::spawn_async(crate::tasks::choose::choose_archive()),
-                            );
+                            self.choose_archive_task.request(&self.app_state);
                         }
                     });
                 })
@@ -635,7 +630,7 @@ impl TransformPaths {
 
 impl AppModal for TransformPaths {
     fn id(&self) -> egui::Id {
-        "transform_paths_modal".into()
+        ID_STRING.into()
     }
 
     fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) {
@@ -678,16 +673,7 @@ impl AppModal for TransformPaths {
                             }
                             msg.push_str(&format!("\nCurrent duplicate behaviour: {}\n\nContinue?", self.state().bulk_params.destination.item_existing_behaviour));
 
-                            self.app_state.add_dialog(modals::Query::new(
-                                self.id().with(request::QUERY_CONFIRM),
-                                "Confirm",
-                                msg,
-                                QueryOptions {
-                                    kind: QueryKind::YesNo,
-                                    default_button: DefaultButton::Button2,
-                                    icon: egui_modal::Icon::Warning,
-                                }
-                            ));
+                            self.confirm_query.open(self.app_state.clone(), msg);
                         } else {
                             self.perform_transformation();
                             do_close = true;
@@ -716,18 +702,15 @@ impl AppModal for TransformPaths {
             self.source_items_updated = true;
         }
 
-        if let Ok(query_res) = self.handle_request(request::QUERY_CONFIRM, |res| match res {
-            AsyncTaskResult::QueryResult(query_res) => Ok(query_res),
-            _ => Err(res),
-        }) {
-            if query_res == QueryResult::Yes {
-                if let Err(e) = self.validate() {
-                    self.error_message = e.to_string().into();
-                    do_close = false;
-                } else {
-                    self.perform_transformation();
-                    do_close = true;
-                }
+        if let Some(AsyncTaskResult::QueryResult(QueryResult::Yes)) =
+            self.confirm_query.try_take(self.app_state.clone())
+        {
+            if let Err(e) = self.validate() {
+                self.error_message = e.to_string().into();
+                do_close = false;
+            } else {
+                self.perform_transformation();
+                do_close = true;
             }
         }
 

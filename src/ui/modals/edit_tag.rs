@@ -111,7 +111,7 @@ impl EditTag {
     fn save(&mut self) -> bool {
         self.error_message = None;
         let id = self.definition.as_ref().unwrap().id;
-        return match self.verify() {
+        match self.verify() {
             Ok(()) => {
                 let vault = self.app_state.current_vault().expect("vault exists");
                 vault.set_definition(self.definition.as_ref().unwrap().clone());
@@ -135,7 +135,7 @@ impl EditTag {
                 self.error_message = Some(e);
                 false
             }
-        };
+        }
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -166,12 +166,8 @@ impl EditTag {
                     .create_ui(|ui, create_state| {
                         if ui
                             .add(
-                                widgets::FindTag::new(
-                                    "edit_tag_new_parent",
-                                    create_state,
-                                    Arc::clone(&vault),
-                                )
-                                .exclude_ids(exclude_ids),
+                                widgets::FindTag::new("edit_tag_new_parent", create_state, &vault)
+                                    .exclude_ids(exclude_ids),
                             )
                             .changed()
                             && create_state.is_some()
@@ -231,12 +227,8 @@ impl EditTag {
                     .create_ui(|ui, create_state| {
                         if ui
                             .add(
-                                widgets::FindTag::new(
-                                    "edit_tag_new_child",
-                                    create_state,
-                                    Arc::clone(&vault),
-                                )
-                                .exclude_ids(exclude_ids),
+                                widgets::FindTag::new("edit_tag_new_child", create_state, &vault)
+                                    .exclude_ids(exclude_ids),
                             )
                             .changed()
                             && create_state.is_some()

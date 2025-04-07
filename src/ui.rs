@@ -1,26 +1,25 @@
-use crate::data::parse::FilterExpressionParseResult;
 use crate::data::transform::DestinationExistingBehaviour;
-use crate::data::{FilterExpression, ShortcutBehaviour, ThumbnailCacheItem};
+use crate::data::{
+    FieldStore, FieldType, FieldValue, Item, ItemsSpec, ShortcutAction, ThumbnailCacheItem, Vault,
+};
 use crate::errors::AppError;
 use crate::state::{AppState, AppStateRef, TaskInfo};
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState, TaskState};
 use eframe::egui;
-use eframe::egui::{vec2, FontData, FontDefinitions, KeyboardShortcut};
+use eframe::egui::{vec2, FontData, FontDefinitions};
 use eframe::epaint::FontFamily;
 use poll_promise::Promise;
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tracing::{error, info};
-use uuid::Uuid;
 
-use crate::tasks::sort::{SortDirection, SortExpression, SortType};
+use crate::tasks::sort::SortType;
 use crate::tasks::transform::load_image_preview;
 use crate::time;
 use crate::ui::item_panel::ItemPanel;
 use crate::ui::stepwise_range::StepwiseRange;
-use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid};
+use crate::ui::thumb_grid::{SelectMode, ThumbnailGrid, TAB_REQUEST_ID};
 
 mod cloneable_state;
 mod input;
@@ -97,11 +96,6 @@ pub(crate) struct App {
 
     thumbnail_grid: ThumbnailGrid,
 
-    sort_type: SortType,
-    sort_field_id: Option<Uuid>,
-    sort_direction: SortDirection,
-    search_text: String,
-
     expand_right_panel: bool,
 }
 
@@ -111,10 +105,6 @@ struct AppStorage {
     vault_name_to_file_paths: HashMap<String, String>,
     current_vault_name: Option<String>,
     thumbnail_row_height: f32,
-    sorts: Vec<SortExpression>,
-    filter: FilterExpression,
-    search_text: String,
-    shortcuts2: Vec<(KeyboardShortcut, ShortcutBehaviour)>,
 }
 
 impl AppStorage {
@@ -128,10 +118,6 @@ impl App {
             tasks: Default::default(),
             modal_dialogs: Default::default(),
             thumbnail_grid: ThumbnailGrid::new("main_thumbnail_grid"),
-            sort_type: Default::default(),
-            sort_field_id: None,
-            sort_direction: Default::default(),
-            search_text: String::new(),
             expand_right_panel: false,
         }
     }
@@ -164,7 +150,7 @@ impl App {
                     task_factory,
                 } => self.tasks.add_request(id, name, |tx| task_factory(s, tx)),
                 TaskInfo::CompletedTaskRequest { id, result } => {
-                    self.tasks.push_completed_task(id, result)
+                    self.tasks.push_completed_task(id, result);
                 }
             }
         }
@@ -175,12 +161,12 @@ impl App {
         self.modal_dialogs.insert(b.id(), b);
     }
 
-    fn error(&mut self, message: String) {
-        self.add_modal_dialog(modals::Message::error(message));
+    fn error(&mut self, message: impl Into<String>) {
+        self.add_modal_dialog(modals::Message::error(message.into()));
     }
 
-    fn success(&mut self, title: String, message: String) {
-        self.add_modal_dialog(modals::Message::success(message).with_title(title));
+    fn success(&mut self, title: impl Into<String>, message: impl Into<String>) {
+        self.add_modal_dialog(modals::Message::success(message.into()).with_title(title.into()));
     }
 
     fn load_persistent_state(&mut self, storage: Option<&dyn eframe::Storage>) -> Option<()> {
@@ -208,14 +194,6 @@ impl App {
             });
         }
 
-        self.search_text = stored_state.search_text;
-
-        self.thumbnail_grid.params.init_row_height = stored_state.thumbnail_row_height;
-
-        self.state
-            .set_filter_and_sorts(stored_state.filter, stored_state.sorts);
-        self.state.set_shortcuts(stored_state.shortcuts2);
-
         Some(())
     }
 
@@ -225,6 +203,7 @@ impl App {
         self.load_persistent_state(storage);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn process_tasks(&mut self, ctx: &egui::Context) {
         self.add_queued_tasks();
 
@@ -263,22 +242,20 @@ impl App {
                     );
                     // update thumbnail grid
                     self.thumbnail_grid.params.container_width = 0.0;
-                    self.success("Import complete".to_string(), body);
+                    self.success("Import complete", body);
                 }
                 Ok(AsyncTaskResult::LinkComplete {
+                    vault_name,
                     other_vault_name,
                     results,
                 }) => {
-                    self.state.save_current_vault_deferred();
-                    self.state.save_vault_by_name_deferred(&other_vault_name);
-
                     let total = results.len();
                     let success = results.iter().filter(|r| r.is_ok()).count();
                     let body = format!(
-                        "Link to vault {other_vault_name} complete. \
+                        "Link from vault {vault_name} to vault {other_vault_name} complete. \
                         {success}/{total} images linked successfully.",
                     );
-                    self.success("Link complete".to_string(), body);
+                    self.success("Link complete", body);
                 }
                 Ok(AsyncTaskResult::ThumbnailLoaded { params, image }) => {
                     let hndl =
@@ -305,8 +282,32 @@ impl App {
                 Ok(AsyncTaskResult::TransformationComplete(results)) => {
                     self.add_modal_dialog(modals::TransformResults::new(results));
                 }
+                Ok(AsyncTaskResult::DownloadComplete { vault_name }) => {
+                    if let Ok(vault) = self.state.get_vault_catch(&vault_name) {
+                        self.add_task("Import to vault with sidecars", |state, p| {
+                            Promise::spawn_async(async move {
+                                crate::tasks::import::import_images_recursively(
+                                    Arc::clone(&vault),
+                                    p.sub_task("Import to vault", 0.5),
+                                )
+                                .await?;
+                                crate::tasks::link::link_sidecars(
+                                    state,
+                                    vault,
+                                    p.sub_task("Link sidecars", 0.5),
+                                )
+                                .await
+                            })
+                        });
+                    }
+                }
+                Ok(AsyncTaskResult::RequestGridUpdate) => {
+                    if let Some(vault) = self.state.current_vault_opt() {
+                        vault.cache().item_list.request_update();
+                    }
+                }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
-                    self.error("Not implemented".to_string());
+                    self.error("Not implemented");
                 }
                 Err(e) => {
                     error!("{}", e.backtrace());
@@ -398,10 +399,10 @@ impl App {
         });
     }
 
-    fn import_menu_ui(&mut self, ui: &mut egui::Ui) {
+    fn import_menu_ui(&mut self, ui: &mut egui::Ui, current_vault: &Arc<Vault>) {
         ui.menu_button("Import", |ui| -> Result<(), ()> {
             if ui.button("Import...").clicked() {
-                let vault = self.state.current_vault_catch()?;
+                let vault = Arc::clone(current_vault);
                 self.add_task("Import one", |_, p| {
                     Promise::spawn_async(crate::tasks::import::select_and_import_one(vault, p))
                 });
@@ -412,7 +413,7 @@ impl App {
             if ui.button("Import all files").clicked() {
                 info!("Import all clicked!");
 
-                let vault = self.state.current_vault_catch()?;
+                let vault = Arc::clone(current_vault);
                 self.add_task("Import to vault", |_, p| {
                     Promise::spawn_async(crate::tasks::import::import_images_recursively(vault, p))
                 });
@@ -421,7 +422,7 @@ impl App {
             }
 
             if ui.button("Download...").clicked() {
-                self.add_modal_dialog(modals::Download::default());
+                self.add_modal_dialog(modals::Download::new(current_vault.clone()));
 
                 ui.close_menu();
             }
@@ -440,51 +441,55 @@ impl App {
                 self.add_modal_dialog(modals::EditTag::select());
                 ui.close_menu();
             }
-            if ui.button("Shortcuts...").clicked() {
-                self.add_modal_dialog(modals::TagShortcuts::default());
-                ui.close_menu();
+            if let Ok(vault) = self.state.current_vault() {
+                if ui.button("Shortcuts...").clicked() {
+                    self.add_modal_dialog(modals::TagShortcuts::new(vault));
+                    ui.close_menu();
+                }
             }
         });
     }
 
-    fn link_menu_ui(&mut self, ui: &mut egui::Ui) {
+    fn link_menu_ui(&mut self, ui: &mut egui::Ui, current_vault: &Arc<Vault>) {
         ui.menu_button("Link", |ui| {
             if ui.button("Other Vault...").clicked() {
-                self.add_modal_dialog(modals::LinkVault::default());
+                let vault = Arc::clone(current_vault);
+                self.add_modal_dialog(modals::LinkVault::new(vault));
                 ui.close_menu();
             }
             if ui.button("Sidecars").clicked() {
+                let vault = Arc::clone(current_vault);
                 self.add_task("Link sidecars", |state, p| {
-                    Promise::spawn_async(crate::tasks::link::link_sidecars(state, p))
+                    Promise::spawn_async(crate::tasks::link::link_sidecars(state, vault, p))
                 });
                 ui.close_menu();
             }
             if ui.button("Remove all in vault").clicked() {
+                let vault = Arc::clone(current_vault);
                 self.add_task("Remove links from vault", |state, p| {
                     Promise::spawn_async(async move {
-                        let current_vault = state.current_vault()?;
-                        for item in current_vault.iter_items() {
-                            state.unlink_item(&current_vault, &item).ok();
+                        for item in vault.iter_items() {
+                            state.unlink_item(&vault, &item).ok();
                         }
-                        state.save_current_vault_deferred();
+                        state.save_vault_deferred(vault);
                         Ok(AsyncTaskResult::None)
                     })
                 });
                 ui.close_menu();
             }
             if ui.button("Remove invalid links").clicked() {
+                let vault = Arc::clone(current_vault);
                 self.add_task("Remove invalid links", |state, p| {
                     Promise::spawn_async(async move {
-                        let current_vault = state.current_vault()?;
-                        for item in current_vault.iter_items() {
+                        for item in vault.iter_items() {
                             let links = item.links()?;
                             for link in links {
                                 if state.resolve_link(link).is_none() {
-                                    state.unlink_item(&current_vault, &item).ok();
+                                    state.unlink_item(&vault, &item).ok();
                                 }
                             }
                         }
-                        state.save_current_vault_deferred();
+                        state.save_vault_deferred(vault);
                         state.refresh_unresolved_vaults();
                         Ok(AsyncTaskResult::None)
                     })
@@ -494,14 +499,20 @@ impl App {
         });
     }
 
-    fn transform_menu_ui(&mut self, ui: &mut egui::Ui) {
+    fn transform_menu_ui(&mut self, ui: &mut egui::Ui, current_vault: &Arc<Vault>) {
         ui.menu_button("Transform", |ui| {
             if ui.button("Images...").clicked() {
-                self.add_modal_dialog(modals::TransformImages::default());
+                self.add_modal_dialog(modals::TransformImages::new(
+                    Arc::clone(current_vault),
+                    self.state.clone(),
+                ));
                 ui.close_menu();
             }
             if ui.button("Paths...").clicked() {
-                self.add_modal_dialog(modals::TransformPaths::default());
+                self.add_modal_dialog(modals::TransformPaths::new(
+                    Arc::clone(current_vault),
+                    self.state.clone(),
+                ));
                 ui.close_menu();
             }
             if ui.button("Tags...").clicked() {
@@ -515,27 +526,35 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 self.vault_menu_ui(ctx, ui);
 
-                if self.state.current_vault().is_ok() {
-                    self.import_menu_ui(ui);
+                if let Ok(current_vault) = self.state.current_vault() {
+                    self.import_menu_ui(ui, &current_vault);
 
                     self.tag_menu_ui(ui);
 
-                    self.link_menu_ui(ui);
+                    self.link_menu_ui(ui, &current_vault);
 
-                    self.transform_menu_ui(ui);
+                    self.transform_menu_ui(ui, &current_vault);
                 }
 
                 ui.add_space(16.0);
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Ok(curr_vault) = self.state.current_vault() {
+                        ui.label(&curr_vault.name);
+                        ui.label("Current vault: ");
+                    }
+                });
             });
         });
     }
 
-    fn search_panel_ui(&mut self, ctx: &egui::Context) {
+    fn search_panel_ui(&mut self, ctx: &egui::Context, vault: &Vault) {
         egui::TopBottomPanel::top("search_panel")
             .max_height(24.0)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // contents are declared from right to left due to layout
+                    let mut vm = vault.vm();
 
                     let slider_range = THUMBNAIL_SLIDER_RANGE.get_or_init(|| {
                         StepwiseRange::new(
@@ -561,22 +580,20 @@ impl App {
                     ui.add_space(16.0);
 
                     if ui
-                        .add(egui::Button::new(self.sort_direction.to_icon()).frame(false))
+                        .add(egui::Button::new(vm.sort_direction.to_icon()).frame(false))
                         .clicked()
                     {
-                        self.sort_direction = !self.sort_direction;
+                        vm.sort_direction = !vm.sort_direction;
                     }
 
-                    let sort_type = &mut self.sort_type;
-                    if *sort_type == SortType::Field {
-                        if let Some(vault) = self.state.current_vault_opt() {
-                            ui.add(
-                                widgets::FindTag::new("sort_field", &mut self.sort_field_id, vault)
-                                    .show_tag(true),
-                            );
-                        };
+                    if vm.sort_type == SortType::Field {
+                        ui.add(
+                            widgets::FindTag::new("sort_field", &mut vm.sort_field_id, vault)
+                                .show_tag(true),
+                        );
                     }
 
+                    let sort_type = &mut vm.sort_type;
                     egui::ComboBox::from_label("Sort by")
                         .selected_text(sort_type.to_string())
                         .show_ui(ui, |ui| {
@@ -587,32 +604,13 @@ impl App {
                             ui.style_mut().visuals.widgets.inactive.rounding.se = 0.0;
                         });
 
-                    let Ok(vault) = self.state.current_vault() else {
-                        return;
-                    };
-
-                    widgets::SearchBox::new("main_search_box", &mut self.search_text, vault)
+                    widgets::SearchBox::new("main_search_box", &mut vm.search_text, vault)
                         .desired_width(f32::INFINITY)
                         .interactive()
                         .show(ui);
 
-                    let sorts = match self.sort_type {
-                        SortType::Path => vec![SortExpression::Path(self.sort_direction)],
-                        SortType::Field => {
-                            if let Some(field_id) = self.sort_field_id {
-                                vec![SortExpression::Field(field_id, self.sort_direction)]
-                            } else {
-                                vec![]
-                            }
-                        }
-                    };
-
-                    let filter = self
-                        .search_text
-                        .parse::<FilterExpressionParseResult>()
-                        .map_or(FilterExpression::None, |r| r.expr);
-
-                    self.state.set_filter_and_sorts(filter, sorts);
+                    let mut cache = vault.cache();
+                    cache.query.update(vault, &vm);
                 });
             });
     }
@@ -659,7 +657,7 @@ impl App {
         });
     }
 
-    fn right_panel_ui(&mut self, ui: &mut egui::Ui) {
+    fn right_panel_ui(&mut self, ui: &mut egui::Ui, vault: &Vault) {
         egui::SidePanel::right("right_panel").show_animated_inside(
             ui,
             self.expand_right_panel,
@@ -668,8 +666,15 @@ impl App {
                     .auto_shrink([false, true])
                     .max_width(350.0)
                     .show_viewport(ui, |ui, _vp| -> Option<()> {
-                        let len = self.state.len_item_list();
-                        ui.label(format!("{} item{}", len, if len == 1 { "" } else { "s" }));
+                        let len = vault.resolve_items_len(ItemsSpec::Filtered);
+                        let total_len = vault.len_items();
+                        let plural = |n: usize| if n == 1 { "" } else { "s" };
+                        if len == total_len {
+                            ui.label(format!("{} item{}", len, plural(len)));
+                        } else {
+                            ui.label(format!("{}/{} item{}", len, total_len, plural(total_len)));
+                        }
+
                         ui.horizontal(|ui| {
                             ui.label("Select: ");
 
@@ -681,13 +686,12 @@ impl App {
                             self.thumbnail_grid.set_select_mode(ui.ctx(), select_mode);
                         });
 
-                        let vault = self.state.current_vault_opt()?;
-                        let items = self.thumbnail_grid.get_selected_items(&vault);
+                        let items = self.thumbnail_grid.get_selected_items(vault);
 
                         ui.add(ItemPanel::new(
                             "item_panel",
                             &items,
-                            Arc::clone(&vault),
+                            vault,
                             self.state.clone(),
                         ));
 
@@ -699,13 +703,27 @@ impl App {
 
     fn central_panel_ui(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            let Ok(vault) = self.state.current_vault() else {
+                return;
+            };
+
             let scroll_area_rect = egui::CentralPanel::default()
                 .show_inside(ui, |ui| {
                     time!("Right panel UI", {
-                        self.right_panel_ui(ui);
+                        self.right_panel_ui(ui, &vault);
                     });
 
-                    time!("Item list update", { self.state.update_item_list().ok() });
+                    time!("Item list update", {
+                        let mut cache = vault.cache();
+                        let filter = cache.query.filter().clone();
+                        let sorts: Vec<_> = cache.query.sorts().to_vec();
+                        self.state
+                            .catch(
+                                || "Item list update",
+                                || cache.item_list.update(&vault, &filter, &sorts),
+                            )
+                            .ok();
+                    });
 
                     egui::ScrollArea::vertical()
                         .auto_shrink([false; 2])
@@ -715,17 +733,20 @@ impl App {
                                 ui.available_width().floor();
 
                             time!("Thumbnail grid update", {
-                                self.thumbnail_grid.update(
-                                    ui,
-                                    vp_rect,
-                                    self.state.clone(),
-                                    &self.state.item_list_ids(),
-                                    self.state.item_list_is_new(),
-                                );
+                                let is_new = vault.cache().item_list.consume_refresh_request();
+                                {
+                                    let cache = vault.cache();
+                                    let item_ids = cache.item_list.item_ids();
+                                    self.thumbnail_grid.update(
+                                        ui,
+                                        vp_rect,
+                                        self.state.clone(),
+                                        item_ids,
+                                        is_new,
+                                    );
+                                }
+                                vault.cache().selection = self.thumbnail_grid.get_selected_ids();
                             });
-
-                            self.state
-                                .update_selection(self.thumbnail_grid.get_selected_ids());
                         })
                 })
                 .inner;
@@ -770,6 +791,48 @@ impl App {
             });
         });
     }
+
+    fn handle_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        current_vault: &Vault,
+        current_item: &Item,
+    ) {
+        for (shortcut, behaviour) in current_vault.vm().shortcuts.iter() {
+            if ctx.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
+                match behaviour.action {
+                    ShortcutAction::None => {}
+                    ShortcutAction::ToggleTag(tag_id) => {
+                        if current_item.has_field(&tag_id) {
+                            current_item.remove_field(&tag_id);
+                        } else {
+                            match current_vault.get_definition(&tag_id) {
+                                Some(def) if def.field_type == FieldType::Tag => {
+                                    current_item.set_field_value(tag_id, FieldValue::Tag);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if self
+                            .state
+                            .commit_item_catch(None, current_item, false)
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                if behaviour.move_next {
+                    self.state.add_completed_task(
+                        egui::Id::new("main_thumbnail_grid").with(TAB_REQUEST_ID),
+                        Ok(AsyncTaskResult::NextItem),
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -785,7 +848,7 @@ impl eframe::App for App {
 
         let errors = self.state.drain_errors();
         for error in errors {
-            self.error(format!("{error}"));
+            self.error(format!("{error:?}"));
         }
 
         for new_dialog in self.state.drain_dialogs() {
@@ -798,11 +861,17 @@ impl eframe::App for App {
         self.modal_dialogs
             .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 
+        if let Ok((vault, item)) = self.state.current_vault_and_item() {
+            self.handle_shortcuts(ctx, &vault, &item);
+        }
+
         self.process_tasks(ctx);
 
         self.top_panel_ui(ctx);
 
-        self.search_panel_ui(ctx);
+        if let Ok(vault) = self.state.current_vault() {
+            self.search_panel_ui(ctx, &vault);
+        }
 
         self.bottom_panel_ui(ctx);
 
@@ -814,10 +883,6 @@ impl eframe::App for App {
             current_vault_name: self.state.current_vault_name().map(|s| s.to_string()),
             vault_name_to_file_paths: self.state.vault_name_to_file_paths(),
             thumbnail_row_height: self.thumbnail_grid.params.init_row_height,
-            sorts: self.state.sorts().clone(),
-            filter: self.state.filter().clone(),
-            search_text: self.search_text.clone(),
-            shortcuts2: self.state.shortcuts(),
         };
 
         storage.set_string(

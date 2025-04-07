@@ -1,15 +1,16 @@
-use eframe::egui;
-use eframe::egui::Color32;
-use egui_modal::Modal;
-use poll_promise::Promise;
-
+use crate::data::Vault;
 use crate::errors::AppError;
 use crate::state::AppStateRef;
 use crate::tasks::AsyncTaskResult;
 use crate::ui::modals::AppModal;
+use eframe::egui;
+use eframe::egui::Color32;
+use egui_modal::Modal;
+use poll_promise::Promise;
+use std::sync::Arc;
 
-#[derive(Default)]
 pub struct LinkVault {
+    vault: Arc<Vault>,
     modal: Option<Modal>,
     selected_vault_name: String,
     error_message: Option<String>,
@@ -17,6 +18,16 @@ pub struct LinkVault {
 }
 
 impl LinkVault {
+    pub fn new(vault: Arc<Vault>) -> Self {
+        Self {
+            vault,
+            modal: None,
+            selected_vault_name: String::new(),
+            error_message: None,
+            opened: false,
+        }
+    }
+
     fn verify(&self) -> Result<(), String> {
         if self.selected_vault_name.is_empty() {
             return Err("Please select a vault to link.".to_string());
@@ -34,7 +45,6 @@ impl AppModal for LinkVault {
         let request_id = self.id().with("load_modal");
         let modal = Modal::new(ctx, self.id().value());
 
-        let curr_name = state.current_vault_name().expect("vault to be loaded");
         let vault_names = state.valid_vault_names();
         match state.try_take_request_result(request_id) {
             None => {}
@@ -60,7 +70,7 @@ impl AppModal for LinkVault {
                             let v = &mut self.selected_vault_name;
                             ui.selectable_value(v, String::new(), "--");
                             for vault_name in vault_names {
-                                if vault_name != curr_name {
+                                if &vault_name != &self.vault.name {
                                     ui.selectable_value(v, vault_name.clone(), vault_name);
                                 }
                             }
@@ -83,12 +93,17 @@ impl AppModal for LinkVault {
                 if modal.suggested_button(ui, "Link").clicked() {
                     match self.verify() {
                         Ok(()) => {
-                            let other_vault_name = self.selected_vault_name.clone();
+                            let vault = self.vault.clone();
+                            let Ok(other_vault) = state.get_vault_catch(&self.selected_vault_name)
+                            else {
+                                return;
+                            };
                             state.add_global_task(
-                                format!("Link with {other_vault_name}"),
+                                format!("Link with {}", &self.selected_vault_name),
                                 |s, p| {
                                     Promise::spawn_async(crate::tasks::link::link_vaults_by_path(
-                                        other_vault_name,
+                                        vault,
+                                        other_vault,
                                         s,
                                         p,
                                     ))

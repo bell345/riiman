@@ -1,7 +1,7 @@
 use crate::data::transform::DestinationExistingBehaviour;
 use crate::data::FieldValue;
 use crate::data::{FieldType, ItemId};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -11,8 +11,12 @@ pub enum AppError {
     UserCancelled,
     #[error("not yet implemented")]
     NotImplemented,
+    #[error("invalid unicode for path {path:?}")]
+    InvalidUnicodePath { path: PathBuf },
     #[error("invalid unicode")]
     InvalidUnicode,
+    #[error("incompatible absolute path {path:?} with vault root dir {root_dir:?}")]
+    IncompatibleAbsolutePath { path: PathBuf, root_dir: PathBuf },
     #[error("no current vault")]
     NoCurrentVault,
     #[error("vault has no parent")]
@@ -54,6 +58,10 @@ pub enum AppError {
     },
     #[error("cannot remove current vault (name: {current_vault_name})")]
     CannotRemoveCurrentVault { current_vault_name: String },
+    #[error("there are no selected items")]
+    NoSelectedItems,
+    #[error("there is more than one selected item")]
+    MultipleSelectedItems,
 }
 
 impl AppError {
@@ -65,6 +73,13 @@ impl AppError {
         }
     }
 }
+
+pub fn path_to_str(p: &Path) -> AppResult<&str> {
+    p.to_str()
+        .ok_or_else(|| AppError::InvalidUnicodePath { path: p.to_owned() })
+}
+
+pub type AppResult<T> = Result<T, AppError>;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum HierarchyError {

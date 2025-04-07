@@ -6,7 +6,7 @@ use itertools::Itertools;
 use tokio::task::block_in_place;
 
 use crate::data::Vault;
-use crate::errors::AppError;
+use crate::errors::{path_to_str, AppError};
 use crate::state::AppStateRef;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
 
@@ -38,10 +38,7 @@ pub async fn choose_and_load_vault(
     #[cfg(not(target_arch = "wasm32"))]
     {
         load_vault_from_path(
-            fp.path()
-                .to_str()
-                .ok_or(AppError::InvalidUnicode)?
-                .to_string(),
+            path_to_str(fp.path())?.to_string(),
             state,
             progress,
             set_as_current,
@@ -79,7 +76,10 @@ pub async fn load_vault_from_path(
 }
 
 #[tracing::instrument]
-pub async fn save_vault(vault: Arc<Vault>, progress: ProgressSenderRef) -> AsyncTaskReturn {
+pub async fn save_vault_without_links(
+    vault: Arc<Vault>,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
     let file_path = vault.file_path.clone();
     let name = vault.name.clone();
     let data = block_in_place(move || serde_json::to_vec(&vault))?;
@@ -126,7 +126,7 @@ pub async fn save_new_vault(
     vault.set_file_path(path);
 
     let vault = Arc::new(vault);
-    save_vault(vault.clone(), progress).await?;
+    save_vault_without_links(vault.clone(), progress).await?;
 
     let name = vault.name.clone();
     state.load_vault(
@@ -146,7 +146,7 @@ pub async fn save_current_vault(
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     let vault = state.current_vault()?;
-    save_vault(vault, progress).await
+    save_vault_without_links(vault, progress).await
 }
 
 #[tracing::instrument]
@@ -158,7 +158,7 @@ pub async fn save_vault_and_links(
     let linked_vault_names = vault.iter_linked_vault_names().into_iter().collect_vec();
     let n_names = linked_vault_names.len();
 
-    let res = save_vault(vault, progress.sub_task("Save current vault", 0.5)).await?;
+    let res = save_vault_without_links(vault, progress.sub_task("Save current vault", 0.5)).await?;
 
     let sub_task = progress.sub_task("Save linked vaults", 0.5);
     #[allow(clippy::cast_precision_loss)]
@@ -166,7 +166,7 @@ pub async fn save_vault_and_links(
         let weight = (i as f32) / (n_names as f32);
         if let Ok(linked_vault) = state.get_vault(&vault_name) {
             let task_name = format!("Save linked vault {}", linked_vault.name);
-            save_vault(linked_vault, sub_task.sub_task(&task_name, weight)).await?;
+            save_vault_without_links(linked_vault, sub_task.sub_task(&task_name, weight)).await?;
         }
     }
 

@@ -1,17 +1,18 @@
-use std::collections::HashSet;
-use std::path::Path;
-
 use eframe::egui;
 use eframe::egui::ColorImage;
 use itertools::Itertools;
 use poll_promise::Promise;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
 
 use progress::ProgressReceiver;
 use progress::ProgressSenderAsync;
 pub use progress::ProgressSenderRef;
 
 use crate::data::{DebugViewportClass, ThumbnailParams};
-use crate::state::AppStateRef;
+use crate::errors::AppError;
+use crate::state::{AppState, AppStateRef};
 pub use crate::tasks::thumb_grid::RiverParams;
 pub use crate::tasks::thumb_grid::ThumbnailGridInfo;
 use crate::tasks::transform::TransformResult;
@@ -43,6 +44,7 @@ pub enum AsyncTaskResult {
         results: Vec<SingleImportResult>,
     },
     LinkComplete {
+        vault_name: String,
         other_vault_name: String,
         results: Vec<SingleImportResult>,
     },
@@ -63,7 +65,11 @@ pub enum AsyncTaskResult {
     SelectedFile(String),
     QueryResult(QueryResult),
     TransformationComplete(Vec<anyhow::Result<TransformResult>>),
+    DownloadComplete {
+        vault_name: String,
+    },
     NextItem,
+    RequestGridUpdate,
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
@@ -82,6 +88,8 @@ pub type AsyncTaskReturn = anyhow::Result<AsyncTaskResult>;
 pub type TaskFactory = Box<
     dyn FnOnce(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn> + Send + Sync + 'static,
 >;
+pub type ReusableTaskFactory =
+    Arc<dyn Fn(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn> + Send + Sync + 'static>;
 
 struct Task {
     id: Option<egui::Id>,
@@ -208,5 +216,54 @@ impl TaskState {
             }
         }
         progresses
+    }
+}
+
+pub struct TaskDeclaration {
+    pub id: egui::Id,
+    pub name: String,
+    pub loading: bool,
+    task_factory: ReusableTaskFactory,
+    pub error: Option<anyhow::Error>,
+}
+
+impl TaskDeclaration {
+    pub fn new(
+        id: egui::Id,
+        name: impl Into<String>,
+        task_factory: impl Fn(AppStateRef, ProgressSenderRef) -> Promise<AsyncTaskReturn>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            task_factory: Arc::new(task_factory),
+            loading: false,
+            error: None,
+        }
+    }
+
+    pub fn request(&mut self, app_state: impl AsRef<AppState>) {
+        if !self.loading {
+            let owned_factory = Arc::clone(&self.task_factory);
+            app_state
+                .as_ref()
+                .add_task_request(self.id, &self.name, move |s, p| owned_factory(s, p));
+            self.loading = true;
+        }
+    }
+
+    pub fn try_take(&mut self, app_state: impl AsRef<AppState>) -> Option<AsyncTaskResult> {
+        if let Some(res) = app_state.as_ref().try_take_request_result(self.id) {
+            self.loading = false;
+            match res {
+                Ok(result) => return Some(result),
+                Err(e) if AppError::UserCancelled.is_err(&e) => {}
+                Err(e) => self.error = Some(e),
+            }
+        }
+        None
     }
 }

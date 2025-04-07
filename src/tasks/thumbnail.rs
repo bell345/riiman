@@ -1,7 +1,7 @@
 use std::fs::Metadata;
 
 use crate::data::ThumbnailParams;
-use crate::errors::AppError;
+use crate::errors::path_to_str;
 use crate::tasks::image::{read_and_resize, read_image, wand_to_image};
 use crate::tasks::transform::transform_wand;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
@@ -46,7 +46,7 @@ pub async fn load_image_thumbnail_with_fs(
     progress.send(ProgressState::Indeterminate);
 
     let hash_file = std::env::temp_dir().join(params.hash_path());
-    let hash_file_str = hash_file.to_str().ok_or(AppError::InvalidUnicode)?;
+    let hash_file_str = path_to_str(&hash_file)?;
     tokio::fs::create_dir_all(hash_file.parent().unwrap())
         .await
         .with_context(|| {
@@ -98,7 +98,7 @@ pub async fn load_image_thumbnail(
 
 pub async fn commit_thumbnail_to_fs(params: &ThumbnailParams) -> AsyncTaskReturn {
     let hash_file = std::env::temp_dir().join(params.hash_path());
-    let hash_file_str = hash_file.to_str().ok_or(AppError::InvalidUnicode)?;
+    let hash_file_str = path_to_str(&hash_file)?;
     tokio::fs::create_dir_all(hash_file.parent().unwrap()).await?;
 
     block_in_place(|| {

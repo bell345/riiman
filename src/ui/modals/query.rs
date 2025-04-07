@@ -1,4 +1,5 @@
-use crate::state::AppStateRef;
+use crate::errors::AppError;
+use crate::state::{AppState, AppStateRef};
 use crate::tasks::AsyncTaskResult;
 use crate::ui::AppModal;
 use eframe::egui;
@@ -13,7 +14,7 @@ pub struct Query {
     opened: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct QueryOptions {
     pub kind: QueryKind,
     pub icon: egui_modal::Icon,
@@ -134,5 +135,49 @@ impl AppModal for Query {
 
     fn is_open(&self) -> bool {
         self.modal.as_ref().is_some_and(|m| m.is_open())
+    }
+}
+
+pub struct QueryDeclaration {
+    id: egui::Id,
+    title: String,
+    options: QueryOptions,
+    opened: bool,
+    error: Option<anyhow::Error>,
+}
+
+impl QueryDeclaration {
+    pub fn new(id: egui::Id, title: impl Into<String>, options: QueryOptions) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            options,
+            opened: false,
+            error: None,
+        }
+    }
+
+    pub fn open(&mut self, app_state: impl AsRef<AppState>, msg: impl Into<String>) {
+        if !self.opened {
+            app_state.as_ref().add_dialog(Query::new(
+                self.id,
+                self.title.clone(),
+                msg.into(),
+                self.options.clone(),
+            ));
+            self.opened = true;
+        }
+    }
+
+    pub fn try_take(&mut self, app_state: impl AsRef<AppState>) -> Option<AsyncTaskResult> {
+        if let Some(res) = app_state.as_ref().try_take_request_result(self.id) {
+            self.opened = false;
+            match res {
+                Ok(result) => return Some(result),
+                Err(e) if AppError::UserCancelled.is_err(&e) => {}
+                Err(e) => self.error = Some(e),
+            }
+        }
+        None
     }
 }

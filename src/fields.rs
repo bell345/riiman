@@ -129,7 +129,10 @@ field_defs! {
         #[id("be17c008-c9ba-4691-8e15-44bf76a28a8b")]
         aliases: List,
         #[id("df82a9fb-6afe-4fad-8a1d-35067cc6a409")]
-        no_link: Tag
+        no_link: Tag,
+        #[id("353ac0c5-96da-498e-934e-dbe83a7c62b9")]
+        #[tag(meta::no_link)]
+        last_modified: DateTime
     },
     #[id("f194b5a3-d623-4a28-a91a-c6ed6affff53")]
     tweet {

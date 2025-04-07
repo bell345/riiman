@@ -13,20 +13,20 @@ use crate::errors::AppError;
 use crate::fields;
 use crate::state::AppStateRef;
 use crate::tasks::import::{on_import_result_send_progress, process_many, scan_recursively};
-use crate::tasks::vault::{save_current_and_linked_vaults, save_vault};
+use crate::tasks::vault::save_current_and_linked_vaults;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, SingleImportResult};
 
 const CONCURRENT_TASKS_LIMIT: usize = 16;
 
 async fn link_single_sidecar(
     state: AppStateRef,
+    vault: Arc<Vault>,
     path: PathBuf,
     sidecar_path: PathBuf,
     sidecar_date: DateTime<Utc>,
     skip_save: bool,
 ) -> SingleImportResult {
     let sc_path_string = sidecar_path.to_string_lossy().to_string();
-    let vault = state.current_vault()?;
     let item = vault.get_item(&path)?;
 
     if let Some(item_updated) = item.get_known_field_value(fields::general::SIDECAR_LAST_UPDATED)? {
@@ -115,8 +115,12 @@ async fn link_single_sidecar(
     Ok(path.into_boxed_path())
 }
 
-pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> AsyncTaskReturn {
-    let root_dir = state.current_vault()?.root_dir()?;
+pub async fn link_sidecars(
+    state: AppStateRef,
+    vault: Arc<Vault>,
+    progress: ProgressSenderRef,
+) -> AsyncTaskReturn {
+    let root_dir = vault.root_dir()?;
 
     let entries = scan_recursively(
         root_dir.as_path(),
@@ -171,7 +175,9 @@ pub async fn link_sidecars(state: AppStateRef, progress: ProgressSenderRef) -> A
     process_many(
         entries_with_sidecars,
         progress.sub_task("Import", 0.90),
-        |(path, sc, sc_date)| link_single_sidecar(state.clone(), path, sc, sc_date, true),
+        |(path, sc, sc_date)| {
+            link_single_sidecar(state.clone(), vault.clone(), path, sc, sc_date, true)
+        },
         on_import_result_send_progress,
         CONCURRENT_TASKS_LIMIT,
     )
@@ -222,12 +228,13 @@ async fn link_single_item_task(
 }
 
 pub async fn link_vaults_by_path(
-    other_vault_name: String,
+    vault: Arc<Vault>,
+    other_vault: Arc<Vault>,
     state: AppStateRef,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
-    let vault = state.current_vault()?;
-    let other_vault = state.get_vault(&other_vault_name)?;
+    let vault_name = vault.name.clone();
+    let other_vault_name = other_vault.name.clone();
 
     let paths: Vec<PathBuf> = vault.iter_items().map(|i| i.path().into()).collect();
 
@@ -252,6 +259,7 @@ pub async fn link_vaults_by_path(
     state.save_vault_deferred(other_vault);
 
     Ok(AsyncTaskResult::LinkComplete {
+        vault_name,
         other_vault_name,
         results,
     })

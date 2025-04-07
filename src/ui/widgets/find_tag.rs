@@ -1,8 +1,6 @@
 // Heavily informed by Jake Hansen's `egui_autocomplete`:
 // https://github.com/JakeHandsome/egui_autocomplete/blob/master/src/lib.rs
 
-use std::sync::Arc;
-
 use eframe::egui;
 use eframe::egui::{Rect, Response, Ui, Vec2, Widget};
 use indexmap::IndexMap;
@@ -17,10 +15,10 @@ use crate::ui::widgets;
 
 const MAX_SUGGESTIONS: usize = 10;
 
-pub struct FindTag<'a> {
+pub struct FindTag<'a, 'v> {
     widget_id: egui::Id,
     tag_id: &'a mut Option<Uuid>,
-    vault: Arc<Vault>,
+    vault: &'v Vault,
     state: State,
 
     create_req: Option<&'a mut Option<String>>,
@@ -49,11 +47,11 @@ struct State {
 
 impl CloneableTempState for State {}
 
-impl<'a> FindTag<'a> {
+impl<'a, 'v> FindTag<'a, 'v> {
     pub fn new(
         widget_id: impl std::hash::Hash,
         tag_id: &'a mut Option<Uuid>,
-        vault: Arc<Vault>,
+        vault: &'v Vault,
     ) -> Self {
         Self {
             widget_id: egui::Id::new(widget_id),
@@ -187,7 +185,7 @@ impl<'a> FindTag<'a> {
         self.state.search_results = Some(vec);
         self.state.selected_index = Some(0);
     }
-    
+
     fn get_selected_option(&self) -> Option<&AutocompleteResult> {
         let index = self.state.selected_index.as_ref()?;
         let results = self.state.search_results.as_ref()?;
@@ -203,8 +201,7 @@ impl<'a> FindTag<'a> {
                 match result {
                     AutocompleteResult::MatchResult(r) => *self.tag_id = Some(r.id),
                     AutocompleteResult::CreateResult => {
-                        **self.create_req.as_mut().unwrap() =
-                            Some(self.state.search_text.clone());
+                        **self.create_req.as_mut().unwrap() = Some(self.state.search_text.clone());
                     }
                 }
             }
@@ -272,7 +269,7 @@ impl<'a> FindTag<'a> {
     }
 }
 
-impl<'a> Widget for FindTag<'a> {
+impl<'a, 'v> Widget for FindTag<'a, 'v> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         ui.ctx().check_for_id_clash(
             self.widget_id,
@@ -292,7 +289,7 @@ impl<'a> Widget for FindTag<'a> {
                 widgets::SearchBox::new(
                     self.widget_id.with("search_box"),
                     &mut self.state.search_text,
-                    Arc::clone(&self.vault),
+                    self.vault,
                 )
                 .tags(&tags)
                 .desired_width(self.desired_width),

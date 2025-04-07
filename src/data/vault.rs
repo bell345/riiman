@@ -1,25 +1,23 @@
-use anyhow::{anyhow, Context};
-use chrono::{DateTime, TimeZone, Utc};
+use anyhow::anyhow;
 use std::collections::{HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use dashmap::mapref::multiple::RefMulti;
-use dashmap::mapref::one::{Ref, RefMut};
+use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
-use eframe::egui;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use uuid::Uuid;
 
 use crate::data::field_refs::FieldDefRefOrPlaceholder;
+use crate::data::transform::SourceKind;
+use crate::data::vault_ui::{VaultCacheModel, VaultViewModel};
 use crate::data::{kind, FieldDefinition, FieldStore, FieldValue, Item, ItemId};
-use crate::errors::{AppError, HierarchyError};
+use crate::errors::{path_to_str, AppError, AppResult, HierarchyError};
 use crate::fields;
-use crate::state::AppStateRef;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Vault {
@@ -28,7 +26,12 @@ pub struct Vault {
     definitions: DashMap<Uuid, FieldDefinition>,
     fields: DashMap<Uuid, FieldValue>,
     items: DashMap<String, Arc<Item>>,
-    last_updated: Mutex<Option<DateTime<Utc>>>,
+
+    #[serde(default)]
+    vm: Mutex<VaultViewModel>,
+
+    #[serde(skip)]
+    cache: Mutex<VaultCacheModel>,
 
     #[serde(skip)]
     pub file_path: Option<Box<Path>>,
@@ -62,7 +65,6 @@ impl Vault {
     pub fn new(name: String) -> Vault {
         Vault {
             name,
-            last_updated: Some(Utc::now()).into(),
             ..Default::default()
         }
         .with_standard_defs()
@@ -93,6 +95,12 @@ impl Vault {
         self
     }
 
+    pub fn add_parent_refs(self: &Arc<Vault>) {
+        for item in &self.items {
+            item.with_vault(&self);
+        }
+    }
+
     pub fn with_standard_defs(self) -> Self {
         for def in fields::defs() {
             self.set_definition((*def).clone());
@@ -108,17 +116,6 @@ impl Vault {
             .parent()
             .ok_or(AppError::VaultNoParent)?
             .into())
-    }
-
-    pub fn last_updated(&self) -> DateTime<Utc> {
-        self.last_updated
-            .lock()
-            .unwrap()
-            .unwrap_or(Utc.timestamp_nanos(0))
-    }
-
-    pub fn set_last_updated(&self) {
-        *self.last_updated.lock().unwrap() = Some(Utc::now());
     }
 
     pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
@@ -173,22 +170,22 @@ impl Vault {
     #[tracing::instrument]
     pub fn set_file_path(&mut self, path: &Path) {
         self.file_path = Some(path.into());
-        self.set_last_updated();
     }
 
-    pub fn resolve_rel_path<'a>(&self, path: &'a Path) -> anyhow::Result<&'a str> {
+    pub fn resolve_rel_path<'a>(&self, path: &'a Path) -> AppResult<&'a str> {
         let rel_path = match (path.is_relative(), self.file_path.as_ref()) {
             (false, Some(vault_path)) => {
                 let root_dir = vault_path.parent().ok_or(AppError::VaultNoParent)?;
-                path.strip_prefix(root_dir)?
+                path.strip_prefix(root_dir)
+                    .map_err(|_| AppError::IncompatibleAbsolutePath {
+                        path: path.to_owned(),
+                        root_dir: root_dir.to_owned(),
+                    })?
             }
             _ => path,
         };
 
-        rel_path
-            .to_str()
-            .ok_or(AppError::InvalidUnicode)
-            .with_context(|| format!("while decoding path: {}", path.display()))
+        path_to_str(rel_path)
     }
 
     pub fn resolve_abs_path(&self, path: &Path) -> anyhow::Result<PathBuf> {
@@ -217,18 +214,19 @@ impl Vault {
         self.items_by_id.get(&id).and_then(|r| r.upgrade())
     }
 
-    pub fn get_item_by_id(&self, id: ItemId) -> anyhow::Result<Arc<Item>> {
+    pub fn get_item_by_id(&self, id: ItemId) -> AppResult<Arc<Item>> {
         self.get_item_opt_by_id(id)
-            .ok_or(anyhow!(AppError::MissingItemId { id }))
+            .ok_or(AppError::MissingItemId { id })
     }
 
-    pub fn get_item_or_init(&self, path: &Path) -> anyhow::Result<Arc<Item>> {
+    pub fn get_item_or_init(self: &Arc<Self>, path: &Path) -> AppResult<Arc<Item>> {
         let rel_path = self.resolve_rel_path(path)?;
         Ok(self
             .items
             .entry(rel_path.to_owned())
             .or_insert_with(|| {
                 let item = Arc::new(Item::new(rel_path.to_owned()));
+                item.with_vault(self);
                 self.items_by_id
                     .insert(ItemId::from_item(self, &item), Arc::downgrade(&item));
                 self.set_last_updated();
@@ -241,15 +239,32 @@ impl Vault {
         kind::ItemRef((self.name.clone().into(), item.path_string().to_owned()))
     }
 
-    pub fn resolve_item_ids(&self, ids: &[ItemId]) -> Vec<Arc<Item>> {
+    pub fn resolve_items(&self, spec: ItemsSpec, cache: &VaultCacheModel) -> Vec<Arc<Item>> {
+        let ids = match spec {
+            ItemsSpec::All => return self.items.iter().map(|i| Arc::clone(&i)).collect(),
+            ItemsSpec::Selection => cache.selection.as_slice(),
+            ItemsSpec::Filtered => cache.item_list.item_ids(),
+            ItemsSpec::IdList(ids) => ids,
+        };
         ids.iter()
             .filter_map(|id| self.get_item_opt_by_id(*id))
             .collect()
     }
 
+    pub fn resolve_items_len(&self, spec: ItemsSpec) -> usize {
+        let cache = self.cache();
+        match spec {
+            ItemsSpec::All => self.items.len(),
+            ItemsSpec::Selection => cache.selection.len(),
+            ItemsSpec::Filtered => cache.item_list.item_ids().len(),
+            ItemsSpec::IdList(ids) => ids.len(),
+        }
+    }
+
     pub fn remove_item(&self, path: &Path) -> anyhow::Result<()> {
         let rel_path = self.resolve_rel_path(path)?;
         self.items.remove(rel_path);
+        self.set_last_updated();
 
         Ok(())
     }
@@ -393,10 +408,35 @@ impl Vault {
 
         Ok(())
     }
+
+    pub fn vm(&self) -> MutexGuard<VaultViewModel> {
+        self.vm.lock().unwrap()
+    }
+
+    pub fn cache(&self) -> MutexGuard<VaultCacheModel> {
+        self.cache.lock().unwrap()
+    }
 }
 
 impl FieldStore for Vault {
     fn fields(&self) -> &DashMap<Uuid, FieldValue> {
         &self.fields
+    }
+}
+
+pub enum ItemsSpec<'a> {
+    All,
+    Selection,
+    Filtered,
+    IdList(&'a [ItemId]),
+}
+
+impl From<SourceKind> for ItemsSpec<'_> {
+    fn from(value: SourceKind) -> Self {
+        match value {
+            SourceKind::Selection => ItemsSpec::Selection,
+            SourceKind::Filtered => ItemsSpec::Filtered,
+            SourceKind::All => ItemsSpec::All,
+        }
     }
 }

@@ -2,7 +2,6 @@ use crate::state::AppStateRef;
 use crate::tasks::transform::{TransformResult, TransformReturn};
 use crate::ui::modals::AppModal;
 use crate::ui::{buttons, modals};
-use anyhow::anyhow;
 use eframe::egui;
 use egui_modal::{Modal, ModalStyle};
 

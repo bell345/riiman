@@ -1,4 +1,4 @@
-use crate::errors::AppError;
+use crate::errors::path_to_str;
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use eframe::egui;
@@ -8,24 +8,14 @@ use std::path::Path;
 
 pub fn read_image(path: impl AsRef<Path>) -> anyhow::Result<MagickWand> {
     let wand = MagickWand::new();
-    wand.read_image(
-        path.as_ref()
-            .to_str()
-            .ok_or(AppError::InvalidUnicode)
-            .with_context(|| format!("decoding path: {}", path.as_ref().display()))?,
-    )
-    .with_context(|| format!("while reading from image at {}", path.as_ref().display()))?;
+    wand.read_image(path_to_str(path.as_ref())?)
+        .with_context(|| format!("while reading from image at {}", path.as_ref().display()))?;
     Ok(wand)
 }
 
 pub fn write_image(wand: &MagickWand, path: impl AsRef<Path>) -> anyhow::Result<()> {
-    wand.write_image(
-        path.as_ref()
-            .to_str()
-            .ok_or(AppError::InvalidUnicode)
-            .with_context(|| format!("decoding path: {}", path.as_ref().display()))?,
-    )
-    .with_context(|| format!("while writing to path {}", path.as_ref().display()))?;
+    wand.write_image(path_to_str(path.as_ref())?)
+        .with_context(|| format!("while writing to path {}", path.as_ref().display()))?;
     Ok(())
 }
 
@@ -41,10 +31,7 @@ pub async fn get_last_modified(path: impl AsRef<Path>) -> DateTime<Utc> {
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_possible_truncation)]
 pub fn read_and_resize(abs_path: &Path, new_height: usize) -> anyhow::Result<(MagickWand, Vec2)> {
-    let abs_path = abs_path
-        .to_str()
-        .ok_or(AppError::InvalidUnicode)
-        .with_context(|| format!("while decoding path: {}", abs_path.display()))?;
+    let abs_path = path_to_str(abs_path)?;
     let wand = MagickWand::new();
     wand.read_image(abs_path)
         .with_context(|| format!("while reading from image at {abs_path}"))?;

@@ -1,12 +1,9 @@
-use crate::data::{FilterExpression, Item, ItemId, Vault};
+use crate::data::{FieldStore, FilterExpression, ItemId, Vault};
 use crate::tasks::sort::{get_filtered_and_sorted_items, SortExpression};
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ItemCacheParams {
-    pub(crate) vault_name: String,
     pub(crate) last_updated: DateTime<Utc>,
     pub(crate) sorts: Vec<SortExpression>,
     pub(crate) filter: FilterExpression,
@@ -14,8 +11,16 @@ pub struct ItemCacheParams {
 
 #[derive(Default)]
 pub struct ItemCache {
-    item_ids: RwLock<Vec<ItemId>>,
-    pub(crate) params: Mutex<ItemCacheParams>,
+    item_ids: Vec<ItemId>,
+    pub(crate) params: ItemCacheParams,
+    is_new: bool,
+    refresh_requested: bool,
+}
+
+fn take(x: &mut bool) -> bool {
+    let value = *x;
+    *x = false;
+    value
 }
 
 impl ItemCache {
@@ -26,24 +31,18 @@ impl ItemCache {
         sorts: &[SortExpression],
     ) -> Option<ItemCacheParams> {
         let make_params = || ItemCacheParams {
-            vault_name: vault.name.to_string(),
-            last_updated: vault.last_updated(),
+            last_updated: vault.last_modified(),
             filter: filter.to_owned(),
             sorts: sorts.to_owned(),
         };
 
-        let params = self.params.lock().unwrap();
-
-        if params.vault_name != vault.name {
+        if self.params.last_updated != vault.last_modified() {
             return Some(make_params());
         }
-        if params.last_updated != vault.last_updated() {
+        if self.params.filter != *filter {
             return Some(make_params());
         }
-        if params.filter != *filter {
-            return Some(make_params());
-        }
-        if params.sorts != *sorts {
+        if self.params.sorts != *sorts {
             return Some(make_params());
         }
 
@@ -51,31 +50,36 @@ impl ItemCache {
     }
 
     pub fn update(
-        &self,
+        &mut self,
         vault: &Vault,
         filter: &FilterExpression,
         sorts: &[SortExpression],
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<()> {
         let Some(params) = self.new_params_opt(vault, filter, sorts) else {
-            return Ok(false);
+            return Ok(());
         };
 
         // TODO: handle errors sanely and properly
-        let items = get_filtered_and_sorted_items(&vault, filter, sorts)?;
-        *self.params.lock().unwrap() = params;
-        *self.item_ids.write().unwrap() = items
+        self.params = params;
+        let items = get_filtered_and_sorted_items(vault, filter, sorts)?;
+        self.item_ids = items
             .iter()
-            .map(|item| ItemId::from_item(&vault, item))
+            .map(|item| ItemId::from_item(vault, item))
             .collect();
 
-        Ok(true)
+        self.is_new = true;
+        Ok(())
     }
 
-    pub fn item_ids(&self) -> Vec<ItemId> {
-        self.item_ids.read().unwrap().iter().copied().collect()
+    pub fn item_ids(&self) -> &[ItemId] {
+        &self.item_ids
     }
 
-    pub fn len_items(&self) -> usize {
-        self.item_ids.read().unwrap().len()
+    pub fn request_update(&mut self) {
+        self.refresh_requested = true;
+    }
+
+    pub fn consume_refresh_request(&mut self) -> bool {
+        take(&mut self.is_new) | take(&mut self.refresh_requested)
     }
 }

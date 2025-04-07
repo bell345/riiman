@@ -1,31 +1,32 @@
-use crate::errors::AppError;
+use crate::data::Vault;
+use crate::state::AppStateRef;
+use crate::tasks::download::{
+    GalleryDLLogin, GalleryDLLoginDiscriminants, GalleryDLParams, GalleryDLSource,
+    GalleryDLSourceDiscriminants,
+};
+use crate::tasks::{AsyncTaskResult, TaskDeclaration};
+use crate::ui::cloneable_state::CloneablePersistedState;
+use crate::ui::modals::AppModal;
+use crate::ui::{choice, theme};
 use eframe::egui;
 use eframe::egui::Color32;
 use egui_extras::TableBody;
 use egui_modal::{Modal, ModalStyle};
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
-use crate::state::AppStateRef;
-use crate::tasks::download::{
-    GalleryDLLogin, GalleryDLLoginDiscriminants, GalleryDLParams, GalleryDLSource,
-    GalleryDLSourceDiscriminants,
-};
-use crate::tasks::AsyncTaskResult;
-use crate::ui::cloneable_state::CloneablePersistedState;
-use crate::ui::modals::AppModal;
-use crate::ui::{choice, theme};
-
-#[derive(Default)]
 pub struct Download {
+    vault: Arc<Vault>,
     modal: Option<Modal>,
     error_message: Option<String>,
     params: GalleryDLParams,
-    loading_find: bool,
     find_error: Option<String>,
     opened: bool,
+
+    find_gallery_dl_task: TaskDeclaration,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -36,32 +37,43 @@ struct State {
 impl CloneablePersistedState for State {}
 
 const ROW_HEIGHT: f32 = 18.0;
+const ID_STRING: &str = "download_modal";
 
 impl Download {
-    fn select_gallery_dl(&mut self, app_state: AppStateRef) {
-        self.loading_find = true;
-        app_state.add_task_request(self.find_request_id(), "Find gallery-dl", |state, p| {
-            Promise::spawn_async(crate::tasks::download::select_gallery_dl(state, p))
-        });
+    pub fn new(vault: Arc<Vault>) -> Self {
+        Self {
+            vault,
+            modal: None,
+            error_message: None,
+            params: Default::default(),
+            find_error: None,
+            opened: false,
+            find_gallery_dl_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("find_gallery_dl_task"),
+                "Find gallery-dl",
+                |s, p| Promise::spawn_async(crate::tasks::download::select_gallery_dl(s, p)),
+            ),
+        }
     }
+
     fn executable_fragment(&mut self, body: &mut TableBody, state: AppStateRef) {
         body.row(ROW_HEIGHT, |mut row| {
             row.col(|ui| {
                 ui.label("gallery-dl: ");
             });
             row.col(|ui| {
-                if self.loading_find {
+                if self.find_gallery_dl_task.loading {
                     ui.label(egui::RichText::new("Detecting...").color(theme::PROGRESS_TEXT));
                 } else if self.params.location.is_none() || self.params.version.is_none() {
                     ui.label(egui::RichText::new("Not found").color(theme::ERROR_TEXT));
                     if ui.button("Select...").clicked() {
-                        self.select_gallery_dl(state.clone());
+                        self.find_gallery_dl_task.request(state);
                     }
                 } else {
                     ui.label(egui::RichText::new("Found").color(theme::SUCCESS_TEXT));
                     ui.label(format!(" ({})", self.params.version.as_ref().unwrap()));
                     if ui.button("Edit...").clicked() {
-                        self.select_gallery_dl(state.clone());
+                        self.find_gallery_dl_task.request(state);
                     }
                 }
             });
@@ -215,10 +227,6 @@ impl Download {
         );
     }
 
-    fn find_request_id(&self) -> egui::Id {
-        self.id().with("find_gallery_dl")
-    }
-
     fn validate(&self) -> Result<(), &'static str> {
         if self.params.location.is_none() || self.params.version.is_none() {
             return Err("A valid gallery-dl executable is required.");
@@ -261,7 +269,7 @@ impl Download {
 
 impl AppModal for Download {
     fn id(&self) -> egui::Id {
-        "download_modal".into()
+        ID_STRING.into()
     }
 
     fn update(&mut self, ctx: &egui::Context, app_state: AppStateRef) {
@@ -277,23 +285,14 @@ impl AppModal for Download {
             log_file.push(format!("{}.txt", Uuid::new_v4()));
             self.params.log_file = Some(log_file.to_str().unwrap().to_string());
 
-            app_state.add_task_request(self.find_request_id(), "Find gallery-dl", |state, p| {
-                Promise::spawn_async(crate::tasks::download::find_gallery_dl(state, p))
-            });
-            self.loading_find = true;
+            self.find_gallery_dl_task.request(app_state.clone());
         }
 
-        if let Some(res) = app_state.try_take_request_result(self.find_request_id()) {
-            self.loading_find = false;
-            match res {
-                Ok(AsyncTaskResult::FoundGalleryDl { path, version }) => {
-                    self.params.location = Some(path);
-                    self.params.version = Some(version);
-                }
-                Err(e) if AppError::UserCancelled.is_err(&e) => {}
-                Err(e) => self.find_error = Some(e.to_string()),
-                _ => {}
-            }
+        if let Some(AsyncTaskResult::FoundGalleryDl { path, version }) =
+            self.find_gallery_dl_task.try_take(app_state.clone())
+        {
+            self.params.location = Some(path);
+            self.params.version = Some(version);
         }
 
         modal.show(|ui| {
@@ -333,10 +332,11 @@ impl AppModal for Download {
                         modal.open();
                     } else {
                         let params = self.params.clone();
-                        app_state.add_global_task(self.params.task_name(), |state, progress| {
+                        let vault = self.vault.clone();
+                        app_state.add_global_task(self.params.task_name(), |_, progress| {
                             Promise::spawn_async(
                                 crate::tasks::download::perform_gallery_dl_download(
-                                    state, progress, params,
+                                    vault, progress, params,
                                 ),
                             )
                         });
