@@ -1,8 +1,7 @@
-use std::path::Path;
-use std::sync::Arc;
-
 use anyhow::Context;
 use itertools::Itertools;
+use std::path::Path;
+use std::sync::Arc;
 use tokio::task::block_in_place;
 
 use crate::data::Vault;
@@ -80,6 +79,10 @@ pub async fn save_vault_without_links(
     vault: Arc<Vault>,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
+    if vault.save_is_prevented() {
+        return Ok(AsyncTaskResult::None);
+    }
+
     let file_path = vault.file_path.clone();
     let name = vault.name.clone();
     let data = block_in_place(move || serde_json::to_vec(&vault))?;
@@ -155,6 +158,10 @@ pub async fn save_vault_and_links(
     vault: Arc<Vault>,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
+    if vault.save_is_prevented() {
+        return Ok(AsyncTaskResult::None);
+    }
+
     let linked_vault_names = vault.iter_linked_vault_names().into_iter().collect_vec();
     let n_names = linked_vault_names.len();
 

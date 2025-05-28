@@ -10,7 +10,7 @@ use crate::data::{
 };
 use crate::errors::{AppError, AppResult};
 use crate::fields;
-use crate::tasks::{AsyncTaskReturn, ProgressSenderRef, TaskFactory};
+use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, TaskFactory};
 use crate::ui::AppModal;
 use chrono::TimeDelta;
 use dashmap::{DashMap, DashSet};
@@ -167,6 +167,8 @@ impl AppState {
 
         let mut l = self.current_vault_name.lock().unwrap();
         *l = Some(name);
+
+        self.add_global_message(Ok(AsyncTaskResult::RequestGridUpdate));
 
         Ok(())
     }

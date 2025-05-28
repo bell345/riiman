@@ -450,6 +450,12 @@ impl ThumbnailGrid {
         self.app_state = app_state;
         self.state = State::load(ui.ctx(), self.id()).unwrap_or_default();
 
+        {
+            let grid = std::mem::take(&mut self.info);
+            self.handle_tab(ui, &grid.thumbnails);
+            self.info = grid;
+        }
+
         let thumbnail_grid_is_new = self.info.params != self.params;
         if item_cache_is_new || thumbnail_grid_is_new {
             self.set_scroll = true;
@@ -505,8 +511,6 @@ impl ThumbnailGrid {
             .max()
             .unwrap();
         ui.set_width(*max_x);
-
-        self.handle_tab(ui, &grid.thumbnails);
 
         self.double_clicked = None;
         self.has_focus = false;

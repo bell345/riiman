@@ -49,7 +49,7 @@ pub trait FieldStore: Debug {
         }
     }
 
-    fn get_or_insert_known_field_value<V: Debug, T: FieldLike<V>>(
+    fn get_or_insert_known_field_value<V: Debug + Clone, T: FieldLike<V>>(
         &self,
         field: KnownField<T>,
         default_value: V,
@@ -57,16 +57,19 @@ pub trait FieldStore: Debug {
     where
         <T as TryFrom<FieldValue>>::Error: std::error::Error + Send + Sync + 'static,
     {
-        self.fields()
-            .entry(field.id)
-            .or_insert_with(|| {
-                self.set_last_updated();
-                T::from(default_value).into()
-            })
-            .clone()
-            .try_into()
-            .map(|v: T| -> V { v.into() })
-            .with_context(|| format!("while retrieving field {}", field.name))
+        Ok(match self.fields().get(&field.id) {
+            Some(fv) => fv
+                .value()
+                .clone()
+                .try_into()
+                .map(|v: T| -> V { v.into() })
+                .with_context(|| format!("while retrieving field {}", field.name))?,
+            None => {
+                self.fields()
+                    .insert(field.id.clone(), T::from(default_value.clone()).into());
+                default_value
+            }
+        })
     }
 
     fn set_known_field_value<V: Debug, T: FieldLike<V>>(&self, field: KnownField<T>, value: V) {

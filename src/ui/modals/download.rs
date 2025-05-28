@@ -27,6 +27,7 @@ pub struct Download {
     opened: bool,
 
     find_gallery_dl_task: TaskDeclaration,
+    select_gallery_dl_task: TaskDeclaration,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -51,6 +52,11 @@ impl Download {
             find_gallery_dl_task: TaskDeclaration::new(
                 egui::Id::from(ID_STRING).with("find_gallery_dl_task"),
                 "Find gallery-dl",
+                |s, p| Promise::spawn_async(crate::tasks::download::find_gallery_dl(s, p)),
+            ),
+            select_gallery_dl_task: TaskDeclaration::new(
+                egui::Id::from(ID_STRING).with("select_gallery_dl_task"),
+                "Select gallery-dl",
                 |s, p| Promise::spawn_async(crate::tasks::download::select_gallery_dl(s, p)),
             ),
         }
@@ -67,13 +73,13 @@ impl Download {
                 } else if self.params.location.is_none() || self.params.version.is_none() {
                     ui.label(egui::RichText::new("Not found").color(theme::ERROR_TEXT));
                     if ui.button("Select...").clicked() {
-                        self.find_gallery_dl_task.request(state);
+                        self.select_gallery_dl_task.request(state);
                     }
                 } else {
                     ui.label(egui::RichText::new("Found").color(theme::SUCCESS_TEXT));
                     ui.label(format!(" ({})", self.params.version.as_ref().unwrap()));
                     if ui.button("Edit...").clicked() {
-                        self.find_gallery_dl_task.request(state);
+                        self.select_gallery_dl_task.request(state);
                     }
                 }
             });

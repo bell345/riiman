@@ -1007,6 +1007,7 @@ pub async fn apply_path_transformations(
     params: TransformPathParams,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
+    let suppress_save = vault.prevent_save();
     let bulk = Arc::new(bulk);
     let params = Arc::new(params);
     let results = process_many(
@@ -1031,6 +1032,8 @@ pub async fn apply_path_transformations(
     )
     .await?;
 
+    drop(suppress_save);
+
     save_vault_and_links(state.clone(), vault, progress.sub_task("Save", 0.025)).await?;
     if bulk.destination.kind == DestinationKind::OtherVault {
         if let Ok(other_vault) = state.get_vault(&bulk.destination.other_vault_name) {
@@ -1050,6 +1053,7 @@ pub async fn apply_image_transformations(
     params: TransformImageParams,
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
+    let suppress_save = vault.prevent_save();
     let bulk = Arc::new(bulk);
     let params = Arc::new(params);
     let results = process_many(
@@ -1073,6 +1077,8 @@ pub async fn apply_image_transformations(
         CONCURRENT_TASKS_LIMIT,
     )
     .await?;
+
+    drop(suppress_save);
 
     save_vault_and_links(state.clone(), vault, progress.sub_task("Save", 0.025)).await?;
     if bulk.destination.kind == DestinationKind::OtherVault {

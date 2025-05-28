@@ -1,15 +1,15 @@
 use anyhow::anyhow;
-use std::collections::{HashSet, VecDeque};
-use std::fmt::{Debug, Formatter};
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
-
 use dashmap::mapref::multiple::RefMulti;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
+use std::fmt::{Debug, Formatter};
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use uuid::Uuid;
 
 use crate::data::field_refs::FieldDefRefOrPlaceholder;
@@ -37,6 +37,8 @@ pub struct Vault {
     pub file_path: Option<Box<Path>>,
     #[serde(skip)]
     items_by_id: DashMap<ItemId, Weak<Item>>,
+    #[serde(skip)]
+    prevent_save: AtomicBool,
 }
 
 impl Debug for Vault {
@@ -416,6 +418,15 @@ impl Vault {
     pub fn cache(&self) -> MutexGuard<VaultCacheModel> {
         self.cache.lock().unwrap()
     }
+
+    pub fn save_is_prevented(&self) -> bool {
+        self.prevent_save.load(Ordering::Relaxed)
+    }
+
+    pub fn prevent_save(&self) -> VaultSaveSuppressor {
+        self.prevent_save.store(true, Ordering::Relaxed);
+        VaultSaveSuppressor(&self)
+    }
 }
 
 impl FieldStore for Vault {
@@ -438,5 +449,13 @@ impl From<SourceKind> for ItemsSpec<'_> {
             SourceKind::Filtered => ItemsSpec::Filtered,
             SourceKind::All => ItemsSpec::All,
         }
+    }
+}
+
+pub struct VaultSaveSuppressor<'v>(&'v Vault);
+
+impl<'v> Drop for VaultSaveSuppressor<'v> {
+    fn drop(&mut self) {
+        self.0.prevent_save.store(false, Ordering::Relaxed);
     }
 }
