@@ -499,13 +499,10 @@ impl TransformPaths {
                     ui.label("New");
                 });
             })
-            .body(|mut body| {
-                let Some(vault) = self.app_state.current_vault_opt() else {
-                    return;
-                };
+            .body(|body| {
                 body.rows(24.0, self.transformed_paths.len(), |mut row| {
                     let (item_id, transformed_path) = &self.transformed_paths[row.index()];
-                    let Some(item) = vault.get_item_by_id(*item_id).ok() else {
+                    let Some(item) = self.vault.get_item_by_id(*item_id).ok() else {
                         return;
                     };
                     row.col(|ui| {

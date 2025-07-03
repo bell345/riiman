@@ -91,7 +91,7 @@ impl<'a, 'v, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, 'v, Ref> {
             }
 
             let result = ui.add(
-                widgets::FindTag::new(self.id.with("new_tag"), &mut state.tag_id, &self.vault)
+                widgets::FindTag::new(self.id.with("new_tag"), &mut state.tag_id, self.vault)
                     .desired_width(desired_width)
                     .show_tag(true)
                     .create_request(&mut new_tag_name)
@@ -153,7 +153,7 @@ impl<'a, 'v, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, 'v, Ref> {
         let mut fields: Vec<_> = self
             .state
             .field_store
-            .iter_fields_with_defs(&self.vault)
+            .iter_fields_with_defs(self.vault)
             .collect();
         fields.sort_by_key(|r| r.definition().name.clone());
 
@@ -245,7 +245,7 @@ impl<'a, 'v, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, 'v, Ref> {
     }
 
     pub fn view_ui(&mut self, ui: &mut Ui, item: &Item) {
-        let mut fields: Vec<_> = item.iter_fields_with_defs(&self.vault).collect();
+        let mut fields: Vec<_> = item.iter_fields_with_defs(self.vault).collect();
         fields.sort_by_key(|r| r.definition().name.clone());
 
         let existing_ids: Vec<_> = fields.iter().map(|f| f.definition().id).collect();
@@ -319,14 +319,14 @@ impl<'a, 'v, Ref: Deref<Target = Item> + 'a> ItemPanel<'a, 'v, Ref> {
     }
 }
 
-impl<'a, 'v, Ref: Deref<Target = Item> + 'a> Widget for ItemPanel<'a, 'v, Ref> {
+impl<'a, Ref: Deref<Target = Item> + 'a> Widget for ItemPanel<'a, '_, Ref> {
     fn ui(mut self, ui: &mut Ui) -> Response {
         self.state = State::load(ui.ctx(), self.id).unwrap_or_default();
 
         let res = ui
             .vertical(|ui| match &self.items[..] {
                 [] => {}
-                [ref item] => self.single_ui(ui, item),
+                [item] => self.single_ui(ui, item),
                 _ => self.multiple_ui(ui),
             })
             .response;

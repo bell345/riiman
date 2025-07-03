@@ -57,18 +57,15 @@ pub trait FieldStore: Debug {
     where
         <T as TryFrom<FieldValue>>::Error: std::error::Error + Send + Sync + 'static,
     {
-        Ok(match self.fields().get(&field.id) {
-            Some(fv) => fv
-                .value()
+        Ok(if let Some(fv) = self.fields().get(&field.id) {
+            fv.value()
                 .clone()
                 .try_into()
                 .map(|v: T| -> V { v.into() })
-                .with_context(|| format!("while retrieving field {}", field.name))?,
-            None => {
-                self.fields()
-                    .insert(field.id.clone(), T::from(default_value.clone()).into());
-                default_value
-            }
+                .with_context(|| format!("while retrieving field {}", field.name))?
+        } else {
+            self.set_known_field_value(field, default_value.clone());
+            default_value
         })
     }
 

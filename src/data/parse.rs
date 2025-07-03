@@ -123,9 +123,9 @@ fn uuid(s: Span) -> IResult<Span, Uuid> {
         )),
         |(a, b, c, d, e)| {
             let (a, b, c, d) = (
-                u32::from_str_radix(a.as_str(), 16).unwrap(),
-                u16::from_str_radix(b.as_str(), 16).unwrap(),
-                u16::from_str_radix(c.as_str(), 16).unwrap(),
+                u32::from_str_radix(*a, 16).unwrap(),
+                u16::from_str_radix(*b, 16).unwrap(),
+                u16::from_str_radix(*c, 16).unwrap(),
                 [
                     &d[0..=1],
                     &d[2..=3],
@@ -158,15 +158,15 @@ fn escaped_character(s: Span) -> IResult<Span, char> {
             })
         }),
         map_opt(preceded(tag("\\x"), hex_n(2)), |hs| {
-            char::from_u32(u32::from_str_radix(hs.as_str(), 16).ok()?)
+            char::from_u32(u32::from_str_radix(*hs, 16).ok()?)
         }),
         map_opt(preceded(tag("\\u"), hex_m_n(1, 6)), |us| {
-            char::from_u32(u32::from_str_radix(us.as_str(), 16).ok()?)
+            char::from_u32(u32::from_str_radix(*us, 16).ok()?)
         }),
         map_opt(delimited(tag("\\u{"), hex_m_n(1, 6), tag("}")), |us| {
-            char::from_u32(u32::from_str_radix(us.as_str(), 16).ok()?)
+            char::from_u32(u32::from_str_radix(*us, 16).ok()?)
         }),
-        nom::character::complete::char('\\'),
+        complete::char('\\'),
     ))(s)
 }
 
@@ -204,8 +204,8 @@ fn int_value(s: Span) -> IResult<Span, FieldValue> {
         |(sign, digits): (Option<Span>, Span)| {
             let i = digits.parse::<i64>().ok()?;
             match sign {
-                Some(s) if s.as_str() == "-" => Some(FieldValue::int(-i)),
-                Some(s) if s.as_str() == "+" => Some(FieldValue::int(i)),
+                Some(s) if *s == "-" => Some(FieldValue::int(-i)),
+                Some(s) if *s == "+" => Some(FieldValue::int(i)),
                 None => Some(FieldValue::int(i)),
                 _ => None,
             }
@@ -229,7 +229,7 @@ fn auto_num_value(s: Span) -> IResult<Span, FieldValue> {
             }
         }
         (Ok(r), Err(_)) | (Err(_), Ok(r)) => Ok(r),
-        (Err(_), Err(_)) => nom::combinator::fail(s),
+        (Err(_), Err(_)) => combinator::fail(s),
     }
 }
 
@@ -259,16 +259,16 @@ fn hex_colour_value(s: Span) -> IResult<Span, FieldValue> {
         alt((
             map_opt(tuple((hex_n(2), hex_n(2), hex_n(2))), |(r, g, b)| {
                 Some([
-                    u8::from_str_radix(r.as_str(), 16).ok()?,
-                    u8::from_str_radix(g.as_str(), 16).ok()?,
-                    u8::from_str_radix(b.as_str(), 16).ok()?,
+                    u8::from_str_radix(*r, 16).ok()?,
+                    u8::from_str_radix(*g, 16).ok()?,
+                    u8::from_str_radix(*b, 16).ok()?,
                 ])
             }),
             map_opt(tuple((hex_n(1), hex_n(1), hex_n(1))), |(r, g, b)| {
-                let rr = u8::from_str_radix(r.as_str(), 16).ok()?;
-                let gg = u8::from_str_radix(g.as_str(), 16).ok()?;
-                let bb = u8::from_str_radix(b.as_str(), 16).ok()?;
-                Some([rr << 4 | rr, gg << 4 | gg, bb << 4 | bb])
+                let rr = u8::from_str_radix(*r, 16).ok()?;
+                let gg = u8::from_str_radix(*g, 16).ok()?;
+                let bb = u8::from_str_radix(*b, 16).ok()?;
+                Some([(rr << 4) | rr, (gg << 4) | gg, (bb << 4) | bb])
             }),
         )),
         |[r, g, b]| FieldValue::colour([r, g, b].into()),
@@ -280,7 +280,7 @@ fn colour_value(s: Span) -> IResult<Span, FieldValue> {
 }
 
 fn local_date_value(s: Span) -> IResult<Span, FieldValue> {
-    match NaiveDate::parse_and_remainder(s.as_str(), "%Y-%m-%d") {
+    match NaiveDate::parse_and_remainder(*s, "%Y-%m-%d") {
         Ok((naive_d, i)) => match local!()
             .from_local_datetime(&naive_d.and_time(NaiveTime::MIN))
             .earliest()
@@ -289,32 +289,32 @@ fn local_date_value(s: Span) -> IResult<Span, FieldValue> {
                 substring_to_span(s, i).unwrap(),
                 FieldValue::datetime(dt.to_utc()),
             )),
-            None => nom::combinator::fail(s),
+            None => combinator::fail(s),
         },
-        Err(_) => nom::combinator::fail(s),
+        Err(_) => combinator::fail(s),
     }
 }
 
 fn local_datetime_value(s: Span) -> IResult<Span, FieldValue> {
-    match NaiveDateTime::parse_and_remainder(s.as_str(), "%Y-%m-%dT%H:%M:%S") {
+    match NaiveDateTime::parse_and_remainder(*s, "%Y-%m-%dT%H:%M:%S") {
         Ok((naive_dt, i)) => match local!().from_local_datetime(&naive_dt).earliest() {
             Some(dt) => Ok((
                 substring_to_span(s, i).unwrap(),
                 FieldValue::datetime(dt.to_utc()),
             )),
-            None => nom::combinator::fail(s),
+            None => combinator::fail(s),
         },
-        Err(_) => nom::combinator::fail(s),
+        Err(_) => combinator::fail(s),
     }
 }
 
 fn timezone_datetime_value(s: Span) -> IResult<Span, FieldValue> {
-    match chrono::DateTime::parse_and_remainder(s.as_str(), "%+") {
+    match chrono::DateTime::parse_and_remainder(*s, "%+") {
         Ok((dt, i)) => Ok((
             substring_to_span(s, i).unwrap(),
             FieldValue::datetime(dt.to_utc()),
         )),
-        Err(_) => nom::combinator::fail(s),
+        Err(_) => combinator::fail(s),
     }
 }
 
@@ -449,7 +449,7 @@ fn tagged_field_value(s: Span) -> IResult<Span, FieldValue> {
         "dict" | "dictionary" => dictionary_value(i),
         "list" | "array" => list_value(i),
         "date" | "datetime" => datetime_value(i),
-        _ => nom::combinator::fail(s),
+        _ => combinator::fail(s),
     }
 }
 
@@ -785,7 +785,7 @@ pub trait ReplacementNode: Debug + Clone {
         #[allow(clippy::cast_sign_loss)]
         #[allow(clippy::cast_possible_truncation)]
         let x = (size.x as u32).min(PRIVATE_USE_AREA_SIZE - 1);
-        // x is bounded to [0, 0x0FFF], thus argument is bounded to [0xE000, 0xEFFF]
+        // x is bounded to [0, 0x0FFF]; thus the argument is bounded to [0xE000, 0xEFFF]
         char::from_u32(PRIVATE_USE_AREA_START + x)
     }
 }

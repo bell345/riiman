@@ -163,7 +163,7 @@ pub async fn select_gallery_dl(
 }
 
 async fn check_gallery_dl(path: String) -> AsyncTaskReturn {
-    if !get_first_line(Command::new(path.as_str()).arg("--help"))
+    /*if !get_first_line(Command::new(path.as_str()).arg("--help"))
         .await?
         .contains("gallery-dl")
     {
@@ -171,7 +171,7 @@ async fn check_gallery_dl(path: String) -> AsyncTaskReturn {
             expected: "gallery-dl".to_string(),
             got: path
         }));
-    }
+    }*/
 
     let version = get_first_line(Command::new(path.as_str()).arg("--version")).await?;
 
