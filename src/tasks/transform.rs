@@ -439,7 +439,7 @@ pub fn list_destination_paths(
     })
 }
 
-pub fn transform_path(item: &Item, params: &TransformPathParams) -> Option<PathBuf> {
+pub fn transform_path(item: &Item, _params: &TransformPathParams) -> Option<PathBuf> {
     // TODO: Replace hardcoded implementation
     let author_id = item
         .get_known_field_value(fields::tweet::AUTHOR_ID)

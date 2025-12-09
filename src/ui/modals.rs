@@ -1,3 +1,4 @@
+use std::any::Any;
 use crate::state::AppStateRef;
 
 mod delete_def;
@@ -28,7 +29,7 @@ pub use transform_images::TransformImages;
 pub use transform_paths::TransformPaths;
 pub use transform_results::TransformResults;
 
-pub trait AppModal: Send + Sync + 'static {
+pub trait AppModal: Any + Send + Sync + 'static {
     fn id(&self) -> eframe::egui::Id;
     fn update(&mut self, ctx: &eframe::egui::Context, state: AppStateRef);
     fn dispose(&mut self, _ctx: &eframe::egui::Context, _state: AppStateRef) {}

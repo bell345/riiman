@@ -142,6 +142,23 @@ impl ThumbnailGrid {
             .find_map(|r| r.value().then(|| *r.key()))
     }
 
+    pub fn get_first_selected_item(&self, vault: &Vault) -> Option<Arc<Item>> {
+        self.get_first_selected_id()
+            .and_then(|id| vault.get_item_opt_by_id(id))
+    }
+
+    pub fn get_first_selected_item_path(&self) -> Option<PathBuf> {
+        let vault = self.app_state.current_vault_opt()?;
+        let item = self.get_first_selected_item(&vault)?;
+        let rel_path = Path::new(item.path());
+        self.app_state
+            .catch(
+                || format!("resolving absolute path for {}", item.path()),
+                || vault.resolve_abs_path(rel_path),
+            )
+            .ok()
+    }
+
     pub fn get_selected_items(&self, vault: &Vault) -> Vec<Arc<Item>> {
         self.state
             .checked_items
@@ -177,36 +194,43 @@ impl ThumbnailGrid {
         };
         let selected_egui_id = selected_id.to_egui_id(self.id());
 
-        let next_item_requested = matches!(
-            self.app_state
-                .try_take_request_result(self.id().with(TAB_REQUEST_ID)),
-            Some(Ok(AsyncTaskResult::NextItem))
-        );
-
-        if (ui
+        let user_pressed_tab = ui
             .memory(|r| r.focused())
             .is_some_and(|f| f == selected_egui_id)
             && self.state.select_mode == SelectMode::Single
-            && take_shortcut!(ui, Tab))
-            || next_item_requested
+            && take_shortcut!(ui, Tab);
+
+        let request_result = self
+            .app_state
+            .try_take_request_result(self.id().with(TAB_REQUEST_ID));
+
+        let next_or_prev_item_requested = matches!(
+            request_result,
+            Some(Ok(AsyncTaskResult::NextItem | AsyncTaskResult::PreviousItem))
+        );
+
+        let active_thumb = thumbnails.iter().find_position(|pos| selected_id == pos.id);
+
+        if (user_pressed_tab || next_or_prev_item_requested)
+            && let Some((i, _)) = active_thumb
         {
-            if let Some((i, _)) = thumbnails.iter().find_position(|pos| selected_id == pos.id) {
-                let delta = if ui.input(|i| i.modifiers.shift) {
-                    -1
-                } else {
-                    1
-                };
-                let next_id = thumbnails[wrap_index(i, thumbnails.len(), delta)].id;
-                self.set_scroll = true;
-                self.state.middle_item = Some(next_id);
-                ui.ctx().memory_mut(|wr| {
-                    wr.request_focus(next_id.to_egui_id(self.id()));
-                });
-                self.state.checked_items.clear();
-                self.state.checked_items.insert(next_id, true);
-                self.app_state
-                    .add_global_message(Ok(AsyncTaskResult::RequestGridUpdate));
-            }
+            let delta = match (request_result, ui.input(|i| i.modifiers.shift)) {
+                (Some(Ok(AsyncTaskResult::PreviousItem)), _) | (_, true) => -1,
+                (Some(Ok(AsyncTaskResult::NextItem)), _) | (_, false) => 1,
+            };
+
+            let next_id = thumbnails[wrap_index(i, thumbnails.len(), delta)].id;
+            self.set_scroll = true;
+            self.state.middle_item = Some(next_id);
+            ui.ctx().memory_mut(|wr| {
+                wr.request_focus(next_id.to_egui_id(self.id()));
+            });
+            self.state.checked_items.clear();
+            self.state.checked_items.insert(next_id, true);
+            self.app_state
+                .add_global_message(Ok(AsyncTaskResult::RequestGridUpdate));
+            self.app_state
+                .add_global_message(Ok(AsyncTaskResult::RequestPreviewUpdate));
         }
     }
 

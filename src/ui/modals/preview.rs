@@ -4,6 +4,8 @@ use std::sync::{Arc, RwLock};
 use crate::data::PreviewOptions;
 use crate::state::AppStateRef;
 use crate::take_shortcut;
+use crate::tasks::AsyncTaskResult;
+use crate::ui::shortcuts::handle_shortcuts;
 use crate::ui::AppModal;
 use eframe::egui;
 use eframe::egui::{
@@ -33,7 +35,7 @@ impl Preview {
         }))
     }
 
-    fn contents(&mut self, viewport_id: ViewportId, ui: &mut egui::Ui) {
+    fn contents(&mut self, viewport_id: ViewportId, ui: &mut egui::Ui, state: &AppStateRef) {
         let PreviewOptions {
             cursor_position,
             lens_magnification,
@@ -42,6 +44,8 @@ impl Preview {
         } = self.options;
 
         let hndl = self.texture.clone();
+
+        handle_shortcuts(state, ui.ctx());
 
         ui.with_layout(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
@@ -113,6 +117,20 @@ impl Preview {
                         egui::ViewportCommand::Fullscreen(opts.fullscreen),
                     );
                 }
+
+                if take_shortcut!(ui, ArrowRight) || take_shortcut!(ui, Tab) {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    let msg = if shift {
+                        AsyncTaskResult::PreviousItem
+                    } else {
+                        AsyncTaskResult::NextItem
+                    };
+                    state.add_global_message(Ok(msg));
+                }
+
+                if take_shortcut!(ui, ArrowLeft) {
+                    state.add_global_message(Ok(AsyncTaskResult::PreviousItem));
+                }
             },
         );
     }
@@ -123,11 +141,31 @@ impl AppModal for Arc<RwLock<Preview>> {
         self.read().unwrap().id
     }
 
-    fn update(&mut self, ctx: &egui::Context, _state: AppStateRef) {
+    fn update(&mut self, ctx: &egui::Context, state: AppStateRef) {
         let (id, viewport_class, is_open) = {
             let r = self.read().unwrap();
             (r.id, r.viewport_class, Arc::clone(&r.is_open))
         };
+        let vp_id = ViewportId::from_hash_of(id);
+
+        if let Some(Ok(AsyncTaskResult::PreviewReady { image, .. })) =
+            state.try_take_request_result(self.id())
+        {
+            let mut w = self.write().unwrap();
+            w.texture = ctx.load_texture(
+                "preview",
+                image,
+                TextureOptions {
+                    wrap_mode: TextureWrapMode::ClampToEdge,
+                    magnification: TextureFilter::Nearest,
+                    minification: TextureFilter::Linear,
+                },
+            );
+            if w.options.fullscreen {
+                ctx.send_viewport_cmd_to(vp_id, egui::ViewportCommand::Fullscreen(false));
+                ctx.send_viewport_cmd_to(vp_id, egui::ViewportCommand::Fullscreen(true));
+            }
+        }
 
         let min_size = vec2(50.0, 50.0);
         let pix_per_pt = ctx
@@ -147,7 +185,6 @@ impl AppModal for Arc<RwLock<Preview>> {
             inner_size.x = (inner_size.y * img_ratio).floor();
         }
 
-        let vp_id = ViewportId::from_hash_of(id);
         let builder = egui::ViewportBuilder::default()
             .with_title("Preview")
             .with_inner_size(inner_size)
@@ -167,7 +204,7 @@ impl AppModal for Arc<RwLock<Preview>> {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::none())
                         .show(ctx, |ui| {
-                            this.write().unwrap().contents(vp_id, ui);
+                            this.write().unwrap().contents(vp_id, ui, &state);
                         });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -180,7 +217,7 @@ impl AppModal for Arc<RwLock<Preview>> {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::none())
                         .show(ctx, |ui| {
-                            self.write().unwrap().contents(vp_id, ui);
+                            self.write().unwrap().contents(vp_id, ui, &state);
                         });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -199,7 +236,7 @@ impl AppModal for Arc<RwLock<Preview>> {
                     .max_size(max_size)
                     .open(&mut is_open_var)
                     .show(ctx, |ui| {
-                        self.write().unwrap().contents(vp_id, ui);
+                        self.write().unwrap().contents(vp_id, ui, &state);
                     });
 
                 is_open.store(is_open_var, Ordering::Relaxed);

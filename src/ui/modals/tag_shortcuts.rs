@@ -97,7 +97,7 @@ impl TagShortcuts {
                     egui_extras::StripBuilder::new(ui)
                         .sizes(egui_extras::Size::exact(24.0), shortcuts.len())
                         .vertical(|mut strip| {
-                            for (shortcut, mut behaviour) in shortcuts.iter_mut() {
+                            for (shortcut, behaviour) in &mut shortcuts {
                                 strip.strip(|builder| {
                                     builder
                                         .size(egui_extras::Size::exact(100.0))
@@ -105,7 +105,7 @@ impl TagShortcuts {
                                         .size(egui_extras::Size::exact(100.0))
                                         .size(egui_extras::Size::exact(100.0))
                                         .horizontal(|mut strip| {
-                                            self.table_row(*shortcut, &mut behaviour, &mut strip);
+                                            self.table_row(*shortcut, behaviour, &mut strip);
                                         });
                                 });
                             }

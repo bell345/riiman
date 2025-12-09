@@ -25,6 +25,7 @@ mod cloneable_state;
 mod input;
 mod item_panel;
 mod modals;
+mod shortcuts;
 mod stepwise_range;
 mod theme;
 mod thumb_grid;
@@ -32,6 +33,7 @@ pub mod widgets;
 
 pub use crate::ui::modals::AppModal;
 pub use crate::ui::modals::QueryResult;
+use crate::ui::shortcuts::handle_shortcuts;
 
 static THUMBNAIL_SLIDER_RANGE: OnceLock<StepwiseRange> = OnceLock::new();
 
@@ -215,8 +217,7 @@ impl App {
                     | AsyncTaskResult::FoundGalleryDl { .. }
                     | AsyncTaskResult::SelectedDirectory(_)
                     | AsyncTaskResult::SelectedFile(_)
-                    | AsyncTaskResult::QueryResult(_)
-                    | AsyncTaskResult::NextItem,
+                    | AsyncTaskResult::QueryResult(_),
                 ) => {}
                 Ok(AsyncTaskResult::VaultLoaded {
                     name,
@@ -268,16 +269,31 @@ impl App {
                     image,
                     viewport_class,
                 }) => {
-                    let hndl = ctx.load_texture(
-                        "preview",
-                        image,
-                        egui::TextureOptions {
-                            wrap_mode: egui::TextureWrapMode::ClampToEdge,
-                            magnification: egui::TextureFilter::Nearest,
-                            minification: egui::TextureFilter::Linear,
-                        },
-                    );
-                    self.add_modal_dialog(modals::Preview::new(id, hndl, *viewport_class));
+                    if self.preview_is_open() {
+                        self.state.add_completed_task(
+                            id,
+                            Ok(AsyncTaskResult::PreviewReady {
+                                id,
+                                image,
+                                viewport_class,
+                            }),
+                        );
+                    } else {
+                        let hndl = ctx.load_texture(
+                            "preview",
+                            image,
+                            egui::TextureOptions {
+                                wrap_mode: egui::TextureWrapMode::ClampToEdge,
+                                magnification: egui::TextureFilter::Nearest,
+                                minification: egui::TextureFilter::Linear,
+                            },
+                        );
+                        self.add_modal_dialog(modals::Preview::new(id, hndl, *viewport_class));
+                    }
+                }
+                Ok(AsyncTaskResult::NextItem | AsyncTaskResult::PreviousItem) => {
+                    self.state
+                        .add_completed_task(self.thumbnail_grid.id().with(TAB_REQUEST_ID), result);
                 }
                 Ok(AsyncTaskResult::TransformationComplete(results)) => {
                     self.add_modal_dialog(modals::TransformResults::new(results));
@@ -306,6 +322,15 @@ impl App {
                         vault.cache().item_list.request_update();
                     }
                 }
+                Ok(AsyncTaskResult::RequestPreviewUpdate) => {
+                    if self.preview_is_open()
+                        && let Some(abs_path) = self.thumbnail_grid.get_first_selected_item_path()
+                    {
+                        self.add_task("Load image preview", move |_, _| {
+                            Promise::spawn_blocking(move || load_image_preview(abs_path))
+                        });
+                    }
+                }
                 Err(e) if AppError::NotImplemented.is_err(&e) => {
                     self.error("Not implemented");
                 }
@@ -314,10 +339,16 @@ impl App {
                     self.error(format!("{e} {}", e.root_cause()));
                 }
             }
-            ctx.request_repaint();
         }
+        ctx.request_repaint();
 
         self.state.push_request_results(request_results);
+    }
+
+    fn preview_is_open(&self) -> bool {
+        self.modal_dialogs
+            .values()
+            .any(|d| d.id() == egui::Id::new("preview_image"))
     }
 
     fn vault_menu_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -354,10 +385,8 @@ impl App {
             }
 
             if let Ok(curr_vault) = self.state.current_vault() {
-                if ui
-                    .add_enabled(!vault_loading, egui::Button::new("Save"))
-                    .clicked()
-                {
+                let res = ui.add_enabled(!vault_loading, egui::Button::new("Save"));
+                if res.clicked() {
                     for item in curr_vault.iter_items() {
                         if let Err(e) = self.state.update_item_links(&curr_vault, &item) {
                             self.error(format!(
@@ -442,7 +471,8 @@ impl App {
                 ui.close_menu();
             }
             if let Ok(vault) = self.state.current_vault() {
-                if ui.button("Shortcuts...").clicked() {
+                let res = ui.button("Shortcuts...");
+                if res.clicked() {
                     self.add_modal_dialog(modals::TagShortcuts::new(vault));
                     ui.close_menu();
                 }
@@ -466,7 +496,7 @@ impl App {
             }
             if ui.button("Remove all in vault").clicked() {
                 let vault = Arc::clone(current_vault);
-                self.add_task("Remove links from vault", |state, p| {
+                self.add_task("Remove links from vault", |state, _p| {
                     Promise::spawn_async(async move {
                         for item in vault.iter_items() {
                             state.unlink_item(&vault, &item).ok();
@@ -479,7 +509,7 @@ impl App {
             }
             if ui.button("Remove invalid links").clicked() {
                 let vault = Arc::clone(current_vault);
-                self.add_task("Remove invalid links", |state, p| {
+                self.add_task("Remove invalid links", |state, _p| {
                     Promise::spawn_async(async move {
                         for item in vault.iter_items() {
                             let links = item.links()?;
@@ -791,59 +821,17 @@ impl App {
             });
         });
     }
-
-    fn handle_shortcuts(
-        &mut self,
-        ctx: &egui::Context,
-        current_vault: &Vault,
-        current_item: &Item,
-    ) {
-        for (shortcut, behaviour) in current_vault.vm().shortcuts.iter() {
-            if ctx.input_mut(|i| i.consume_key(shortcut.modifiers, shortcut.logical_key)) {
-                match behaviour.action {
-                    ShortcutAction::None => {}
-                    ShortcutAction::ToggleTag(tag_id) => {
-                        if current_item.has_field(&tag_id) {
-                            current_item.remove_field(&tag_id);
-                        } else {
-                            match current_vault.get_definition(&tag_id) {
-                                Some(def) if def.field_type == FieldType::Tag => {
-                                    current_item.set_field_value(tag_id, FieldValue::Tag);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if self
-                            .state
-                            .commit_item_catch(None, current_item, false)
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                }
-
-                if behaviour.move_next {
-                    self.state.add_completed_task(
-                        egui::Id::new("main_thumbnail_grid").with(TAB_REQUEST_ID),
-                        Ok(AsyncTaskResult::NextItem),
-                    );
-                }
-            }
-        }
-    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let selected_ids = self.thumbnail_grid.get_selected_ids();
         if let &[selected_id] = selected_ids.as_slice() {
-            if ctx.memory(|m| m.focused()).is_none() {
-                ctx.memory_mut(|m| {
+            ctx.memory_mut(|m| {
+                if m.focused().is_none() {
                     m.request_focus(selected_id.to_egui_id(self.thumbnail_grid.id()));
-                });
-            }
+                }
+            });
         }
 
         let errors = self.state.drain_errors();
@@ -861,9 +849,7 @@ impl eframe::App for App {
         self.modal_dialogs
             .retain(|_, dialog| dialog.update_or_dispose(ctx, self.state.clone()));
 
-        if let Ok((vault, item)) = self.state.current_vault_and_item() {
-            self.handle_shortcuts(ctx, &vault, &item);
-        }
+        handle_shortcuts(&self.state, ctx);
 
         self.process_tasks(ctx);
 
@@ -880,7 +866,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let stored_state = AppStorage {
-            current_vault_name: self.state.current_vault_name().map(|s| s.to_string()),
+            current_vault_name: self.state.current_vault_name(),
             vault_name_to_file_paths: self.state.vault_name_to_file_paths(),
             thumbnail_row_height: self.thumbnail_grid.params.init_row_height,
         };

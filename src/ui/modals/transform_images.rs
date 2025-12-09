@@ -220,7 +220,7 @@ impl TransformImages {
                     row.col(|ui| choice(ui, form_section, FormSection::Compression));
                 });
                 body.row(row_height, |mut row| {
-                    row.col(|ui| {});
+                    row.col(|_ui| {});
                     row.col(|ui| choice(ui, form_section, FormSection::Summary));
                 });
             });

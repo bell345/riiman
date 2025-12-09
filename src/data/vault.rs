@@ -73,10 +73,10 @@ impl Vault {
     }
 
     pub fn with_file_path(mut self, path: &Path) -> Self {
-        if let Some(name) = path.file_stem() {
-            if let Some(s) = name.to_str() {
-                self.name = s.to_string();
-            }
+        if let Some(name) = path.file_stem()
+            && let Some(s) = name.to_str()
+        {
+            self.name = s.to_string();
         }
         self.set_file_path(path);
         self
@@ -99,7 +99,7 @@ impl Vault {
 
     pub fn add_parent_refs(self: &Arc<Vault>) {
         for item in &self.items {
-            item.with_vault(&self);
+            item.with_vault(self);
         }
     }
 
@@ -120,14 +120,14 @@ impl Vault {
             .into())
     }
 
-    pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<Uuid, FieldDefinition>> {
+    pub fn get_definition(&self, def_id: &Uuid) -> Option<Ref<'_, Uuid, FieldDefinition>> {
         self.definitions.get(def_id)
     }
 
     pub fn get_definition_or_placeholder(
         &self,
         def_id: &Uuid,
-    ) -> FieldDefRefOrPlaceholder<Ref<Uuid, FieldDefinition>> {
+    ) -> FieldDefRefOrPlaceholder<Ref<'_, Uuid, FieldDefinition>> {
         self.get_definition(def_id).into()
     }
 
@@ -411,11 +411,11 @@ impl Vault {
         Ok(())
     }
 
-    pub fn vm(&self) -> MutexGuard<VaultViewModel> {
+    pub fn vm(&self) -> MutexGuard<'_, VaultViewModel> {
         self.vm.lock().unwrap()
     }
 
-    pub fn cache(&self) -> MutexGuard<VaultCacheModel> {
+    pub fn cache(&self) -> MutexGuard<'_, VaultCacheModel> {
         self.cache.lock().unwrap()
     }
 
@@ -423,9 +423,9 @@ impl Vault {
         self.prevent_save.load(Ordering::Relaxed)
     }
 
-    pub fn prevent_save(&self) -> VaultSaveSuppressor {
+    pub fn prevent_save(&self) -> VaultSaveSuppressor<'_> {
         self.prevent_save.store(true, Ordering::Relaxed);
-        VaultSaveSuppressor(&self)
+        VaultSaveSuppressor(self)
     }
 }
 
@@ -435,6 +435,7 @@ impl FieldStore for Vault {
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum ItemsSpec<'a> {
     All,
     Selection,
@@ -454,7 +455,7 @@ impl From<SourceKind> for ItemsSpec<'_> {
 
 pub struct VaultSaveSuppressor<'v>(&'v Vault);
 
-impl<'v> Drop for VaultSaveSuppressor<'v> {
+impl Drop for VaultSaveSuppressor<'_> {
     fn drop(&mut self) {
         self.0.prevent_save.store(false, Ordering::Relaxed);
     }

@@ -69,7 +69,9 @@ pub enum AsyncTaskResult {
         vault_name: String,
     },
     NextItem,
+    PreviousItem,
     RequestGridUpdate,
+    RequestPreviewUpdate,
 }
 
 pub type SingleImportResult = anyhow::Result<Box<Path>>;
