@@ -1,13 +1,15 @@
-use anyhow::Context;
-use itertools::Itertools;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::task::block_in_place;
-
 use crate::data::Vault;
 use crate::errors::{path_to_str, AppError};
 use crate::state::AppStateRef;
 use crate::tasks::{AsyncTaskResult, AsyncTaskReturn, ProgressSenderRef, ProgressState};
+use anyhow::Context;
+use async_compression::tokio::bufread::ZstdDecoder;
+use async_compression::tokio::write::ZstdEncoder;
+use itertools::Itertools;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::task::block_in_place;
 
 #[tracing::instrument]
 pub async fn choose_and_load_vault(
@@ -15,7 +17,7 @@ pub async fn choose_and_load_vault(
     progress: ProgressSenderRef,
     set_as_current: bool,
 ) -> AsyncTaskReturn {
-    let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
+    let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman", "zstd"]);
 
     let fp = dialog.pick_file().await.ok_or(AppError::UserCancelled)?;
 
@@ -55,9 +57,15 @@ pub async fn load_vault_from_path(
 ) -> AsyncTaskReturn {
     progress.send(ProgressState::Determinate(0.5));
 
-    let contents = tokio::fs::read_to_string(&path)
-        .await
-        .with_context(|| format!("while reading from vault file at {path}"))?;
+    let contents = if path.to_ascii_lowercase().ends_with(".zstd") {
+        let fp = tokio::fs::File::open(&path).await?;
+        let mut zstd_decoder = ZstdDecoder::new(BufReader::new(fp));
+        let mut str = String::new();
+        zstd_decoder.read_to_string(&mut str).await?;
+        str
+    } else {
+        tokio::fs::read_to_string(&path).await?
+    };
 
     let vault = serde_json::from_str::<Vault>(contents.as_str())
         .with_context(|| format!("while deserialising vault file at {path}"))?
@@ -74,6 +82,26 @@ pub async fn load_vault_from_path(
     })
 }
 
+struct TmpFile(PathBuf);
+
+impl TmpFile {
+    fn new() -> Self {
+        Self(std::env::temp_dir().join(rand::random::<u64>().to_string()))
+    }
+}
+
+impl AsRef<Path> for TmpFile {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TmpFile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).unwrap_or_default();
+    }
+}
+
 #[tracing::instrument]
 pub async fn save_vault_without_links(
     vault: Arc<Vault>,
@@ -87,30 +115,47 @@ pub async fn save_vault_without_links(
     let name = vault.name.clone();
     let data = block_in_place(move || serde_json::to_vec(&vault))?;
 
+    let tmp_file_path = TmpFile::new();
+
     progress.send(ProgressState::Determinate(0.5));
 
     if let Some(path) = file_path {
-        tokio::fs::write(path, data).await?;
+        write_data_to_path(tmp_file_path.as_ref(), data).await?;
+        tokio::fs::copy(&tmp_file_path, path).await?;
     } else {
-        let dialog = rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman"]);
+        let dialog =
+            rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman", "zstd"]);
 
         if let Some(fp) = dialog.save_file().await {
             #[cfg(target_arch = "wasm32")]
             {
+                // todo: wasm32 zstd saving?
                 fp.write(&data).await?;
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let path = fp.path();
-
-                tokio::fs::write(path, data).await.with_context(|| {
-                    format!("while writing to vault file at {}", path.display())
-                })?;
+                write_data_to_path(tmp_file_path.as_ref(), data).await?;
+                tokio::fs::copy(&tmp_file_path, path).await?;
             }
         }
     }
 
     Ok(AsyncTaskResult::VaultSaved(name))
+}
+
+async fn write_data_to_path(path: &Path, data: Vec<u8>) -> std::io::Result<()> {
+    if path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .ends_with(".zstd")
+    {
+        let fp = tokio::fs::File::create(path).await?;
+        let mut zstd_encoder = ZstdEncoder::new(BufWriter::new(fp));
+        zstd_encoder.write_all(data.as_slice()).await
+    } else {
+        tokio::fs::write(path, data).await
+    }
 }
 
 #[tracing::instrument]
@@ -120,7 +165,7 @@ pub async fn save_new_vault(
     progress: ProgressSenderRef,
 ) -> AsyncTaskReturn {
     let dialog = rfd::AsyncFileDialog::new()
-        .add_filter("riiman vault file", &["riiman"])
+        .add_filter("riiman vault file", &["riiman", "zstd"])
         .set_file_name(format!("{name}.riiman"));
 
     let fp = dialog.save_file().await.ok_or(AppError::UserCancelled)?;

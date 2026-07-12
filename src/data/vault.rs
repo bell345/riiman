@@ -73,10 +73,12 @@ impl Vault {
     }
 
     pub fn with_file_path(mut self, path: &Path) -> Self {
-        if let Some(name) = path.file_stem()
-            && let Some(s) = name.to_str()
-        {
-            self.name = s.to_string();
+        if let Some(file_name) = path.file_name() {
+            let s = file_name.to_string_lossy();
+            let dot = s.find('.');
+            if let Some(dot) = dot {
+                self.name = s[0..dot].to_string();
+            }
         }
         self.set_file_path(path);
         self
