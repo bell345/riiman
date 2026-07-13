@@ -115,13 +115,10 @@ pub async fn save_vault_without_links(
     let name = vault.name.clone();
     let data = block_in_place(move || serde_json::to_vec(&vault))?;
 
-    let tmp_file_path = TmpFile::new();
-
     progress.send(ProgressState::Determinate(0.5));
 
     if let Some(path) = file_path {
-        write_data_to_path(tmp_file_path.as_ref(), data).await?;
-        tokio::fs::copy(&tmp_file_path, path).await?;
+        write_data_to_path(&path, data).await?;
     } else {
         let dialog =
             rfd::AsyncFileDialog::new().add_filter("riiman vault file", &["riiman", "zstd"]);
@@ -135,8 +132,7 @@ pub async fn save_vault_without_links(
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let path = fp.path();
-                write_data_to_path(tmp_file_path.as_ref(), data).await?;
-                tokio::fs::copy(&tmp_file_path, path).await?;
+                write_data_to_path(path, data).await?;
             }
         }
     }
@@ -145,17 +141,29 @@ pub async fn save_vault_without_links(
 }
 
 async fn write_data_to_path(path: &Path, data: Vec<u8>) -> std::io::Result<()> {
+    let tmp_file_path = TmpFile::new();
+    let bak_file_path = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| path.with_file_name(format!("{n}.bak")));
+    if let Some(bak) = bak_file_path {
+        tokio::fs::copy(path, bak).await?;
+    }
+
     if path
         .to_string_lossy()
         .to_ascii_lowercase()
         .ends_with(".zstd")
     {
-        let fp = tokio::fs::File::create(path).await?;
+        let fp = tokio::fs::File::create(tmp_file_path.as_ref()).await?;
         let mut zstd_encoder = ZstdEncoder::new(BufWriter::new(fp));
-        zstd_encoder.write_all(data.as_slice()).await
+        zstd_encoder.write_all(data.as_slice()).await?;
     } else {
-        tokio::fs::write(path, data).await
+        tokio::fs::write(tmp_file_path.as_ref(), data).await?;
     }
+
+    tokio::fs::copy(tmp_file_path, path).await?;
+    Ok(())
 }
 
 #[tracing::instrument]
